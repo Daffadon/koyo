@@ -1,9 +1,9 @@
 # Glossary
 
-- **Connection profile**: Saved PostgreSQL host, port, database, username, and TLS settings. Password is stored separately in the operating system credential store.
-- **Active connection**: The currently selected profile with an open PostgreSQL session.
-- **SQL workbench**: SQL editor that runs statements with the connected PostgreSQL role's permissions and displays returned rows or command status.
-- **Schema browser**: Navigation through PostgreSQL schemas and regular tables.
+- **Connection profile**: Saved connection settings for one database engine. PostgreSQL profiles store host, port, database, username, and TLS; SQLite profiles store a file path. Server passwords are stored separately in the operating system credential store.
+- **Active tab**: The currently focused workspace tab. Its session supplies the explorer and status bar.
+- **SQL workbench**: SQL editor that runs statements with the session's permissions and displays returned rows or command status.
+- **Schema browser**: Navigation through the active session's schemas and relations.
 - **Table preview**: A paged view of table rows. Rows are editable only when the table has a primary key.
 - **Staged change**: An insert, update, or delete held in the UI until the user applies or discards it.
 - **Apply**: Execute all staged table changes in one PostgreSQL transaction. A failure rolls back the batch; an uncertain commit requires reloading before retry.
@@ -20,3 +20,9 @@
 - **Cancel token**: PostgreSQL connection token used to stop the active query, table page load, or edit batch.
 - **Structure view**: Read-only metadata for a relation: columns, indexes, constraints, and object definitions.
 - **Object definition**: PostgreSQL-generated SQL for a view, index, or constraint. It is not a reconstructed full `CREATE TABLE` statement.
+- **Workspace tab**: A query tab or table tab. Each owns one database session.
+- **Session**: One live database connection held by one workspace tab until the tab closes.
+- **Session map**: Rust state that maps session IDs to live engine sessions and their cancellation state.
+- **Engine boundary**: The dispatch layer that applies shared commands to PostgreSQL, SQLite, and later engines.
+- **Workflow parity**: Same user workflows across engines, with engine-specific SQL, authentication, concurrency, and statement limits.
+- **Original-value conflict check**: SQLite stale-row check matching the primary key and every originally loaded column value before applying an edit.
