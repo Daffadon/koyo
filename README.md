@@ -48,7 +48,7 @@ See [ADR 0001](docs/adr/0001-tauri-postgres.md) for architecture decisions and t
 
 ## Releases
 
-The release workflow builds Windows x64. It runs on tags and manual dispatch, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Windows x64, Linux x64, macOS Intel, and macOS Apple Silicon. It runs on tags and manual dispatch, uploads workflow artifacts, and creates a draft GitHub release.
 
 Keep these versions equal, then push a matching tag:
 
@@ -58,4 +58,4 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow rejects a tag that does not match the configured version. Builds are unsigned; Windows SmartScreen may warn.
+The workflow rejects a tag that does not match the configured version. Builds are unsigned; macOS may require right-click **Open**, and Windows SmartScreen may warn.
