@@ -11,3 +11,10 @@
 - **Keyless table**: Table without a primary key. Its preview is read-only.
 - **Credential store**: Platform facility used for saved passwords: Windows Credential Manager, macOS Keychain, or Linux Secret Service.
 - **TLS verification**: Validation that a TLS connection reaches the intended PostgreSQL server, not only that traffic is encrypted.
+- **Relation**: A table, partitioned table, view, or materialized view shown in the explorer.
+- **Read-only relation**: A view, materialized view, or keyless table. Its data grid has no staged edits.
+- **Filter kind**: Column classification that determines which filter operators are available: text, number, temporal, boolean, or other.
+- **Table filter**: A per-column condition applied server-side before paging. Active filters combine with AND.
+- **Sort state**: One sort column and direction. Primary-key columns, or `ctid` for keyless tables, break ties.
+- **Structure view**: Read-only metadata for a relation: columns, indexes, constraints, and object definitions.
+- **Object definition**: PostgreSQL-generated SQL for a view, index, or constraint. It is not a reconstructed full `CREATE TABLE` statement.
