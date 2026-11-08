@@ -8,15 +8,18 @@ function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 export type SslMode = "verify-full" | "disable";
+export type Engine = "postgres" | "sqlite";
 
 export type ConnectionProfile = {
   id: string;
   name: string;
+  engine: Engine;
   host: string;
   port: number;
   database: string;
   username: string;
   sslMode: SslMode;
+  sqlitePath: string;
 };
 
 export type ConnectionInfo = {
@@ -98,14 +101,15 @@ export type QueryOutput = {
 
 export type GridChange =
   | { kind: "insert"; values: Record<string, Cell> }
-  | { kind: "update"; key: Cell[]; version: string; values: Record<string, Cell> }
-  | { kind: "delete"; key: Cell[]; version: string };
+  | { kind: "update"; key: Cell[]; version: string; values: Record<string, Cell>; original: Cell[] }
+  | { kind: "delete"; key: Cell[]; version: string; original: Cell[] };
 
 export const api = {
   listProfiles: () => invoke<ConnectionProfile[]>("list_profiles"),
   saveProfile: (profile: Omit<ConnectionProfile, "id"> & { id: string | null }, password: string | null) =>
     invoke<ConnectionProfile>("save_profile", { profile, password }),
   deleteProfile: (id: string) => invoke<void>("delete_profile", { id }),
+  pickSqliteFile: () => invoke<string | null>("pick_sqlite_file"),
   connect: (id: string) => invoke<ConnectionInfo>("connect_profile", { id }),
   disconnect: () => invoke<void>("disconnect"),
   listTables: () => invoke<TableSummary[]>("list_tables"),

@@ -1,7 +1,7 @@
 [package]
 name = "koyo-db"
 version = "0.1.0"
-description = "Cross-platform PostgreSQL client"
+description = "Cross-platform PostgreSQL and SQLite client"
 authors = ["Koyo contributors"]
 edition = "2024"
 
@@ -20,8 +20,10 @@ keyring = { version = "4", default-features = false, features = ["v1"] }
 tokio-postgres = "0.7"
 rustls-tokio-postgres = { version = "0.5", features = ["platform-verifier"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 futures-util = "0.3"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+tauri-plugin-dialog = "2.8.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

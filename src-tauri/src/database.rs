@@ -1,14 +1,16 @@
 use crate::{
     models::{
-        ApplySummary, ColumnInfo, ConnectionInfo, FilterKind, FilterOperator, GridChange, GridRow,
-        ProfileSummary, QueryOutput, QueryResultSet, TableFilter, TablePage, TableSort,
+        ApplySummary, ColumnInfo, ConnectionInfo, Engine, FilterKind, FilterOperator, GridChange,
+        GridRow, ProfileSummary, QueryOutput, QueryResultSet, TableFilter, TablePage, TableSort,
         TableSummary,
     },
+    sqlite::{self, SqliteSession},
     storage,
 };
 use futures_util::TryStreamExt;
 use rustls_tokio_postgres::{MakeRustlsConnect, config_platform_verifier};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::State;
@@ -27,13 +29,19 @@ pub struct AppState {
 }
 
 #[derive(Clone)]
-struct CancelState {
-    token: CancelToken,
-    ssl_mode: crate::models::SslMode,
+enum CancelState {
+    Postgres {
+        token: CancelToken,
+        ssl_mode: crate::models::SslMode,
+    },
+    Sqlite {
+        interrupt: Arc<rusqlite::InterruptHandle>,
+    },
 }
 
-struct DbSession {
-    client: Client,
+enum DbSession {
+    Postgres(Client),
+    Sqlite(SqliteSession),
 }
 
 struct QueryGuard<'a>(&'a AtomicBool);
@@ -77,8 +85,22 @@ pub async fn connect_profile(
         .into_iter()
         .find(|profile| profile.id == id)
         .ok_or_else(|| "Connection profile does not exist.".to_string())?;
-    let password = storage::load_password(profile.id)?;
+    if profile.engine == Engine::Sqlite {
+        let (session, server_version) = sqlite::connect(&profile.sqlite_path)?;
+        let cancel = CancelState::Sqlite {
+            interrupt: session.interrupt.clone(),
+        };
+        *state.cancel.lock().await = Some(cancel);
+        state.query_active.store(false, Ordering::SeqCst);
+        *state.session.lock().await = Some(DbSession::Sqlite(session));
+        return Ok(ConnectionInfo {
+            profile: ProfileSummary::from(&profile),
+            server_version,
+            current_user: "local".to_string(),
+        });
+    }
 
+    let password = storage::load_password(profile.id)?;
     let mut config = tokio_postgres::Config::new();
     config
         .host(&profile.host)
@@ -141,13 +163,13 @@ pub async fn connect_profile(
         server_version,
         current_user,
     };
-    let cancel = CancelState {
+    let cancel = CancelState::Postgres {
         token: client.cancel_token(),
         ssl_mode: profile.ssl_mode,
     };
     *state.cancel.lock().await = Some(cancel);
     state.query_active.store(false, Ordering::SeqCst);
-    *state.session.lock().await = Some(DbSession { client });
+    *state.session.lock().await = Some(DbSession::Postgres(client));
     Ok(info)
 }
 
@@ -179,27 +201,31 @@ pub async fn cancel_query(state: State<'_, AppState>) -> Result<(), String> {
         .lock()
         .await
         .clone()
-        .ok_or_else(|| "Connect to PostgreSQL first.".to_string())?;
+        .ok_or_else(|| "Connect to a database first.".to_string())?;
     send_cancel(&cancel).await
 }
 
 async fn send_cancel(cancel: &CancelState) -> Result<(), String> {
-    match cancel.ssl_mode {
-        crate::models::SslMode::VerifyFull => {
-            let tls = config_platform_verifier().map_err(|error| {
-                format!("Could not initialize system TLS verification: {error}")
-            })?;
-            cancel
-                .token
-                .cancel_query(MakeRustlsConnect::new(tls))
+    match cancel {
+        CancelState::Postgres { token, ssl_mode } => match ssl_mode {
+            crate::models::SslMode::VerifyFull => {
+                let tls = config_platform_verifier().map_err(|error| {
+                    format!("Could not initialize system TLS verification: {error}")
+                })?;
+                token
+                    .cancel_query(MakeRustlsConnect::new(tls))
+                    .await
+                    .map_err(|error| error.to_string())
+            }
+            crate::models::SslMode::Disable => token
+                .cancel_query(tokio_postgres::NoTls)
                 .await
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string()),
+        },
+        CancelState::Sqlite { interrupt } => {
+            interrupt.interrupt();
+            Ok(())
         }
-        crate::models::SslMode::Disable => cancel
-            .token
-            .cancel_query(tokio_postgres::NoTls)
-            .await
-            .map_err(|error| error.to_string()),
     }
 }
 
@@ -208,9 +234,14 @@ pub async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableSummary>
     let session = state.session.lock().await;
     let session = session
         .as_ref()
-        .ok_or_else(|| "Connect to PostgreSQL first.".to_string())?;
-    let rows = session
-        .client
+        .ok_or_else(|| "Connect to a database first.".to_string())?;
+    let DbSession::Postgres(client) = session else {
+        let DbSession::Sqlite(sqlite_session) = session else {
+            unreachable!();
+        };
+        return sqlite::list_tables(sqlite_session).await;
+    };
+    let rows = client
         .query(
             "SELECT n.nspname::text, t.relname::text,
                     EXISTS (
@@ -252,8 +283,24 @@ pub async fn load_table_page(
     let session = state.session.lock().await;
     let session = session
         .as_ref()
-        .ok_or_else(|| "Connect to PostgreSQL first.".to_string())?;
-    let meta = load_table_meta(&session.client, &schema, &table).await?;
+        .ok_or_else(|| "Connect to a database first.".to_string())?;
+    let DbSession::Postgres(client) = session else {
+        let DbSession::Sqlite(sqlite_session) = session else {
+            unreachable!();
+        };
+        let _active = QueryGuard::begin(&state.query_active);
+        return sqlite::load_page(
+            sqlite_session,
+            &schema,
+            &table,
+            offset,
+            limit,
+            &filters,
+            sort.as_ref(),
+        )
+        .await;
+    };
+    let meta = load_table_meta(client, &schema, &table).await?;
     if meta.columns.is_empty() {
         return Err("Table has no visible columns.".into());
     }
@@ -272,8 +319,7 @@ pub async fn load_table_page(
 
     let rows = {
         let _active = QueryGuard::begin(&state.query_active);
-        session
-            .client
+        client
             .query(&sql, &sql_params(&params))
             .await
             .map_err(|error| error.to_string())?
@@ -483,15 +529,21 @@ pub async fn apply_grid_changes(
     let mut session_guard = state.session.lock().await;
     let session = session_guard
         .as_mut()
-        .ok_or_else(|| "Connect to PostgreSQL first.".to_string())?;
-    let meta = load_table_meta(&session.client, &schema, &table).await?;
+        .ok_or_else(|| "Connect to a database first.".to_string())?;
+    let DbSession::Postgres(client) = session else {
+        let DbSession::Sqlite(sqlite_session) = session else {
+            unreachable!();
+        };
+        let _active = QueryGuard::begin(&state.query_active);
+        return sqlite::apply_changes(sqlite_session, &schema, &table, changes).await;
+    };
+    let meta = load_table_meta(client, &schema, &table).await?;
     if !meta.editable() {
         return Err("Grid editing requires a table with a primary key.".into());
     }
 
     let _active = QueryGuard::begin(&state.query_active);
-    let transaction = session
-        .client
+    let transaction = client
         .transaction()
         .await
         .map_err(|error| error.to_string())?;
@@ -511,6 +563,7 @@ pub async fn apply_grid_changes(
                 key,
                 version,
                 values,
+                ..
             } => {
                 let (sql, params) = build_update(&schema, &table, &meta, key, version, values)?;
                 let refs = sql_params(&params);
@@ -520,7 +573,7 @@ pub async fn apply_grid_changes(
                     .map_err(|error| error.to_string())?;
                 ensure_one_row(count)?;
             }
-            GridChange::Delete { key, version } => {
+            GridChange::Delete { key, version, .. } => {
                 let (sql, params) = build_delete(&schema, &table, &meta, key, version)?;
                 let refs = sql_params(&params);
                 let count = transaction
@@ -548,9 +601,16 @@ pub async fn run_sql(state: State<'_, AppState>, sql: String) -> Result<QueryOut
     let session = state.session.lock().await;
     let session = session
         .as_ref()
-        .ok_or_else(|| "Connect to PostgreSQL first.".to_string())?;
+        .ok_or_else(|| "Connect to a database first.".to_string())?;
+    let DbSession::Postgres(client) = session else {
+        let DbSession::Sqlite(sqlite_session) = session else {
+            unreachable!();
+        };
+        let _active = QueryGuard::begin(&state.query_active);
+        return sqlite::run_sql(sqlite_session, &sql).await;
+    };
     state.query_active.store(true, Ordering::SeqCst);
-    let result = collect_query(&session.client, &sql).await;
+    let result = collect_query(client, &sql).await;
     state.query_active.store(false, Ordering::SeqCst);
     result
 }

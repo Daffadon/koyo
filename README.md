@@ -1,16 +1,16 @@
 # Koyo
 
-Koyo is a cross-platform desktop client for PostgreSQL, built with Tauri 2, React, TypeScript, and Rust.
+Koyo is a cross-platform desktop client for PostgreSQL and SQLite, built with Tauri 2, React, TypeScript, and Rust.
 
 ## First-release features
 
-- Save PostgreSQL connection profiles. Passwords are kept in Windows Credential Manager, macOS Keychain, or Linux Secret Service; profile files contain no passwords.
-- Browse schemas and tables, then preview table rows. Filter columns server-side, sort by one column, page through the results, and cancel a slow page load.
-- Edit rows for tables with primary keys. Inserts, updates, and deletes stay staged until **Apply changes**. The batch runs in one transaction and rolls back on stale-row conflicts. If the commit result is uncertain, Koyo clears staged edits and attempts to reload; reconnect and reload before retrying if needed.
-- Run SQL with the connected PostgreSQL role's permissions. Results show PostgreSQL text values and each result set is capped at 1,000 displayed rows. A running query can be cancelled.
-- Verify TLS server identity by default. **Disable TLS** is available for trusted local connections only.
+- Save PostgreSQL and SQLite connection profiles. PostgreSQL passwords are kept in Windows Credential Manager, macOS Keychain, or Linux Secret Service; SQLite uses a database file path. Profile files contain no passwords.
+- Browse tables, then preview table rows. Filter columns server-side, sort by one column, page through the results, and cancel a slow page load.
+- Edit rows for tables with primary keys. Inserts, updates, and deletes stay staged until **Apply changes**. The batch runs in one transaction and rolls back on stale-row conflicts. SQLite compares the primary key and every originally loaded value. If the commit result is uncertain, Koyo clears staged edits and attempts to reload; reconnect and reload before retrying if needed.
+- Run SQL with the connected session's permissions. Results are shown as text and each result set is capped at 1,000 displayed rows. A running query can be cancelled. SQLite runs one statement per execution.
+- Verify PostgreSQL TLS server identity by default. **Disable TLS** is available for trusted local connections only.
 
-Tables without primary keys are read-only in the data grid. Linux password storage requires a running Secret Service provider. Koyo does not save passwords in plaintext if the operating-system credential store is unavailable; passwordless connections do not need the credential store at all.
+Tables without primary keys are read-only in the data grid. Linux PostgreSQL password storage requires a running Secret Service provider. Koyo does not save passwords in plaintext if the operating-system credential store is unavailable; passwordless connections do not need the credential store at all.
 
 ## Development
 
@@ -44,7 +44,7 @@ KOYO_TEST_DATABASE_URL="host=127.0.0.1 user=postgres password=... dbname=koyo_te
   cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
 ```
 
-See [ADR 0001](docs/adr/0001-tauri-postgres.md) for architecture decisions and the [glossary](docs/glossary.md) for product terms.
+See [ADR 0001](docs/adr/0001-tauri-postgres.md), [ADR 0003](docs/adr/0003-multi-connection-tabs.md), [ADR 0004](docs/adr/0004-engine-boundary-and-sqlite.md), and [ADR 0005](docs/adr/0005-active-session-cap-and-engine-picker.md) for architecture decisions, and the [glossary](docs/glossary.md) for product terms.
 
 ## Releases
 

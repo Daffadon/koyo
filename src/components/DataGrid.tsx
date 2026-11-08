@@ -173,6 +173,7 @@ export function DataGrid({
         key: row.key,
         version: row.version,
         values,
+        original: row.values,
       });
     }
     onChanges(next);
@@ -184,7 +185,7 @@ export function DataGrid({
     if (existing?.kind === "update" && !window.confirm("Discard staged edits to this row and stage its deletion?")) return;
     const next = changes.filter((change) => !(change.kind !== "insert" && JSON.stringify(change.key) === key));
     if (existing?.kind !== "delete") {
-      next.push({ localId: key, kind: "delete", key: row.key, version: row.version });
+      next.push({ localId: key, kind: "delete", key: row.key, version: row.version, original: row.values });
     }
     onChanges(next);
   }

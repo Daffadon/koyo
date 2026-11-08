@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Pencil, Plug, Plus, ShieldAlert, ShieldCheck, Trash2, X } from "lucide-react";
 import { api } from "../api";
-import type { ConnectionInfo, ConnectionProfile, SslMode } from "../api";
+import type { ConnectionInfo, ConnectionProfile, Engine, SslMode } from "../api";
 
 type Props = {
   profiles: ConnectionProfile[];
@@ -15,11 +15,13 @@ type Props = {
 
 const blankProfile = {
   name: "",
+  engine: "postgres" as Engine,
   host: "localhost",
   port: 5432,
   database: "postgres",
   username: "postgres",
   sslMode: "verify-full" as SslMode,
+  sqlitePath: "",
 };
 
 export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClose, onConnected, onProfilesChanged }: Props) {
@@ -34,10 +36,12 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
   closeRef.current = onClose;
   const selectedProfile = profiles.find((profile) => profile.id === profileId);
   const targetChanged = selectedProfile !== undefined && (
+    form.engine !== selectedProfile.engine ||
     form.host !== selectedProfile.host ||
     form.port !== selectedProfile.port ||
     form.database !== selectedProfile.database ||
-    form.username !== selectedProfile.username
+    form.username !== selectedProfile.username ||
+    form.sqlitePath !== selectedProfile.sqlitePath
   );
 
   useEffect(() => {
@@ -92,11 +96,13 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
     setProfileId(profile.id);
     setForm({
       name: profile.name,
+      engine: profile.engine,
       host: profile.host,
       port: profile.port,
       database: profile.database,
       username: profile.username,
       sslMode: profile.sslMode,
+      sqlitePath: profile.sqlitePath,
     });
     setPassword("");
     setError("");
@@ -104,6 +110,15 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
 
   function updateForm<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
     setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function browseSqlite() {
+    try {
+      const path = await api.pickSqliteFile();
+      if (path) updateForm("sqlitePath", path);
+    } catch (reason) {
+      setError(String(reason));
+    }
   }
 
   async function saveAndConnect(event: FormEvent<HTMLFormElement>) {
@@ -130,7 +145,7 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
   }
 
   async function remove(profile: ConnectionProfile) {
-    if (!window.confirm(`Remove connection “${profile.name}” and its saved password?`)) return;
+    if (!window.confirm(`Remove connection “${profile.name}”?`)) return;
     if (profile.id === activeProfileId && !canConnect()) return;
     setBusy(true);
     setError("");
@@ -179,7 +194,9 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
                       <span className="profile-mark"><Plug size={16} /></span>
                       <span className="profile-copy">
                         <strong>{profile.name}</strong>
-                        <small>{profile.username}@{profile.host}:{profile.port}/{profile.database}</small>
+                        <small>{profile.engine === "sqlite"
+                          ? profile.sqlitePath
+                          : `${profile.username}@${profile.host}:${profile.port}/${profile.database}`}</small>
                       </span>
                     </button>
                     <button className="icon-button profile-edit" aria-label={`Edit ${profile.name}`} title="Edit connection" onClick={() => editProfile(profile)} disabled={busy}>
@@ -200,7 +217,7 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
 
             <div className="secure-note">
               <ShieldCheck size={16} />
-              <span>Passwords stay in your operating-system credential store.</span>
+              <span>Server passwords stay in your operating-system credential store.</span>
             </div>
           </section>
 
@@ -210,49 +227,68 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
               <span className="form-mark">{profileId ? <Pencil size={14} /> : <Plus size={15} />}</span>
             </div>
             <label>
+              Database engine
+              <select value={form.engine} onChange={(event) => updateForm("engine", event.currentTarget.value as Engine)}>
+                <option value="postgres">PostgreSQL</option>
+                <option value="sqlite">SQLite</option>
+              </select>
+            </label>
+            <label>
               Connection name
               <input ref={nameRef} required value={form.name} onChange={(event) => updateForm("name", event.currentTarget.value)} placeholder="Local development" />
             </label>
-            <div className="field-row">
+            {form.engine === "sqlite" ? (
               <label>
-                Host
-                <input required value={form.host} onChange={(event) => updateForm("host", event.currentTarget.value)} autoComplete="off" />
+                Database file
+                <div className="field-row">
+                  <input required value={form.sqlitePath} onChange={(event) => updateForm("sqlitePath", event.currentTarget.value)} placeholder="/path/to/database.db" />
+                  <button className="button-secondary" type="button" onClick={() => void browseSqlite()} disabled={busy}>Browse</button>
+                </div>
               </label>
-              <label className="port-field">
-                Port
-                <input required type="number" min="1" max="65535" value={form.port} onChange={(event) => updateForm("port", Number(event.currentTarget.value))} />
-              </label>
-            </div>
-            <div className="field-row">
-              <label>
-                Database
-                <input required value={form.database} onChange={(event) => updateForm("database", event.currentTarget.value)} />
-              </label>
-              <label>
-                Username
-                <input required value={form.username} onChange={(event) => updateForm("username", event.currentTarget.value)} autoComplete="username" />
-              </label>
-            </div>
-            <label>
-              Password
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.currentTarget.value)}
-                autoComplete="new-password"
-                placeholder={profileId ? targetChanged ? "Enter password for the new target" : "Leave blank to keep saved password" : "Can be blank for passwordless auth"}
-              />
-            </label>
-            {targetChanged && <p className="quiet-copy">Changing host, port, database, or username clears the saved password.</p>}
-            <label>
-              TLS mode
-              <select value={form.sslMode} onChange={(event) => updateForm("sslMode", event.currentTarget.value as SslMode)}>
-                <option value="verify-full">Verify server identity</option>
-                <option value="disable">Disable TLS (local only)</option>
-              </select>
-            </label>
-            {form.sslMode === "disable" && (
-              <p className="security-warning"><ShieldAlert size={15} /> Traffic will not be encrypted. Use only on trusted local networks.</p>
+            ) : (
+              <>
+                <div className="field-row">
+                  <label>
+                    Host
+                    <input required value={form.host} onChange={(event) => updateForm("host", event.currentTarget.value)} autoComplete="off" />
+                  </label>
+                  <label className="port-field">
+                    Port
+                    <input required type="number" min="1" max="65535" value={form.port} onChange={(event) => updateForm("port", Number(event.currentTarget.value))} />
+                  </label>
+                </div>
+                <div className="field-row">
+                  <label>
+                    Database
+                    <input required value={form.database} onChange={(event) => updateForm("database", event.currentTarget.value)} />
+                  </label>
+                  <label>
+                    Username
+                    <input required value={form.username} onChange={(event) => updateForm("username", event.currentTarget.value)} autoComplete="username" />
+                  </label>
+                </div>
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.currentTarget.value)}
+                    autoComplete="new-password"
+                    placeholder={profileId ? targetChanged ? "Enter password for the new target" : "Leave blank to keep saved password" : "Can be blank for passwordless auth"}
+                  />
+                </label>
+                {targetChanged && <p className="quiet-copy">Changing host, port, database, or username clears the saved password.</p>}
+                <label>
+                  TLS mode
+                  <select value={form.sslMode} onChange={(event) => updateForm("sslMode", event.currentTarget.value as SslMode)}>
+                    <option value="verify-full">Verify server identity</option>
+                    <option value="disable">Disable TLS (local only)</option>
+                  </select>
+                </label>
+                {form.sslMode === "disable" && (
+                  <p className="security-warning"><ShieldAlert size={15} /> Traffic will not be encrypted. Use only on trusted local networks.</p>
+                )}
+              </>
             )}
             {error && <p className="inline-error" role="alert">{error}</p>}
             <div className="form-actions">

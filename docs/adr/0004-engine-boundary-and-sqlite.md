@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-11-08
 
+## Implementation note
+
+The engine boundary and SQLite landed before ADR 0003 tabs existed. They currently use the single-session UI and a `DbSession` enum. ADR 0003 will replace that state with tab-owned sessions; engine dispatch carries forward.
+
 ## Context
 
 Koyo is PostgreSQL-specific: `tokio-postgres`, `pg_catalog` metadata, `$n::type` casts, quoted identifiers, `xmin` optimistic locking, and `ctid` paging.

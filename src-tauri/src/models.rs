@@ -10,17 +10,29 @@ pub enum SslMode {
     Disable,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Engine {
+    #[default]
+    Postgres,
+    Sqlite,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionProfile {
     pub id: Uuid,
     pub name: String,
+    #[serde(default)]
+    pub engine: Engine,
     pub host: String,
     pub port: u16,
     pub database: String,
     pub username: String,
     #[serde(default)]
     pub ssl_mode: SslMode,
+    #[serde(default)]
+    pub sqlite_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,11 +40,15 @@ pub struct ConnectionProfile {
 pub struct ProfileInput {
     pub id: Option<Uuid>,
     pub name: String,
+    #[serde(default)]
+    pub engine: Engine,
     pub host: String,
     pub port: u16,
     pub database: String,
     pub username: String,
     pub ssl_mode: SslMode,
+    #[serde(default)]
+    pub sqlite_path: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -40,11 +56,13 @@ pub struct ProfileInput {
 pub struct ProfileSummary {
     pub id: Uuid,
     pub name: String,
+    pub engine: Engine,
     pub host: String,
     pub port: u16,
     pub database: String,
     pub username: String,
     pub ssl_mode: SslMode,
+    pub sqlite_path: String,
 }
 
 impl From<&ConnectionProfile> for ProfileSummary {
@@ -52,11 +70,13 @@ impl From<&ConnectionProfile> for ProfileSummary {
         Self {
             id: profile.id,
             name: profile.name.clone(),
+            engine: profile.engine,
             host: profile.host.clone(),
             port: profile.port,
             database: profile.database.clone(),
             username: profile.username.clone(),
             ssl_mode: profile.ssl_mode,
+            sqlite_path: profile.sqlite_path.clone(),
         }
     }
 }
@@ -101,7 +121,7 @@ pub enum FilterKind {
     Other,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableFilter {
     pub column: String,
@@ -125,7 +145,7 @@ pub enum FilterOperator {
     IsFalse,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableSort {
     pub column: String,
@@ -176,10 +196,14 @@ pub enum GridChange {
         key: Vec<Option<String>>,
         version: String,
         values: BTreeMap<String, Option<String>>,
+        #[serde(default)]
+        original: Vec<Option<String>>,
     },
     Delete {
         key: Vec<Option<String>>,
         version: String,
+        #[serde(default)]
+        original: Vec<Option<String>>,
     },
 }
 

@@ -23,6 +23,14 @@ import "./App.css";
 
 const STARTER_SQL = "SELECT current_database(), current_user;";
 
+function connectionTarget(profile: ConnectionProfile) {
+  return profile.engine === "sqlite" ? profile.sqlitePath : `${profile.username}@${profile.host}`;
+}
+
+function connectionDatabase(profile: ConnectionProfile) {
+  return profile.engine === "sqlite" ? "SQLite" : profile.database;
+}
+
 function App() {
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([]);
   const [connection, setConnection] = useState<ConnectionInfo | null>(null);
@@ -104,6 +112,7 @@ function App() {
     loadSequence.current += 1;
     setPageLoading(false);
     setConnection(info);
+    setQueryText(info.profile.engine === "sqlite" ? "SELECT sqlite_version();" : STARTER_SQL);
     setShowConnections(false);
     setSelectedTable(null);
     setTablePage(null);
@@ -244,9 +253,9 @@ function App() {
           case "insert":
             return { kind: change.kind, values: change.values };
           case "update":
-            return { kind: change.kind, key: change.key, version: change.version, values: change.values };
+            return { kind: change.kind, key: change.key, version: change.version, values: change.values, original: change.original };
           case "delete":
-            return { kind: change.kind, key: change.key, version: change.version };
+            return { kind: change.kind, key: change.key, version: change.version, original: change.original };
         }
       });
       const result = await api.applyGridChanges(selectedTable.schema, selectedTable.name, changes);
@@ -306,7 +315,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">K</div>
-          <div className="brand-copy"><strong>Koyo</strong><span>PostgreSQL workspace</span></div>
+          <div className="brand-copy"><strong>Koyo</strong><span>Database workspace</span></div>
           <button className="sidebar-icon" aria-label="Manage connections" title="Manage connections" onClick={() => setShowConnections(true)}>
             <CirclePlus size={17} />
           </button>
@@ -317,7 +326,7 @@ function App() {
           <div className="connection-summary-copy">
             <span className="small-label">Connection</span>
             <strong>{connection?.profile.name ?? "Not connected"}</strong>
-            <small>{connection ? `${connection.profile.username}@${connection.profile.host}` : "Choose a saved profile"}</small>
+            <small>{connection ? connectionTarget(connection.profile) : "Choose a saved profile"}</small>
           </div>
           {connection && <button className="sidebar-icon disconnect-button" aria-label="Disconnect" title="Disconnect" onClick={() => void disconnect()}><PlugZap size={16} /></button>}
         </section>
@@ -374,7 +383,7 @@ function App() {
           {connection ? (
             <>
               <span>{connection.currentUser}</span>
-              <span>PostgreSQL {connection.serverVersion.split(" ")[0]}</span>
+              <span>{connection.profile.engine === "sqlite" ? "SQLite" : `PostgreSQL ${connection.serverVersion.split(" ")[0]}`}</span>
             </>
           ) : (
             <span>Local profiles only</span>
@@ -385,8 +394,8 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div className="workspace-title">
-            <strong>{connection ? connection.profile.database : "PostgreSQL client"}</strong>
-            <span>{connection ? `${connection.profile.name} on ${connection.profile.host}` : "Connect to begin"}</span>
+            <strong>{connection ? connectionDatabase(connection.profile) : "Database client"}</strong>
+            <span>{connection ? `${connection.profile.name} · ${connectionTarget(connection.profile)}` : "Connect to begin"}</span>
           </div>
           <div className="topbar-actions">
             {connection ? (
@@ -552,8 +561,8 @@ function App() {
 
         {notice && activeView === "query" && <div className="toast-notice" role="status">{notice}</div>}
         <footer className="statusbar">
-          <span><span className={`status-dot ${connection ? "online" : ""}`} />{connection ? `Connected to ${connection.profile.host}:${connection.profile.port}` : "Disconnected"}</span>
-          <span>{activeView === "table" && tablePage ? `${tablePage.columns.length} columns` : "PostgreSQL"}</span>
+          <span><span className={`status-dot ${connection ? "online" : ""}`} />{connection ? `Connected to ${connection.profile.engine === "sqlite" ? connection.profile.sqlitePath : `${connection.profile.host}:${connection.profile.port}`}` : "Disconnected"}</span>
+          <span>{activeView === "table" && tablePage ? `${tablePage.columns.length} columns` : connection?.profile.engine === "sqlite" ? "SQLite" : "PostgreSQL"}</span>
           <span className="status-spacer" />
           {queryOutput && <span>{queryOutput.affectedRows.reduce((sum, count) => sum + count, 0)} rows</span>}
           <span>UTF-8</span>

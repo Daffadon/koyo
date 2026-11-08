@@ -1,4 +1,4 @@
-use crate::models::{ConnectionProfile, ProfileInput, ProfileSummary};
+use crate::models::{ConnectionProfile, Engine, ProfileInput, ProfileSummary, SslMode};
 use keyring::v1::{Entry, Error as KeyringError};
 use std::io::Write;
 #[cfg(unix)]
@@ -80,14 +80,22 @@ pub fn save_profile(
     password: Option<String>,
 ) -> Result<ProfileSummary, String> {
     let name = profile.name.trim();
+    let sqlite_path = profile.sqlite_path.trim();
     let host = profile.host.trim();
     let database = profile.database.trim();
     let username = profile.username.trim();
-    if name.is_empty() || host.is_empty() || database.is_empty() || username.is_empty() {
-        return Err("Name, host, database, and username are required.".into());
+    if name.is_empty() {
+        return Err("Connection name is required.".into());
     }
-    if profile.port == 0 {
-        return Err("Port must be between 1 and 65535.".into());
+    if profile.engine == Engine::Postgres {
+        if host.is_empty() || database.is_empty() || username.is_empty() {
+            return Err("Host, database, and username are required.".into());
+        }
+        if profile.port == 0 {
+            return Err("Port must be between 1 and 65535.".into());
+        }
+    } else if sqlite_path.is_empty() {
+        return Err("SQLite database file is required.".into());
     }
 
     let mut profiles = load_profiles(&app)?;
@@ -97,17 +105,46 @@ pub fn save_profile(
     let saved = ConnectionProfile {
         id,
         name: name.to_owned(),
-        host: host.to_owned(),
-        port: profile.port,
-        database: database.to_owned(),
-        username: username.to_owned(),
-        ssl_mode: profile.ssl_mode,
+        engine: profile.engine,
+        host: if profile.engine == Engine::Postgres {
+            host.to_owned()
+        } else {
+            String::new()
+        },
+        port: if profile.engine == Engine::Postgres {
+            profile.port
+        } else {
+            0
+        },
+        database: if profile.engine == Engine::Postgres {
+            database.to_owned()
+        } else {
+            String::new()
+        },
+        username: if profile.engine == Engine::Postgres {
+            username.to_owned()
+        } else {
+            String::new()
+        },
+        ssl_mode: if profile.engine == Engine::Postgres {
+            profile.ssl_mode
+        } else {
+            SslMode::Disable
+        },
+        sqlite_path: if profile.engine == Engine::Sqlite {
+            sqlite_path.to_owned()
+        } else {
+            String::new()
+        },
     };
     let target_changed = previous.as_ref().is_some_and(|previous| {
-        previous.host != saved.host
-            || previous.port != saved.port
-            || previous.database != saved.database
-            || previous.username != saved.username
+        previous.engine != saved.engine
+            || (saved.engine == Engine::Postgres
+                && (previous.host != saved.host
+                    || previous.port != saved.port
+                    || previous.database != saved.database
+                    || previous.username != saved.username))
+            || (saved.engine == Engine::Sqlite && previous.sqlite_path != saved.sqlite_path)
     });
 
     let old_profiles = profiles.clone();
@@ -119,8 +156,17 @@ pub fn save_profile(
         return Err("Connection profile no longer exists.".into());
     }
 
-    let password_to_save = password.filter(|password| !password.is_empty());
-    if password_to_save.is_none() && target_changed {
+    let password_to_save = if saved.engine == Engine::Postgres {
+        password.filter(|password| !password.is_empty())
+    } else {
+        None
+    };
+    let must_clear_credential = target_changed
+        && (saved.engine == Engine::Postgres
+            || previous
+                .as_ref()
+                .is_some_and(|previous| previous.engine == Engine::Postgres));
+    if password_to_save.is_none() && must_clear_credential {
         let entry = match credential_entry(id) {
             Ok(entry) => entry,
             Err(error) => return Err(error),
@@ -158,13 +204,17 @@ pub fn save_profile(
 #[tauri::command]
 pub fn delete_profile(app: AppHandle, id: Uuid) -> Result<(), String> {
     let mut profiles = load_profiles(&app)?;
+    let engine = profiles
+        .iter()
+        .find(|profile| profile.id == id)
+        .map(|profile| profile.engine)
+        .ok_or_else(|| "Connection profile does not exist.".to_string())?;
     let old_profiles = profiles.clone();
-    let old_len = profiles.len();
     profiles.retain(|profile| profile.id != id);
-    if profiles.len() == old_len {
-        return Err("Connection profile does not exist.".into());
-    }
     write_profiles(&app, &profiles)?;
+    if engine == Engine::Sqlite {
+        return Ok(());
+    }
 
     let entry = match credential_entry(id) {
         Ok(entry) => entry,
@@ -182,6 +232,24 @@ pub fn delete_profile(app: AppHandle, id: Uuid) -> Result<(), String> {
             ))
         }
     }
+}
+
+#[tauri::command]
+pub fn pick_sqlite_file(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("SQLite database", &["db", "sqlite", "sqlite3"])
+        .blocking_pick_file();
+    selected
+        .map(|path| {
+            path.into_path()
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
 }
 
 pub fn load_password(id: Uuid) -> Result<String, String> {
