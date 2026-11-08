@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ""
+          - name: windows-x64
+            platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ""
+          - name: macos-intel
+            platform: macos-15-intel
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - name: macos-apple-silicon
+            platform: macos-15
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2 \
+            xdg-utils
+
+      - name: Check version consistency
+        shell: bash
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
+          CONF_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$PKG_VERSION" != "$CARGO_VERSION" ] || [ "$PKG_VERSION" != "$CONF_VERSION" ]; then
+            echo "Version mismatch: package=$PKG_VERSION cargo=$CARGO_VERSION tauri=$CONF_VERSION"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$PKG_VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match version v$PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish draft release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Koyo v__VERSION__
+          releaseBody: |
+            Koyo desktop builds for Windows, macOS, and Linux.
+
+            These builds are unsigned. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn.
+          releaseDraft: true
+          prerelease: false
+          uploadWorkflowArtifacts: true
+          args: ${{ matrix.args }}
