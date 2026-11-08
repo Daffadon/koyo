@@ -1,5 +1,8 @@
 use crate::models::{ConnectionProfile, ProfileInput, ProfileSummary};
 use keyring::v1::{Entry, Error as KeyringError};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -34,14 +37,30 @@ fn write_profiles(app: &AppHandle, profiles: &[ConnectionProfile]) -> Result<(),
     let directory = path
         .parent()
         .ok_or_else(|| "Invalid application config path".to_string())?;
-    fs::create_dir_all(directory)
+    let mut directory_builder = fs::DirBuilder::new();
+    directory_builder.recursive(true);
+    #[cfg(unix)]
+    directory_builder.mode(0o700);
+    directory_builder
+        .create(directory)
         .map_err(|error| format!("Could not create application config directory: {error}"))?;
 
     let temporary_path = directory.join(format!(".profiles-{}.tmp", Uuid::new_v4()));
     let contents = serde_json::to_vec_pretty(profiles)
         .map_err(|error| format!("Could not encode connection profiles: {error}"))?;
-    fs::write(&temporary_path, contents)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&temporary_path)
         .map_err(|error| format!("Could not write connection profiles: {error}"))?;
+    let write_result = file.write_all(&contents);
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not write connection profiles: {error}"));
+    }
     if let Err(error) = fs::rename(&temporary_path, &path) {
         let _ = fs::remove_file(&temporary_path);
         return Err(format!("Could not save connection profiles: {error}"));
@@ -74,6 +93,7 @@ pub fn save_profile(
     let mut profiles = load_profiles(&app)?;
     let is_new = profile.id.is_none();
     let id = profile.id.unwrap_or_else(Uuid::new_v4);
+    let previous = profiles.iter().find(|item| item.id == id).cloned();
     let saved = ConnectionProfile {
         id,
         name: name.to_owned(),
@@ -83,6 +103,12 @@ pub fn save_profile(
         username: username.to_owned(),
         ssl_mode: profile.ssl_mode,
     };
+    let target_changed = previous.as_ref().is_some_and(|previous| {
+        previous.host != saved.host
+            || previous.port != saved.port
+            || previous.database != saved.database
+            || previous.username != saved.username
+    });
 
     let old_profiles = profiles.clone();
     if let Some(index) = profiles.iter().position(|item| item.id == id) {
@@ -93,8 +119,23 @@ pub fn save_profile(
         return Err("Connection profile no longer exists.".into());
     }
 
-    write_profiles(&app, &profiles)?;
     let password_to_save = password.filter(|password| !password.is_empty());
+    if password_to_save.is_none() && target_changed {
+        let entry = match credential_entry(id) {
+            Ok(entry) => entry,
+            Err(error) => return Err(error),
+        };
+        match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not remove the saved password for the changed connection target: {error}"
+                ));
+            }
+        }
+    }
+
+    write_profiles(&app, &profiles)?;
     if let Some(password) = password_to_save {
         let entry = match credential_entry(id) {
             Ok(entry) => entry,

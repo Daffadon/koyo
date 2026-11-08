@@ -31,9 +31,37 @@ export type TableSummary = {
   editable: boolean;
 };
 
+export type FilterKind = "text" | "number" | "temporal" | "boolean" | "other";
+
+export type FilterOperator =
+  | "contains"
+  | "equals"
+  | "notEquals"
+  | "lessThan"
+  | "lessThanOrEqual"
+  | "greaterThan"
+  | "greaterThanOrEqual"
+  | "isNull"
+  | "isNotNull"
+  | "isTrue"
+  | "isFalse";
+
+export type TableFilter = {
+  column: string;
+  operator: FilterOperator;
+  value: string | null;
+};
+
+export type TableSort = {
+  column: string;
+  descending: boolean;
+};
+
 export type ColumnInfo = {
   name: string;
   dataType: string;
+  filterKind: FilterKind;
+  sortable: boolean;
   nullable: boolean;
   primaryKey: boolean;
   generated: boolean;
@@ -81,8 +109,8 @@ export const api = {
   connect: (id: string) => invoke<ConnectionInfo>("connect_profile", { id }),
   disconnect: () => invoke<void>("disconnect"),
   listTables: () => invoke<TableSummary[]>("list_tables"),
-  loadTablePage: (schema: string, table: string, offset: number, limit = 100) =>
-    invoke<TablePage>("load_table_page", { schema, table, offset, limit }),
+  loadTablePage: (schema: string, table: string, offset: number, limit = 100, filters: TableFilter[] = [], sort: TableSort | null = null) =>
+    invoke<TablePage>("load_table_page", { schema, table, offset, limit, filters, sort }),
   applyGridChanges: (schema: string, table: string, changes: GridChange[]) =>
     invoke<{ applied: number }>("apply_grid_changes", { schema, table, changes }),
   runSql: (sql: string) => invoke<QueryOutput>("run_sql", { sql }),

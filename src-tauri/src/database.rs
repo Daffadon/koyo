@@ -1,7 +1,8 @@
 use crate::{
     models::{
-        ApplySummary, ColumnInfo, ConnectionInfo, GridChange, GridRow, ProfileSummary, QueryOutput,
-        QueryResultSet, TablePage, TableSummary,
+        ApplySummary, ColumnInfo, ConnectionInfo, FilterKind, FilterOperator, GridChange, GridRow,
+        ProfileSummary, QueryOutput, QueryResultSet, TableFilter, TablePage, TableSort,
+        TableSummary,
     },
     storage,
 };
@@ -33,6 +34,21 @@ struct CancelState {
 
 struct DbSession {
     client: Client,
+}
+
+struct QueryGuard<'a>(&'a AtomicBool);
+
+impl<'a> QueryGuard<'a> {
+    fn begin(active: &'a AtomicBool) -> Self {
+        active.store(true, Ordering::SeqCst);
+        Self(active)
+    }
+}
+
+impl Drop for QueryGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 struct TableMeta {
@@ -76,24 +92,35 @@ pub async fn connect_profile(
         crate::models::SslMode::Disable => SslMode::Disable,
     });
 
-    let tls_config = match profile.ssl_mode {
-        crate::models::SslMode::VerifyFull => config_platform_verifier()
-            .map_err(|error| format!("Could not initialize system TLS verification: {error}"))?,
-        // TLS is off for this profile, so this config is unreachable but keeps local
-        // connections working when the platform trust store is unavailable.
-        crate::models::SslMode::Disable => rustls_tokio_postgres::config_no_verify(),
-    };
-    let tls = MakeRustlsConnect::new(tls_config);
-    let (client, connection) = config
-        .connect(tls)
-        .await
-        .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
-
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = connection.await {
-            eprintln!("PostgreSQL connection closed: {error}");
+    let client = match profile.ssl_mode {
+        crate::models::SslMode::VerifyFull => {
+            let tls = config_platform_verifier().map_err(|error| {
+                format!("Could not initialize system TLS verification: {error}")
+            })?;
+            let (client, connection) = config
+                .connect(MakeRustlsConnect::new(tls))
+                .await
+                .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = connection.await {
+                    eprintln!("PostgreSQL connection closed: {error}");
+                }
+            });
+            client
         }
-    });
+        crate::models::SslMode::Disable => {
+            let (client, connection) = config
+                .connect(tokio_postgres::NoTls)
+                .await
+                .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = connection.await {
+                    eprintln!("PostgreSQL connection closed: {error}");
+                }
+            });
+            client
+        }
+    };
 
     let row = client
         .query_one(
@@ -102,8 +129,12 @@ pub async fn connect_profile(
         )
         .await
         .map_err(|error| format!("Could not read PostgreSQL server details: {error}"))?;
-    let current_user: String = row.get(0);
-    let server_version: String = row.get(1);
+    let current_user: String = row
+        .try_get(0)
+        .map_err(|error| format!("Could not read current PostgreSQL user: {error}"))?;
+    let server_version: String = row
+        .try_get(1)
+        .map_err(|error| format!("Could not read PostgreSQL server version: {error}"))?;
 
     let info = ConnectionInfo {
         profile: ProfileSummary::from(&profile),
@@ -215,6 +246,8 @@ pub async fn load_table_page(
     table: String,
     offset: u32,
     limit: u32,
+    filters: Vec<TableFilter>,
+    sort: Option<TableSort>,
 ) -> Result<TablePage, String> {
     let session = state.session.lock().await;
     let session = session
@@ -227,68 +260,214 @@ pub async fn load_table_page(
 
     let limit = limit.clamp(1, TABLE_PAGE_LIMIT);
     let fetch_limit = limit + 1;
-    let selected = meta
-        .columns
-        .iter()
-        .map(|column| quote_identifier(&column.name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let order = meta
-        .primary_columns()
-        .map(|column| quote_identifier(&column.name))
-        .collect::<Vec<_>>();
-    let order = if order.is_empty() {
-        "ctid".to_string()
-    } else {
-        order.join(", ")
-    };
-    let sql = format!(
-        "SELECT xmin::text, {selected} FROM {}.{} ORDER BY {order} LIMIT {fetch_limit} OFFSET {offset}",
-        quote_identifier(&schema),
-        quote_identifier(&table)
-    );
+    let (sql, params) = build_table_page_query(
+        &schema,
+        &table,
+        &meta,
+        offset,
+        fetch_limit,
+        &filters,
+        sort.as_ref(),
+    )?;
 
-    let messages = session
-        .client
-        .simple_query(&sql)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut rows = Vec::with_capacity(fetch_limit as usize);
-    for message in messages {
-        if let SimpleQueryMessage::Row(row) = message {
-            let version = row
-                .get(0)
-                .ok_or_else(|| "PostgreSQL returned a row without a version.".to_string())?
-                .to_owned();
-            let values = (0..meta.columns.len())
-                .map(|index| row.get(index + 1).map(str::to_owned))
-                .collect::<Vec<_>>();
-            let key = meta
-                .columns
-                .iter()
-                .enumerate()
-                .filter(|(_, column)| column.primary_key)
-                .map(|(index, _)| values[index].clone())
-                .collect();
-            rows.push(GridRow {
-                version,
-                key,
-                values,
-            });
-        }
+    let rows = {
+        let _active = QueryGuard::begin(&state.query_active);
+        session
+            .client
+            .query(&sql, &sql_params(&params))
+            .await
+            .map_err(|error| error.to_string())?
+    };
+    let mut page_rows = Vec::with_capacity(fetch_limit as usize);
+    for row in rows {
+        let version: String = row.try_get(0).map_err(|error| error.to_string())?;
+        let values = (0..meta.columns.len())
+            .map(|index| {
+                row.try_get::<_, Option<String>>(index + 1)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let key = meta
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| column.primary_key)
+            .map(|(index, _)| values[index].clone())
+            .collect();
+        page_rows.push(GridRow {
+            version,
+            key,
+            values,
+        });
     }
 
-    let has_more = rows.len() > limit as usize;
-    rows.truncate(limit as usize);
+    let has_more = page_rows.len() > limit as usize;
+    page_rows.truncate(limit as usize);
     let editable = meta.editable();
     Ok(TablePage {
         columns: meta.columns,
-        rows,
+        rows: page_rows,
         offset,
         limit,
         has_more,
         editable,
     })
+}
+
+fn build_table_page_query(
+    schema: &str,
+    table: &str,
+    meta: &TableMeta,
+    offset: u32,
+    limit: u32,
+    filters: &[TableFilter],
+    sort: Option<&TableSort>,
+) -> Result<(String, Vec<Option<String>>), String> {
+    let selected = meta
+        .columns
+        .iter()
+        .map(|column| format!("{}::text", quote_identifier(&column.name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut params = Vec::new();
+    let predicate = build_filter_predicate(meta, filters, &mut params)?;
+    let order = build_order_by(meta, sort)?;
+    let mut sql = format!(
+        "SELECT xmin::text, {selected} FROM {}",
+        quote_relation(schema, table)
+    );
+    if let Some(predicate) = predicate {
+        sql.push_str(" WHERE ");
+        sql.push_str(&predicate);
+    }
+    sql.push_str(&format!(" ORDER BY {order} LIMIT {limit} OFFSET {offset}"));
+    Ok((sql, params))
+}
+
+fn build_filter_predicate(
+    meta: &TableMeta,
+    filters: &[TableFilter],
+    params: &mut Vec<Option<String>>,
+) -> Result<Option<String>, String> {
+    let mut predicates = Vec::with_capacity(filters.len());
+    for filter in filters {
+        let column = find_column(meta, &filter.column)?;
+        ensure_filter_operator(column, filter.operator)?;
+        let identifier = quote_identifier(&column.name);
+        let value = filter.value.as_deref().filter(|value| !value.is_empty());
+        let predicate = match filter.operator {
+            FilterOperator::Contains => {
+                let value = value
+                    .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
+                params.push(Some(value.to_string()));
+                format!(
+                    "strpos(lower({identifier}::text), lower(${})) > 0",
+                    params.len()
+                )
+            }
+            FilterOperator::Equals
+            | FilterOperator::NotEquals
+            | FilterOperator::LessThan
+            | FilterOperator::LessThanOrEqual
+            | FilterOperator::GreaterThan
+            | FilterOperator::GreaterThanOrEqual => {
+                let value = value
+                    .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
+                let operator = match filter.operator {
+                    FilterOperator::Equals => "=",
+                    FilterOperator::NotEquals => "<>",
+                    FilterOperator::LessThan => "<",
+                    FilterOperator::LessThanOrEqual => "<=",
+                    FilterOperator::GreaterThan => ">",
+                    FilterOperator::GreaterThanOrEqual => ">=",
+                    _ => unreachable!(),
+                };
+                params.push(Some(value.to_string()));
+                format!(
+                    "{identifier} {operator} {}",
+                    filter_cast_placeholder(params.len(), column)
+                )
+            }
+            FilterOperator::IsNull => format!("{identifier} IS NULL"),
+            FilterOperator::IsNotNull => format!("{identifier} IS NOT NULL"),
+            FilterOperator::IsTrue => format!("{identifier} IS TRUE"),
+            FilterOperator::IsFalse => format!("{identifier} IS FALSE"),
+        };
+        predicates.push(predicate);
+    }
+    Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
+}
+
+fn ensure_filter_operator(column: &ColumnInfo, operator: FilterOperator) -> Result<(), String> {
+    let allowed = match column.filter_kind {
+        FilterKind::Text => matches!(
+            operator,
+            FilterOperator::Contains
+                | FilterOperator::Equals
+                | FilterOperator::NotEquals
+                | FilterOperator::IsNull
+                | FilterOperator::IsNotNull
+        ),
+        FilterKind::Number | FilterKind::Temporal => matches!(
+            operator,
+            FilterOperator::Equals
+                | FilterOperator::NotEquals
+                | FilterOperator::LessThan
+                | FilterOperator::LessThanOrEqual
+                | FilterOperator::GreaterThan
+                | FilterOperator::GreaterThanOrEqual
+                | FilterOperator::IsNull
+                | FilterOperator::IsNotNull
+        ),
+        FilterKind::Boolean => matches!(
+            operator,
+            FilterOperator::IsTrue
+                | FilterOperator::IsFalse
+                | FilterOperator::IsNull
+                | FilterOperator::IsNotNull
+        ),
+        FilterKind::Other => {
+            matches!(operator, FilterOperator::IsNull | FilterOperator::IsNotNull)
+        }
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "Filter operator is not valid for column {}.",
+            column.name
+        ))
+    }
+}
+
+fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, String> {
+    let sort_column = sort
+        .map(|sort| find_column(meta, &sort.column))
+        .transpose()?;
+    let mut terms = Vec::with_capacity(meta.columns.len() + 1);
+    if let (Some(sort), Some(column)) = (sort, sort_column) {
+        if !column.sortable {
+            return Err(format!("Column {} cannot be sorted.", column.name));
+        }
+        terms.push(format!(
+            "{} {}",
+            quote_identifier(&column.name),
+            if sort.descending { "DESC" } else { "ASC" }
+        ));
+    }
+    for column in meta.primary_columns() {
+        if sort_column.is_some_and(|sort| sort.name == column.name) {
+            continue;
+        }
+        terms.push(format!("{} ASC", quote_identifier(&column.name)));
+    }
+    if meta.primary_columns().next().is_none() {
+        if meta.relation_kind == "p" {
+            terms.push("tableoid".to_string());
+        }
+        terms.push("ctid".to_string());
+    }
+    Ok(terms.join(", "))
 }
 
 #[tauri::command]
@@ -310,6 +489,7 @@ pub async fn apply_grid_changes(
         return Err("Grid editing requires a table with a primary key.".into());
     }
 
+    let _active = QueryGuard::begin(&state.query_active);
     let transaction = session
         .client
         .transaction()
@@ -427,11 +607,30 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
         .query(
             "SELECT t.relkind::text, a.attname::text,
                     pg_catalog.format_type(a.atttypid, a.atttypmod),
+                    pg_catalog.format_type(a.atttypid, NULL),
+                    CASE COALESCE(base.typcategory, ty.typcategory)
+                        WHEN 'S' THEN 'text'
+                        WHEN 'N' THEN 'number'
+                        WHEN 'D' THEN 'temporal'
+                        WHEN 'T' THEN 'temporal'
+                        WHEN 'B' THEN 'boolean'
+                        ELSE 'other'
+                    END,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_catalog.pg_opclass oc
+                        JOIN pg_catalog.pg_am am ON am.oid = oc.opcmethod
+                        WHERE am.amname = 'btree'
+                          AND oc.opcdefault
+                          AND oc.opcintype = COALESCE(base.oid, ty.oid)
+                    ),
                     NOT a.attnotnull, a.attgenerated <> '', a.attidentity <> '',
                     COALESCE(i.indisprimary AND a.attnum = ANY(i.indkey), false)
              FROM pg_catalog.pg_class t
              JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
              JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid
+             JOIN pg_catalog.pg_type ty ON ty.oid = a.atttypid
+             LEFT JOIN pg_catalog.pg_type base ON base.oid = ty.typbasetype
              LEFT JOIN pg_catalog.pg_index i
                ON i.indrelid = t.oid AND i.indisprimary
              WHERE n.nspname::text = $1 AND t.relname::text = $2
@@ -450,13 +649,32 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
     let mut relation_kind = String::new();
     for row in rows {
         relation_kind = row.try_get(0).map_err(|error| error.to_string())?;
+        let filter_kind = match row
+            .try_get::<_, String>(4)
+            .map_err(|error| error.to_string())?
+            .as_str()
+        {
+            "text" => FilterKind::Text,
+            "number" => FilterKind::Number,
+            "temporal" => FilterKind::Temporal,
+            "boolean" => FilterKind::Boolean,
+            _ => FilterKind::Other,
+        };
+        let data_type: String = row.try_get(2).map_err(|error| error.to_string())?;
+        let filter_type: String = row.try_get(3).map_err(|error| error.to_string())?;
+        if !valid_type_name(&data_type) || !valid_type_name(&filter_type) {
+            return Err("PostgreSQL returned an invalid column type name.".into());
+        }
         columns.push(ColumnInfo {
             name: row.try_get(1).map_err(|error| error.to_string())?,
-            data_type: row.try_get(2).map_err(|error| error.to_string())?,
-            nullable: row.try_get(3).map_err(|error| error.to_string())?,
-            generated: row.try_get(4).map_err(|error| error.to_string())?,
-            identity: row.try_get(5).map_err(|error| error.to_string())?,
-            primary_key: row.try_get(6).map_err(|error| error.to_string())?,
+            data_type,
+            filter_type,
+            filter_kind,
+            sortable: row.try_get(5).map_err(|error| error.to_string())?,
+            nullable: row.try_get(6).map_err(|error| error.to_string())?,
+            generated: row.try_get(7).map_err(|error| error.to_string())?,
+            identity: row.try_get(8).map_err(|error| error.to_string())?,
+            primary_key: row.try_get(9).map_err(|error| error.to_string())?,
         });
     }
     Ok(TableMeta {
@@ -594,6 +812,34 @@ fn cast_placeholder(index: usize, column: &ColumnInfo) -> String {
     format!("${index}::text::{}", column.data_type)
 }
 
+fn filter_cast_placeholder(index: usize, column: &ColumnInfo) -> String {
+    format!("${index}::text::{}", column.filter_type)
+}
+
+fn valid_type_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut quoted = false;
+    for character in name.chars() {
+        if character == '"' {
+            quoted = !quoted;
+            continue;
+        }
+        if quoted
+            || character.is_ascii_alphanumeric()
+            || matches!(
+                character,
+                '_' | '$' | ' ' | '(' | ')' | ',' | '.' | '[' | ']'
+            )
+        {
+            continue;
+        }
+        return false;
+    }
+    !quoted
+}
+
 fn sql_params(values: &[Option<String>]) -> Vec<&(dyn ToSql + Sync)> {
     values
         .iter()
@@ -622,11 +868,218 @@ fn quote_identifier(identifier: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::quote_identifier;
+    use super::{
+        ColumnInfo, FilterKind, FilterOperator, TableFilter, TableMeta, TableSort,
+        build_table_page_query, quote_identifier, valid_type_name,
+    };
+
+    fn column(
+        name: &str,
+        data_type: &str,
+        filter_kind: FilterKind,
+        primary_key: bool,
+    ) -> ColumnInfo {
+        ColumnInfo {
+            name: name.to_string(),
+            data_type: data_type.to_string(),
+            filter_type: data_type.to_string(),
+            filter_kind,
+            sortable: true,
+            nullable: true,
+            primary_key,
+            generated: false,
+            identity: false,
+        }
+    }
+
+    fn table_meta(columns: Vec<ColumnInfo>, relation_kind: &str) -> TableMeta {
+        TableMeta {
+            columns,
+            relation_kind: relation_kind.to_string(),
+        }
+    }
 
     #[test]
     fn quotes_embedded_identifier_quotes() {
         assert_eq!(quote_identifier("odd\"table"), "\"odd\"\"table\"");
+    }
+
+    #[test]
+    fn validates_catalog_type_names() {
+        assert!(valid_type_name("timestamp with time zone"));
+        assert!(valid_type_name("character varying(32)"));
+        assert!(valid_type_name("public.\"odd type\"[]"));
+        assert!(valid_type_name("public.\"order-status\""));
+        assert!(valid_type_name("public.\"price$\""));
+        assert!(!valid_type_name("text); SELECT pg_sleep(1); --"));
+        assert!(!valid_type_name("\"unterminated"));
+        assert!(!valid_type_name(""));
+    }
+
+    #[test]
+    fn builds_parameterized_filters_and_sorted_order() {
+        let meta = table_meta(
+            vec![
+                column("id", "integer", FilterKind::Number, true),
+                column("name", "text", FilterKind::Text, false),
+                column("active", "boolean", FilterKind::Boolean, false),
+            ],
+            "r",
+        );
+        let filters = vec![
+            TableFilter {
+                column: "name".into(),
+                operator: FilterOperator::Contains,
+                value: Some("a_b%".into()),
+            },
+            TableFilter {
+                column: "id".into(),
+                operator: FilterOperator::GreaterThan,
+                value: Some("2".into()),
+            },
+            TableFilter {
+                column: "active".into(),
+                operator: FilterOperator::IsTrue,
+                value: None,
+            },
+        ];
+        let sort = TableSort {
+            column: "name".into(),
+            descending: true,
+        };
+        let (sql, params) =
+            build_table_page_query("public", "items", &meta, 10, 101, &filters, Some(&sort))
+                .expect("build page query");
+
+        assert!(sql.contains("strpos(lower(\"name\"::text), lower($1)) > 0"));
+        assert!(sql.contains("\"id\" > $2::text::integer"));
+        assert!(sql.contains("\"active\" IS TRUE"));
+        assert!(sql.contains("ORDER BY \"name\" DESC, \"id\" ASC"));
+        assert!(sql.contains("LIMIT 101 OFFSET 10"));
+        assert_eq!(params, vec![Some("a_b%".into()), Some("2".into())]);
+    }
+
+    #[test]
+    fn filter_casts_use_type_without_typmod() {
+        let mut code = column("code", "character varying(3)", FilterKind::Text, false);
+        code.filter_type = "character varying".into();
+        let meta = table_meta(vec![code], "r");
+        let filter = TableFilter {
+            column: "code".into(),
+            operator: FilterOperator::Equals,
+            value: Some("abcdef".into()),
+        };
+        let (sql, _) = build_table_page_query("public", "items", &meta, 0, 101, &[filter], None)
+            .expect("build filter query");
+        assert!(sql.contains("\"code\" = $1::text::character varying"));
+        assert!(!sql.contains("character varying(3)"));
+    }
+
+    #[test]
+    fn rejects_sort_on_column_without_btree_order() {
+        let mut payload = column("payload", "json", FilterKind::Other, false);
+        payload.sortable = false;
+        let meta = table_meta(vec![payload], "r");
+        let sort = TableSort {
+            column: "payload".into(),
+            descending: false,
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[], Some(&sort)).is_err()
+        );
+    }
+
+    #[test]
+    fn keyless_tables_use_ctid_for_stable_paging() {
+        let meta = table_meta(vec![column("label", "text", FilterKind::Text, false)], "r");
+        let (default_sql, _) = build_table_page_query("public", "items", &meta, 0, 101, &[], None)
+            .expect("build default query");
+        assert!(default_sql.contains("ORDER BY ctid"));
+
+        let sort = TableSort {
+            column: "label".into(),
+            descending: false,
+        };
+        let (sorted_sql, _) =
+            build_table_page_query("public", "items", &meta, 0, 101, &[], Some(&sort))
+                .expect("build sorted query");
+        assert!(sorted_sql.contains("ORDER BY \"label\" ASC, ctid"));
+
+        let partitioned = table_meta(vec![column("label", "text", FilterKind::Text, false)], "p");
+        let (partitioned_sql, _) =
+            build_table_page_query("public", "items", &partitioned, 0, 101, &[], None)
+                .expect("build partitioned query");
+        assert!(partitioned_sql.contains("ORDER BY tableoid, ctid"));
+    }
+
+    #[test]
+    fn rejects_operator_that_does_not_fit_column_type() {
+        let meta = table_meta(vec![column("id", "integer", FilterKind::Number, true)], "r");
+        let filter = TableFilter {
+            column: "id".into(),
+            operator: FilterOperator::Contains,
+            value: Some("1".into()),
+        };
+        assert!(build_table_page_query("public", "items", &meta, 0, 101, &[filter], None).is_err());
+    }
+
+    #[test]
+    fn rejects_missing_values_and_unknown_columns() {
+        let meta = table_meta(vec![column("name", "text", FilterKind::Text, false)], "r");
+        let missing_value = TableFilter {
+            column: "name".into(),
+            operator: FilterOperator::Equals,
+            value: Some(String::new()),
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[missing_value], None)
+                .is_err()
+        );
+
+        let unknown_column = TableFilter {
+            column: "missing".into(),
+            operator: FilterOperator::IsNull,
+            value: None,
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[unknown_column], None)
+                .is_err()
+        );
+
+        let unknown_sort = TableSort {
+            column: "missing".into(),
+            descending: false,
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[], Some(&unknown_sort))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn other_columns_only_accept_null_filters() {
+        let meta = table_meta(
+            vec![column("payload", "jsonb", FilterKind::Other, false)],
+            "r",
+        );
+        let null_filter = TableFilter {
+            column: "payload".into(),
+            operator: FilterOperator::IsNull,
+            value: None,
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[null_filter], None).is_ok()
+        );
+
+        let equals_filter = TableFilter {
+            column: "payload".into(),
+            operator: FilterOperator::Equals,
+            value: Some("{}".into()),
+        };
+        assert!(
+            build_table_page_query("public", "items", &meta, 0, 101, &[equals_filter], None)
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -653,10 +1106,11 @@ mod tests {
                 "CREATE TABLE public.{table} (
                      id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
                      name text NOT NULL,
-                     note text
+                     note text,
+                     code varchar(3)
                  );
                  CREATE TABLE public.{keyless} (label text);
-                 INSERT INTO public.{table} (name, note) VALUES ('seed', 'old');"
+                 INSERT INTO public.{table} (name, note, code) VALUES ('seed', 'old', 'abc');"
             ))
             .await
             .expect("create fixture tables");
@@ -665,12 +1119,52 @@ mod tests {
             .await
             .expect("read table metadata");
         assert!(meta.editable());
+        assert_eq!(meta.columns[0].filter_kind, FilterKind::Number);
+        assert_eq!(meta.columns[1].filter_kind, FilterKind::Text);
         assert!(
             !load_table_meta(&client, "public", &keyless)
                 .await
                 .expect("read keyless metadata")
                 .editable()
         );
+
+        let filters = vec![TableFilter {
+            column: "name".into(),
+            operator: FilterOperator::Contains,
+            value: Some("see".into()),
+        }];
+        let sort = TableSort {
+            column: "name".into(),
+            descending: true,
+        };
+        let (page_sql, page_params) =
+            build_table_page_query("public", &table, &meta, 0, 10, &filters, Some(&sort))
+                .expect("build filtered page query");
+        let page_rows = client
+            .query(&page_sql, &sql_params(&page_params))
+            .await
+            .expect("execute filtered page query");
+        assert_eq!(page_rows.len(), 1);
+        assert_eq!(
+            page_rows[0]
+                .try_get::<_, String>(2)
+                .expect("read filtered name"),
+            "seed"
+        );
+
+        let over_length = TableFilter {
+            column: "code".into(),
+            operator: FilterOperator::Equals,
+            value: Some("abcdef".into()),
+        };
+        let (code_sql, code_params) =
+            build_table_page_query("public", &table, &meta, 0, 10, &[over_length], None)
+                .expect("build over-length filter query");
+        let code_rows = client
+            .query(&code_sql, &sql_params(&code_params))
+            .await
+            .expect("execute over-length filter query");
+        assert!(code_rows.is_empty());
 
         let row = client
             .query_one(

@@ -16,5 +16,7 @@
 - **Filter kind**: Column classification that determines which filter operators are available: text, number, temporal, boolean, or other.
 - **Table filter**: A per-column condition applied server-side before paging. Active filters combine with AND.
 - **Sort state**: One sort column and direction. Primary-key columns, or `ctid` for keyless tables, break ties.
+- **Sortable column**: Column whose type has a default btree ordering operator. Other columns cannot be sorted.
+- **Cancel token**: PostgreSQL connection token used to stop the active query, table page load, or edit batch.
 - **Structure view**: Read-only metadata for a relation: columns, indexes, constraints, and object definitions.
 - **Object definition**: PostgreSQL-generated SQL for a view, index, or constraint. It is not a reconstructed full `CREATE TABLE` statement.

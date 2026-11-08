@@ -5,7 +5,7 @@ Koyo is a cross-platform desktop client for PostgreSQL, built with Tauri 2, Reac
 ## First-release features
 
 - Save PostgreSQL connection profiles. Passwords are kept in Windows Credential Manager, macOS Keychain, or Linux Secret Service; profile files contain no passwords.
-- Browse schemas and tables, then preview table rows.
+- Browse schemas and tables, then preview table rows. Filter columns server-side, sort by one column, page through the results, and cancel a slow page load.
 - Edit rows for tables with primary keys. Inserts, updates, and deletes stay staged until **Apply changes**. The batch runs in one transaction and rolls back on stale-row conflicts. If the commit result is uncertain, Koyo clears staged edits and attempts to reload; reconnect and reload before retrying if needed.
 - Run SQL with the connected PostgreSQL role's permissions. Results show PostgreSQL text values and each result set is capped at 1,000 displayed rows. A running query can be cancelled.
 - Verify TLS server identity by default. **Disable TLS** is available for trusted local connections only.
@@ -48,7 +48,7 @@ See [ADR 0001](docs/adr/0001-tauri-postgres.md) for architecture decisions and t
 
 ## Releases
 
-The release workflow builds Windows x64, Linux x64, macOS Intel, and macOS Apple Silicon. It runs on tags and manual dispatch, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Windows x64, Linux x64, macOS Intel, and macOS Apple Silicon. It runs on tags, uploads workflow artifacts, and creates a draft GitHub release.
 
 Keep these versions equal, then push a matching tag:
 

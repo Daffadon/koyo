@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { sql } from "@codemirror/lang-sql";
 import {
@@ -16,7 +16,7 @@ import {
   Terminal,
   X,
 } from "lucide-react";
-import { api, type ConnectionInfo, type ConnectionProfile, type GridChange, type QueryOutput, type TablePage, type TableSummary } from "./api";
+import { api, type ConnectionInfo, type ConnectionProfile, type GridChange, type QueryOutput, type TableFilter, type TablePage, type TableSort, type TableSummary } from "./api";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { DataGrid, ResultGrid, type StagedGridChange } from "./components/DataGrid";
 import "./App.css";
@@ -32,6 +32,8 @@ function App() {
   const [activeView, setActiveView] = useState<"query" | "table">("query");
   const [selectedTable, setSelectedTable] = useState<TableSummary | null>(null);
   const [tablePage, setTablePage] = useState<TablePage | null>(null);
+  const [filters, setFilters] = useState<TableFilter[]>([]);
+  const [sort, setSort] = useState<TableSort | null>(null);
   const [pageLoading, setPageLoading] = useState(false);
   const [queryText, setQueryText] = useState(STARTER_SQL);
   const [queryOutput, setQueryOutput] = useState<QueryOutput | null>(null);
@@ -42,6 +44,7 @@ function App() {
   const [queryDuration, setQueryDuration] = useState<number | null>(null);
   const [stagedChanges, setStagedChanges] = useState<StagedGridChange[]>([]);
   const [notice, setNotice] = useState("");
+  const loadSequence = useRef(0);
 
   const schemaNames = useMemo(
     () => [...new Set(tables.map((table) => table.schema))].sort((left, right) => left.localeCompare(right)),
@@ -54,10 +57,14 @@ function App() {
       setProfiles(saved);
       if (connection && !saved.some((profile) => profile.id === connection.profile.id)) {
         await api.disconnect();
+        loadSequence.current += 1;
+        setPageLoading(false);
         setConnection(null);
         setTables([]);
         setTablePage(null);
         setSelectedTable(null);
+        setFilters([]);
+        setSort(null);
         setStagedChanges([]);
         setActiveView("query");
       }
@@ -78,7 +85,7 @@ function App() {
   async function refreshCurrentTable() {
     if (!selectedTable) return;
     if (stagedChanges.length > 0 && !window.confirm("Discard staged table changes and reload this page?")) return;
-    await loadTable(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0);
+    await loadTable(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0, filters, sort);
   }
 
   async function refreshTables() {
@@ -94,10 +101,14 @@ function App() {
   }, []);
 
   async function handleConnected(info: ConnectionInfo) {
+    loadSequence.current += 1;
+    setPageLoading(false);
     setConnection(info);
     setShowConnections(false);
     setSelectedTable(null);
     setTablePage(null);
+    setFilters([]);
+    setSort(null);
     setStagedChanges([]);
     setQueryOutput(null);
     setQueryError("");
@@ -114,37 +125,66 @@ function App() {
     await refreshProfiles();
   }
 
-  async function loadTable(schema: string, table: string, offset: number) {
+  async function loadTable(
+    schema: string,
+    table: string,
+    offset: number,
+    nextFilters: TableFilter[],
+    nextSort: TableSort | null,
+  ) {
     setPageLoading(true);
+    const sequence = ++loadSequence.current;
     try {
-      const page = await api.loadTablePage(schema, table, offset);
+      const page = await api.loadTablePage(schema, table, offset, 100, nextFilters, nextSort);
+      if (sequence !== loadSequence.current) return;
       setTablePage(page);
+      setFilters(nextFilters);
+      setSort(nextSort);
       setSelectedTable(tables.find((item) => item.schema === schema && item.name === table) ?? { schema, name: table, editable: page.editable });
       setActiveView("table");
       setQueryError("");
       setStagedChanges([]);
     } catch (reason) {
-      setNotice(String(reason));
+      if (sequence === loadSequence.current) setNotice(String(reason));
     } finally {
-      setPageLoading(false);
+      if (sequence === loadSequence.current) setPageLoading(false);
     }
   }
 
   async function openTable(table: TableSummary) {
     if (stagedChanges.length > 0 && !window.confirm("Discard staged table changes and open another table?")) return;
-    await loadTable(table.schema, table.name, 0);
+    await loadTable(table.schema, table.name, 0, [], null);
   }
 
   async function changePage(offset: number) {
     if (!selectedTable) return;
-    if (stagedChanges.length > 0 && !window.confirm("Discard staged table changes and change page?")) return;
-    await loadTable(selectedTable.schema, selectedTable.name, offset);
+    if (stagedChanges.length > 0 && !window.confirm("Discard staged changes and change page?")) return;
+    await loadTable(selectedTable.schema, selectedTable.name, offset, filters, sort);
+  }
+
+  async function applyFilters(nextFilters: TableFilter[]) {
+    if (!selectedTable || stagedChanges.length > 0) return;
+    await loadTable(selectedTable.schema, selectedTable.name, 0, nextFilters, sort);
+  }
+
+  async function changeSort(column: string) {
+    if (!selectedTable || stagedChanges.length > 0) return;
+    const nextSort = !sort || sort.column !== column
+      ? { column, descending: false }
+      : !sort.descending
+        ? { column, descending: true }
+        : null;
+    await loadTable(selectedTable.schema, selectedTable.name, 0, filters, nextSort);
   }
 
   function closeTableTab() {
     if (stagedChanges.length > 0 && !window.confirm("Discard staged changes and close table?")) return;
+    loadSequence.current += 1;
+    setPageLoading(false);
     setSelectedTable(null);
     setTablePage(null);
+    setFilters([]);
+    setSort(null);
     setStagedChanges([]);
     setActiveView("query");
   }
@@ -170,14 +210,15 @@ function App() {
     }
   }
 
-  async function cancelQuery() {
-    if (!queryRunning || queryCancelling) return;
+  async function cancelQuery(tableOnly = false) {
+    if (queryCancelling || (tableOnly && queryRunning)) return;
     setQueryCancelling(true);
     try {
       await api.cancelQuery();
       setNotice("Cancellation requested.");
     } catch (reason) {
       setNotice(String(reason));
+    } finally {
       setQueryCancelling(false);
     }
   }
@@ -211,14 +252,14 @@ function App() {
       const result = await api.applyGridChanges(selectedTable.schema, selectedTable.name, changes);
       setStagedChanges([]);
       setNotice(`${result.applied} staged ${result.applied === 1 ? "change" : "changes"} applied.`);
-      const page = await api.loadTablePage(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0);
+      const page = await api.loadTablePage(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0, 100, filters, sort);
       setTablePage(page);
     } catch (reason) {
       const message = String(reason);
       if (message.startsWith("COMMIT_OUTCOME_UNKNOWN:")) {
         setStagedChanges([]);
         try {
-          const page = await api.loadTablePage(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0);
+          const page = await api.loadTablePage(selectedTable.schema, selectedTable.name, tablePage?.offset ?? 0, 100, filters, sort);
           setTablePage(page);
           setNotice("Commit result could not be confirmed. Page reloaded; verify data before retrying.");
         } catch {
@@ -242,10 +283,14 @@ function App() {
     if (stagedChanges.length > 0 && !window.confirm("Discard staged table changes before disconnecting?")) return;
     try {
       await api.disconnect();
+      loadSequence.current += 1;
+      setPageLoading(false);
       setConnection(null);
       setTables([]);
       setSelectedTable(null);
       setTablePage(null);
+      setFilters([]);
+      setSort(null);
       setQueryOutput(null);
       setStagedChanges([]);
       setActiveView("query");
@@ -484,7 +529,20 @@ function App() {
               </div>
               {notice && <div className="notice-bar" role="status">{notice}</div>}
               {tablePage ? (
-                <DataGrid page={tablePage} changes={stagedChanges} onChanges={setStagedChanges} onPage={(offset) => void changePage(offset)} />
+                <DataGrid
+                  key={`${selectedTable?.schema}.${selectedTable?.name}:${JSON.stringify(filters)}`}
+                  page={tablePage}
+                  changes={stagedChanges}
+                  filters={filters}
+                  sort={sort}
+                  busy={pageLoading}
+                  cancelling={queryCancelling}
+                  onChanges={setStagedChanges}
+                  onPage={(offset) => void changePage(offset)}
+                  onApplyFilters={(next) => void applyFilters(next)}
+                  onSort={(column) => void changeSort(column)}
+                  onCancel={() => void cancelQuery(true)}
+                />
               ) : (
                 <div className="table-loading">{pageLoading ? "Loading table…" : "Choose a table from the explorer."}</div>
               )}

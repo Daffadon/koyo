@@ -77,7 +77,7 @@ The design constraints are:
 
 - Extend relation metadata with relation kind and a filter kind per column.
 - Add a relation-list command that returns tables, partitioned tables, views, and materialized views.
-- Add a relation-page command that accepts an optional filter list and sort state.
+- Extend the table-page command with an optional filter list and sort state.
 - Use the extended query protocol for filtered pages so values remain parameters. Select column values as text to preserve the existing grid contract.
 - Do not select `xmin` for views or materialized views; they are read-only and need no row version.
 - Add a structure command that returns columns, indexes, constraints, and object definitions for one relation.
@@ -85,6 +85,9 @@ The design constraints are:
 ## Consequences
 
 - Filters and sort are server-side and work across pages.
+- Columns without a default btree ordering operator cannot be sorted.
+- Table page queries and edit batches use the connection cancel token; a slow load can be cancelled.
+- Filter values are cast to the column's typmod-free type, so a filter cannot silently truncate or round the input.
 - The SQL builder needs a type-aware filter model; arbitrary predicates remain available through the SQL workbench.
 - Contains filtering scans the relation and cannot use a normal B-tree index.
 - Offset paging can skip or repeat rows when data changes concurrently. This limitation already exists and is not solved here.

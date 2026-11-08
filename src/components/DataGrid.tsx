@@ -1,18 +1,116 @@
-import { useMemo } from "react";
-import { Plus, Trash2, Undo2 } from "lucide-react";
-import type { Cell, ColumnInfo, GridChange, GridRow, QueryResultSet, TablePage } from "../api";
+import { useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Plus, Square, Trash2, Undo2 } from "lucide-react";
+import type {
+  Cell,
+  ColumnInfo,
+  FilterKind,
+  FilterOperator,
+  GridChange,
+  GridRow,
+  QueryResultSet,
+  TableFilter,
+  TablePage,
+  TableSort,
+} from "../api";
 
 export type StagedGridChange = GridChange & { localId: string };
 
 type EditableProps = {
   page: TablePage;
   changes: StagedGridChange[];
+  filters: TableFilter[];
+  sort: TableSort | null;
+  busy: boolean;
+  cancelling: boolean;
   onChanges: (changes: StagedGridChange[]) => void;
   onPage: (offset: number) => void;
+  onApplyFilters: (filters: TableFilter[]) => void;
+  onSort: (column: string) => void;
+  onCancel: () => void;
 };
 
+type FilterDraft = {
+  operator: FilterOperator | "none";
+  value: string;
+};
 
-export function DataGrid({ page, changes, onChanges, onPage }: EditableProps) {
+function needsValue(operator: FilterOperator | "none") {
+  return [
+    "contains",
+    "equals",
+    "notEquals",
+    "lessThan",
+    "lessThanOrEqual",
+    "greaterThan",
+    "greaterThanOrEqual",
+  ].includes(operator);
+}
+
+function operatorOptions(kind: FilterKind): Array<{ value: FilterOperator; label: string }> {
+  switch (kind) {
+    case "text":
+      return [
+        { value: "contains", label: "contains" },
+        { value: "equals", label: "equals" },
+        { value: "notEquals", label: "not equals" },
+        { value: "isNull", label: "is null" },
+        { value: "isNotNull", label: "is not null" },
+      ];
+    case "number":
+    case "temporal":
+      return [
+        { value: "equals", label: "equals" },
+        { value: "notEquals", label: "not equals" },
+        { value: "lessThan", label: "less than" },
+        { value: "lessThanOrEqual", label: "at most" },
+        { value: "greaterThan", label: "greater than" },
+        { value: "greaterThanOrEqual", label: "at least" },
+        { value: "isNull", label: "is null" },
+        { value: "isNotNull", label: "is not null" },
+      ];
+    case "boolean":
+      return [
+        { value: "isTrue", label: "is true" },
+        { value: "isFalse", label: "is false" },
+        { value: "isNull", label: "is null" },
+        { value: "isNotNull", label: "is not null" },
+      ];
+    case "other":
+      return [
+        { value: "isNull", label: "is null" },
+        { value: "isNotNull", label: "is not null" },
+      ];
+  }
+}
+
+
+export function DataGrid({
+  page,
+  changes,
+  filters,
+  sort,
+  busy,
+  cancelling,
+  onChanges,
+  onPage,
+  onApplyFilters,
+  onSort,
+  onCancel,
+}: EditableProps) {
+  const [drafts, setDrafts] = useState<Record<string, FilterDraft>>(() =>
+    Object.fromEntries(
+      page.columns.map((column) => {
+        const filter = filters.find((item) => item.column === column.name);
+        return [
+          column.name,
+          {
+            operator: filter?.operator ?? "none",
+            value: filter?.value ?? "",
+          },
+        ];
+      }),
+    ),
+  );
   const pendingByKey = useMemo(() => {
     const map = new Map<string, StagedGridChange>();
     for (const change of changes) {
@@ -22,6 +120,42 @@ export function DataGrid({ page, changes, onChanges, onPage }: EditableProps) {
   }, [changes]);
   const inserts = changes.filter((change) => change.kind === "insert");
   const pageNumber = Math.floor(page.offset / page.limit) + 1;
+  const filterLocked = changes.length > 0 || busy;
+  const hasDrafts = Object.values(drafts).some((draft) => draft.operator !== "none");
+  const hasAppliedFilters = filters.length > 0;
+  const hasIncompleteFilter = Object.values(drafts).some(
+    (draft) => draft.operator !== "none" && needsValue(draft.operator) && draft.value === "",
+  );
+
+  function applyFilters() {
+    if (filterLocked || hasIncompleteFilter) return;
+    const next = page.columns.flatMap((column) => {
+      const draft = drafts[column.name];
+      if (!draft || draft.operator === "none") return [];
+      if (needsValue(draft.operator) && draft.value === "") return [];
+      return [{
+        column: column.name,
+        operator: draft.operator,
+        value: needsValue(draft.operator) ? draft.value : null,
+      }];
+    });
+    onApplyFilters(next);
+  }
+
+  function clearFilters() {
+    if (filterLocked) return;
+    setDrafts(Object.fromEntries(
+      page.columns.map((column) => [column.name, { operator: "none" as const, value: "" }]),
+    ));
+    onApplyFilters([]);
+  }
+
+  function updateFilter(column: string, patch: Partial<FilterDraft>) {
+    setDrafts((current) => ({
+      ...current,
+      [column]: { ...current[column], ...patch },
+    }));
+  }
 
   function updateCell(row: GridRow, column: ColumnInfo, index: number, value: Cell) {
     const key = JSON.stringify(row.key);
@@ -77,8 +211,26 @@ export function DataGrid({ page, changes, onChanges, onPage }: EditableProps) {
           )}
         </div>
         <div className="table-tools">
+          {busy && (
+            <button className="button-small" onClick={onCancel} disabled={cancelling}>
+              <Square size={10} fill="currentColor" />
+              {cancelling ? "Stopping" : "Cancel"}
+            </button>
+          )}
+          {filterLocked && changes.length > 0 && (
+            <span className="filter-lock">Apply or discard edits to filter or sort.</span>
+          )}
+          <button className="button-small" onClick={clearFilters} disabled={filterLocked || (!hasDrafts && !hasAppliedFilters)}>Clear</button>
+          <button
+            className="button-small"
+            onClick={applyFilters}
+            disabled={filterLocked || hasIncompleteFilter || (!hasDrafts && !hasAppliedFilters)}
+            title={hasIncompleteFilter ? "Enter a value for every active filter." : "Apply filters"}
+          >
+            Apply filters
+          </button>
           {page.editable && (
-            <button className="button-small button-add" onClick={() => onChanges([
+            <button className="button-small button-add" disabled={busy} onClick={() => onChanges([
               ...changes,
               { localId: crypto.randomUUID(), kind: "insert", values: {} },
             ])}>
@@ -86,8 +238,8 @@ export function DataGrid({ page, changes, onChanges, onPage }: EditableProps) {
             </button>
           )}
           <span className="page-label">Page {pageNumber}</span>
-          <button className="page-button" aria-label="Previous page" disabled={page.offset === 0} onClick={() => onPage(Math.max(0, page.offset - page.limit))}>‹</button>
-          <button className="page-button" aria-label="Next page" disabled={!page.hasMore} onClick={() => onPage(page.offset + page.limit)}>›</button>
+          <button className="page-button" aria-label="Previous page" disabled={busy || page.offset === 0} onClick={() => onPage(Math.max(0, page.offset - page.limit))}>‹</button>
+          <button className="page-button" aria-label="Next page" disabled={busy || !page.hasMore} onClick={() => onPage(page.offset + page.limit)}>›</button>
         </div>
       </div>
 
@@ -96,12 +248,77 @@ export function DataGrid({ page, changes, onChanges, onPage }: EditableProps) {
           <thead>
             <tr>
               {page.editable && <th className="row-action-head" aria-label="Row actions" />}
-              {page.columns.map((column) => (
-                <th key={column.name}>
-                  <span>{column.name}</span>
-                  <small>{column.dataType}</small>
-                </th>
-              ))}
+              {page.columns.map((column) => {
+                const activeSort = column.sortable && sort?.column === column.name;
+                return (
+                  <th
+                    key={column.name}
+                    aria-sort={activeSort ? (sort?.descending ? "descending" : "ascending") : "none"}
+                  >
+                    <button
+                      type="button"
+                      className={`sort-button ${activeSort ? "is-sorted" : ""}`}
+                      disabled={filterLocked || !column.sortable}
+                      title={!column.sortable
+                        ? "This type has no default sort order."
+                        : changes.length > 0
+                          ? "Apply or discard staged edits before sorting."
+                          : `Sort by ${column.name}`}
+                      onClick={() => onSort(column.name)}
+                    >
+                      <span>{column.name}</span>
+                      <small>{column.dataType}</small>
+                      {activeSort && sort
+                        ? sort.descending ? <ArrowDown size={12} /> : <ArrowUp size={12} />
+                        : <ArrowUpDown size={12} />}
+                    </button>
+                  </th>
+                );
+              })}
+            </tr>
+            <tr className="filter-row">
+              {page.editable && <th className="row-action-head" aria-label="Filter actions" />}
+              {page.columns.map((column) => {
+                const draft = drafts[column.name] ?? { operator: "none" as const, value: "" };
+                return (
+                  <th key={column.name}>
+                    <div className="filter-cell">
+                      <select
+                        aria-label={`${column.name} filter operator`}
+                        value={draft.operator}
+                        disabled={filterLocked}
+                        onChange={(event) => {
+                          const operator = event.currentTarget.value as FilterOperator | "none";
+                          updateFilter(column.name, {
+                            operator,
+                            value: needsValue(operator) ? draft.value : "",
+                          });
+                        }}
+                      >
+                        <option value="none">No filter</option>
+                        {operatorOptions(column.filterKind).map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </select>
+                      {needsValue(draft.operator) && (
+                        <input
+                          aria-label={`${column.name} filter value`}
+                          value={draft.value}
+                          disabled={filterLocked}
+                          placeholder="Value"
+                          onChange={(event) => updateFilter(column.name, { value: event.currentTarget.value })}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              applyFilters();
+                            }
+                          }}
+                        />
+                      )}
+                    </div>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>

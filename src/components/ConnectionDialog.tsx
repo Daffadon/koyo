@@ -32,6 +32,13 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
   const nameRef = useRef<HTMLInputElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const selectedProfile = profiles.find((profile) => profile.id === profileId);
+  const targetChanged = selectedProfile !== undefined && (
+    form.host !== selectedProfile.host ||
+    form.port !== selectedProfile.port ||
+    form.database !== selectedProfile.database ||
+    form.username !== selectedProfile.username
+  );
 
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
@@ -233,9 +240,10 @@ export function ConnectionDialog({ profiles, activeProfileId, canConnect, onClos
                 value={password}
                 onChange={(event) => setPassword(event.currentTarget.value)}
                 autoComplete="new-password"
-                placeholder={profileId ? "Leave blank to keep saved password" : "Can be blank for passwordless auth"}
+                placeholder={profileId ? targetChanged ? "Enter password for the new target" : "Leave blank to keep saved password" : "Can be blank for passwordless auth"}
               />
             </label>
+            {targetChanged && <p className="quiet-copy">Changing host, port, database, or username clears the saved password.</p>}
             <label>
               TLS mode
               <select value={form.sslMode} onChange={(event) => updateForm("sslMode", event.currentTarget.value as SslMode)}>

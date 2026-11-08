@@ -187,6 +187,18 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .data-grid { width: 100%; border-collapse: separate; border-spacing: 0; color: var(--ink-soft); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .data-grid th { position: sticky; z-index: 1; top: 0; min-width: 120px; padding: 8px 10px 7px; border-right: 1px solid #e5ebe6; border-bottom: 1px solid #d9e3dd; color: #405b5e; background: #f3f7f2; font-size: 11px; font-weight: 650; text-align: left; white-space: nowrap; }
 .data-grid th small { display: block; margin-top: 3px; color: #7f8f8a; font-family: inherit; font-size: 10px; font-weight: 450; }
+.sort-button { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto; padding: 0; border: 0; color: inherit; background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.sort-button span { overflow: hidden; text-overflow: ellipsis; }
+.sort-button small { grid-column: 1; }
+.sort-button svg { grid-column: 2; grid-row: 1 / 3; align-self: center; margin-left: 6px; opacity: 0.55; }
+.sort-button.is-sorted svg { color: #316b5a; opacity: 1; }
+.sort-button:disabled { cursor: not-allowed; }
+.filter-row th { position: static; padding: 4px 6px; background: #f8faf7; }
+.filter-cell { display: flex; min-width: 96px; flex-direction: column; gap: 3px; }
+.filter-cell select, .filter-cell input { width: 100%; min-height: 24px; padding: 3px 5px; border: 1px solid #d5e1d9; border-radius: 3px; color: #233a3e; background: #fff; font-family: inherit; font-size: 10.5px; }
+.filter-cell select:focus, .filter-cell input:focus { border-color: #6fa898; outline: none; }
+.filter-cell select:disabled, .filter-cell input:disabled { color: #8c9992; background: #f1f4ef; }
+.filter-lock { max-width: 190px; color: #8a6a4a; font-size: 10px; line-height: 1.2; white-space: normal; }
 .data-grid td { max-width: 380px; min-width: 120px; height: 36px; padding: 3px 8px; overflow: hidden; border-right: 1px solid #edf1ec; border-bottom: 1px solid #edf1ec; text-overflow: ellipsis; white-space: nowrap; }
 .data-grid tbody tr:hover td { background-color: #f7faf5; }
 .data-grid tbody tr.row-changed td { background-color: #fdf7ea; }

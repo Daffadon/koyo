@@ -82,10 +82,54 @@ pub struct TableSummary {
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
+    pub filter_type: String,
+    pub filter_kind: FilterKind,
+    pub sortable: bool,
     pub nullable: bool,
     pub primary_key: bool,
     pub generated: bool,
     pub identity: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterKind {
+    Text,
+    Number,
+    Temporal,
+    Boolean,
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableFilter {
+    pub column: String,
+    pub operator: FilterOperator,
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FilterOperator {
+    Contains,
+    Equals,
+    NotEquals,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    IsNull,
+    IsNotNull,
+    IsTrue,
+    IsFalse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSort {
+    pub column: String,
+    pub descending: bool,
 }
 
 #[derive(Debug, Serialize)]
