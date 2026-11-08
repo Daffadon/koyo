@@ -26,3 +26,9 @@
 - **Engine boundary**: The dispatch layer that applies shared commands to PostgreSQL, SQLite, and later engines.
 - **Workflow parity**: Same user workflows across engines, with engine-specific SQL, authentication, concurrency, and statement limits.
 - **Original-value conflict check**: SQLite stale-row check matching the primary key and every originally loaded column value before applying an edit.
+- **Active session**: A live database connection owned by a workspace tab. Disconnected tabs do not count.
+- **Session cap**: Five live sessions globally across all engines.
+- **Protected session**: Active session with a running query, staged edits, or an open transaction. It cannot be evicted.
+- **Eviction**: Disconnecting the oldest unprotected session when a sixth connection would exceed the cap. The tab and its SQL remain.
+- **Disconnected tab**: Workspace tab whose session was closed or evicted. Its SQL, results, and layout remain; database actions are disabled until reconnect.
+- **Engine picker**: First step of a new connection, choosing PostgreSQL, SQLite, or a later engine before choosing a profile.

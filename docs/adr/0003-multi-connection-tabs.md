@@ -20,6 +20,7 @@ A normal connection pool checks out a connection per command. That breaks all of
 - Closing a tab disconnects its session. There is no connection reuse across tabs.
 - Do not add a connection pool. A pool could only cap tab-owned leases, not reuse them safely; the plain session map is smaller.
 - Keep sessions in a Rust map keyed by session ID. Database commands take the session ID.
+- The active session cap and eviction policy are defined in ADR 0005.
 - Keep query-active and cancel state per session. Cancelling one tab must not cancel another tab's work.
 - Multiple sessions may target the same profile. The profile is a template, not a live connection.
 
@@ -43,7 +44,7 @@ A normal connection pool checks out a connection per command. That breaks all of
 
 ## Consequences
 
-- Many tabs mean many database connections. The user controls this by closing tabs; a cap can be added later if needed.
+- Active sessions are capped at five globally; disconnected tabs can remain and preserve their SQL.
 - Each tab has independent transaction and cancellation behavior.
 - The Rust state and command signatures change from one session to a session map.
 - The frontend state changes from one workspace view to tab arrays.
