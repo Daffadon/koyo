@@ -29,6 +29,9 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub(crate) const PAGE_LIMIT: u32 = 100;
+pub(crate) const DEFAULT_COLUMN_WIDTH: f32 = 170.0;
+const MIN_COLUMN_WIDTH: f32 = 72.0;
+const MAX_COLUMN_WIDTH: f32 = 640.0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Palette {
@@ -252,6 +255,9 @@ pub(crate) struct TableTab {
     pub(crate) filter_column: Option<usize>,
     pub(crate) filter_operator: FilterOperator,
     pub(crate) filter_value: Entity<InputState>,
+    pub(crate) column_widths: Vec<f32>,
+    pub(crate) resize_pointer_x: Option<f32>,
+    pub(crate) column_resized: bool,
 }
 
 pub(crate) struct Tab {
@@ -622,6 +628,84 @@ impl KoyoApp {
         }
     }
 
+    pub(crate) fn begin_column_resize(
+        &mut self,
+        tab_id: u64,
+        column: usize,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let column_count = table
+            .page
+            .as_ref()
+            .map(|page| page.columns.len())
+            .unwrap_or(0);
+        if table.column_widths.len() < column_count {
+            table
+                .column_widths
+                .resize(column_count, DEFAULT_COLUMN_WIDTH);
+        }
+        if column < column_count {
+            table.resize_pointer_x = Some(pointer_x);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn end_column_resize(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        if let TabBody::Table(table) = &mut self.tabs[index].body {
+            table.resize_pointer_x = None;
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn take_column_resized(&mut self, tab_id: u64) -> bool {
+        let Some(index) = self.tab_index(tab_id) else {
+            return false;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return false;
+        };
+        let resized = table.column_resized;
+        table.column_resized = false;
+        resized
+    }
+
+    pub(crate) fn resize_column(
+        &mut self,
+        tab_id: u64,
+        column: usize,
+        pointer_x: f32,
+        fallback_origin_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let previous_x = table.resize_pointer_x.unwrap_or(fallback_origin_x);
+        let Some(width) = table.column_widths.get_mut(column) else {
+            return;
+        };
+        let delta = pointer_x - previous_x;
+        if delta.abs() > 0.5 {
+            table.column_resized = true;
+            *width = (*width + delta).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+        }
+        table.resize_pointer_x = Some(pointer_x);
+        cx.notify();
+    }
+
     fn make_table_tab(
         &mut self,
         profile: ConnectionProfile,
@@ -662,6 +746,9 @@ impl KoyoApp {
                 filter_column: None,
                 filter_operator: FilterOperator::Contains,
                 filter_value,
+                column_widths: Vec::new(),
+                resize_pointer_x: None,
+                column_resized: false,
             }),
         }
     }

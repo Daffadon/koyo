@@ -125,12 +125,62 @@ pub(super) fn render(
         });
 
     let result_body = match (error.is_empty(), output) {
-        (false, _) => div()
-            .p_4()
-            .font_family(mono)
-            .text_sm()
-            .text_color(palette.danger)
-            .child(error.clone())
+        (false, _) => v_flex()
+            .id(("query-error", tab_id))
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .p_5()
+            .overflow_y_scroll()
+            .child(
+                h_flex()
+                    .items_stretch()
+                    .w_full()
+                    .max_w(px(900.0))
+                    .bg(palette.panel)
+                    .border_1()
+                    .border_color(palette.border)
+                    .child(div().w(px(2.0)).flex_shrink_0().bg(palette.danger))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_2()
+                            .p_4()
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        gpui_kit::component::Icon::new(IconName::CircleAlert)
+                                            .with_size(Size::Small)
+                                            .text_color(palette.danger),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette.danger)
+                                            .child("Query failed"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .font_family(mono)
+                                    .text_sm()
+                                    .text_color(palette.foreground)
+                                    .whitespace_normal()
+                                    .child(error.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted)
+                                    .whitespace_normal()
+                                    .child("Fix the statement and run it again."),
+                            ),
+                    ),
+            )
             .into_any_element(),
         (true, Some(output)) => {
             if output.result_sets.is_empty() {
@@ -240,9 +290,6 @@ pub(super) fn render(
                                 })),
                         ),
                 )
-                .when(!error.is_empty(), |this| {
-                    this.child(div().text_color(palette.danger).child("Query failed"))
-                })
                 .when_some(duration, |this, duration| {
                     this.child(format!("{duration} ms"))
                 })

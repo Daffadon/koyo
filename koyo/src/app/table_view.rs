@@ -1,10 +1,10 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
-use gpui_kit::component::{Disableable, Icon, IconName, Sizable, Size};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
+use gpui_kit::{CursorStyle, DragMoveEvent, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{
     ColumnInfo, FilterKind, FilterOperator, GridRow, TableFilter, TablePage, TableSort,
 };
@@ -19,12 +19,27 @@ use super::{
     operator_options,
 };
 
-const CELL_WIDTH: f32 = 170.0;
+const CELL_WIDTH: f32 = super::DEFAULT_COLUMN_WIDTH;
 const ACTION_WIDTH: f32 = 44.0;
+/// Narrow gutter that carries the global row number. It scrolls with the data
+/// columns and must be part of every width calculation in the grid.
+const ROW_RAIL_WIDTH: f32 = 56.0;
 /// Every grid row is forced to this height so the virtual list's uniform
 /// scroll math is exact. It matches the natural row height: `text_sm`
 /// line box (0.875rem x 1.618 ~= 23px) + `py_1` (8px) + the 1px bottom border.
 const ROW_HEIGHT: f32 = 32.0;
+
+#[derive(Clone)]
+struct ColumnResizeDrag {
+    tab_id: u64,
+    column: usize,
+}
+
+impl Render for ColumnResizeDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
 
 thread_local! {
     /// Virtual list scroll handles keyed by tab id, so the handle (and with it
@@ -163,7 +178,7 @@ pub(super) fn render(
                                 div()
                                     .px_2()
                                     .py_1()
-                                    .rounded_full()
+                                    .rounded_sm()
                                     .bg(palette.panel_alt)
                                     .text_xs()
                                     .text_color(palette.warning)
@@ -247,6 +262,17 @@ pub(super) fn render(
     }
 
     let filter_bar = render_filter_bar(tab_id, table, &columns, selected_column, palette, cx);
+    let column_widths = columns
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            table
+                .column_widths
+                .get(index)
+                .copied()
+                .unwrap_or(CELL_WIDTH)
+        })
+        .collect::<Vec<_>>();
 
     let grid = if let Some(page) = &page {
         render_grid(
@@ -256,6 +282,7 @@ pub(super) fn render(
             editable,
             connected,
             &sort,
+            &column_widths,
             palette,
             cx,
         )
@@ -276,6 +303,8 @@ pub(super) fn render(
         .into_any_element()
     };
 
+    let footer_mono = cx.theme().mono_font_family.clone();
+
     v_flex()
         .flex_1()
         .w_full()
@@ -295,16 +324,20 @@ pub(super) fn render(
                 .border_color(palette.border)
                 .text_xs()
                 .text_color(palette.muted)
-                .child(format!(
+                .child(div().font_family(footer_mono.clone()).child(format!(
                     "{} rows on this page · {} columns",
                     page_ref.map(|page| page.rows.len()).unwrap_or(0),
                     columns.len()
-                ))
+                )))
                 .child(
                     h_flex()
                         .items_center()
                         .gap_2()
-                        .child(format!("Page {page_number}"))
+                        .child(
+                            div()
+                                .font_family(footer_mono)
+                                .child(format!("Page {page_number}")),
+                        )
                         .child(
                             Button::new("prev-page")
                                 .ghost()
@@ -440,7 +473,7 @@ fn render_filter_bar(
                     .gap_1()
                     .px_2()
                     .py_1()
-                    .rounded_full()
+                    .rounded_sm()
                     .bg(palette.panel)
                     .text_xs()
                     .child(filter_label(filter))
@@ -493,24 +526,50 @@ fn render_grid(
     editable: bool,
     connected: bool,
     sort: &Option<TableSort>,
+    column_widths: &[f32],
     palette: &Palette,
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let action_width = if editable { ACTION_WIDTH } else { 0.0 };
-    let width = page.columns.len() as f32 * CELL_WIDTH + action_width;
+    let column_widths = Rc::new(column_widths.to_vec());
+    let width = ROW_RAIL_WIDTH + column_widths.iter().sum::<f32>() + action_width;
     // Header affordances must not dim while a sort/page load is in flight;
     // only staged edits and missing connections make a column unsortable.
     let header_locked = !staged.is_empty();
     // `Palette` is `Copy`; the virtual list row closure must be `'static`.
     let palette = *palette;
+    // Monospace data is part of the read of the grid; take it once here so the
+    // virtual row closure and the header share the same face.
+    let mono = cx.theme().mono_font_family.clone();
 
     let header = h_flex()
         .flex_shrink_0()
         .bg(palette.panel)
         .border_b_1()
         .border_color(palette.border)
+        .child(
+            div()
+                .w(px(ROW_RAIL_WIDTH))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_1p5()
+                .py_2()
+                .text_xs()
+                .text_color(palette.muted)
+                .border_r_1()
+                .border_color(palette.border)
+                .child("Row"),
+        )
         .when(editable, |this| {
-            this.child(div().w(px(ACTION_WIDTH)).flex_shrink_0())
+            this.child(
+                div()
+                    .w(px(ACTION_WIDTH))
+                    .flex_shrink_0()
+                    .border_r_1()
+                    .border_color(palette.border),
+            )
         })
         .children(
             page.columns
@@ -523,21 +582,70 @@ fn render_grid(
                     let active_sort = sort.as_ref().filter(|sort| sort.column == column.name);
                     h_flex()
                         .id(SharedString::from(format!("thead-{column_index}")))
-                        .w(px(CELL_WIDTH))
+                        .relative()
+                        .w(px(column_widths
+                            .get(column_index)
+                            .copied()
+                            .unwrap_or(CELL_WIDTH)))
                         .flex_shrink_0()
                         .items_center()
                         .gap_1()
                         .px_2()
                         .py_2()
+                        .border_l_1()
+                        .border_r_1()
+                        .border_color(palette.muted.opacity(0.35))
                         .overflow_hidden()
                         .when(sortable, |this| this.cursor_pointer())
                         .when(!sortable, |this| this.opacity(0.65))
                         .hover(|style| style.bg(palette.panel_alt))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if sortable {
+                            let resized = this.take_column_resized(tab_id);
+                            if sortable && !resized {
                                 this.request_sort(tab_id, column_index, cx);
                             }
                         }))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _, _, cx| {
+                                this.end_column_resize(tab_id, cx);
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                this.begin_column_resize(
+                                    tab_id,
+                                    column_index,
+                                    f32::from(event.position.x),
+                                    cx,
+                                );
+                            }),
+                        )
+                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                            if event.dragging() {
+                                let pointer_x = f32::from(event.position.x);
+                                this.resize_column(tab_id, column_index, pointer_x, pointer_x, cx);
+                            }
+                        }))
+                        .on_drag_move(cx.listener(
+                            move |this, event: &DragMoveEvent<ColumnResizeDrag>, _, cx| {
+                                let (drag_tab, drag_column) = {
+                                    let drag = event.drag(cx);
+                                    (drag.tab_id, drag.column)
+                                };
+                                let fallback_origin = f32::from(
+                                    event.bounds.origin.x + event.bounds.size.width / 2.0,
+                                );
+                                this.resize_column(
+                                    drag_tab,
+                                    drag_column,
+                                    f32::from(event.event.position.x),
+                                    fallback_origin,
+                                    cx,
+                                );
+                            },
+                        ))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -549,14 +657,17 @@ fn render_grid(
                                         .text_color(palette.foreground)
                                         .overflow_hidden()
                                         .whitespace_nowrap()
+                                        .text_ellipsis()
                                         .child(name),
                                 )
                                 .child(
                                     div()
                                         .text_xs()
+                                        .font_family(mono.clone())
                                         .text_color(palette.muted)
                                         .overflow_hidden()
                                         .whitespace_nowrap()
+                                        .text_ellipsis()
                                         .child(data_type),
                                 ),
                         )
@@ -571,6 +682,42 @@ fn render_grid(
                                 .text_color(palette.accent),
                             )
                         })
+                        .child(
+                            div()
+                                .id(SharedString::from(format!(
+                                    "column-resize-{tab_id}-{column_index}"
+                                )))
+                                .self_stretch()
+                                .w(px(9.0))
+                                .flex_shrink_0()
+                                .border_l_1()
+                                .border_color(palette.muted.opacity(0.35))
+                                .occlude()
+                                .cursor(CursorStyle::ResizeLeftRight)
+                                .hover(|style| style.bg(palette.accent_soft))
+                                .child(div().w(px(1.0)).self_stretch().bg(palette.border))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.begin_column_resize(
+                                            tab_id,
+                                            column_index,
+                                            f32::from(event.position.x),
+                                            cx,
+                                        );
+                                    }),
+                                )
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.stop_propagation();
+                                }))
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.end_column_resize(tab_id, cx);
+                                    }),
+                                ),
+                        )
                 }),
         );
 
@@ -586,7 +733,9 @@ fn render_grid(
         v_flex()
             .flex_1()
             .min_h(px(0.0))
-            .p_4()
+            .py_4()
+            .pr_4()
+            .pl(px(ROW_RAIL_WIDTH + 16.0))
             .text_xs()
             .text_color(palette.muted)
             .child("No rows in this table.")
@@ -604,7 +753,15 @@ fn render_grid(
                     range
                         .map(|row_index| {
                             render_virtual_row(
-                                tab_id, &page, &staged, row_index, editable, palette, cx,
+                                tab_id,
+                                &page,
+                                &staged,
+                                row_index,
+                                editable,
+                                palette,
+                                &mono,
+                                column_widths.as_slice(),
+                                cx,
                             )
                         })
                         .collect::<Vec<_>>()
@@ -653,10 +810,23 @@ fn render_virtual_row(
     row_index: usize,
     editable: bool,
     palette: Palette,
+    mono: &SharedString,
+    column_widths: &[f32],
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     if let Some(row) = page.rows.get(row_index) {
-        return render_data_row(tab_id, page, staged, row_index, row, editable, palette, cx);
+        return render_data_row(
+            tab_id,
+            page,
+            staged,
+            row_index,
+            row,
+            editable,
+            palette,
+            mono,
+            column_widths,
+            cx,
+        );
     }
 
     let insert_index = row_index.saturating_sub(page.rows.len());
@@ -668,7 +838,16 @@ fn render_virtual_row(
         })
         .nth(insert_index);
     match insert {
-        Some(insert) => render_insert_row(tab_id, page, insert, editable, palette, cx),
+        Some(insert) => render_insert_row(
+            tab_id,
+            page,
+            insert,
+            editable,
+            palette,
+            mono,
+            column_widths,
+            cx,
+        ),
         None => div().h(px(ROW_HEIGHT)).into_any_element(),
     }
 }
@@ -681,6 +860,8 @@ fn render_data_row(
     row: &GridRow,
     editable: bool,
     palette: Palette,
+    mono: &SharedString,
+    column_widths: &[f32],
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let key = &row.key;
@@ -700,13 +881,34 @@ fn render_data_row(
     });
 
     let mut row_view = h_flex()
+        .id(SharedString::from(format!(
+            "table-row-{tab_id}-{row_index}"
+        )))
         .flex_shrink_0()
         .h(px(ROW_HEIGHT))
         .border_b_1()
         .border_color(palette.border)
-        .when(row_index % 2 == 1, |this| this.bg(palette.panel))
+        .font_family(mono.clone())
         .when(update_values.is_some(), |this| this.bg(palette.accent_soft))
-        .when(deleted, |this| this.opacity(0.45));
+        .when(deleted, |this| this.opacity(0.45))
+        .when(update_values.is_none() && !deleted, |this| {
+            // Quiet row wash; the stronger cell hover still wins over it.
+            this.hover(|style| style.bg(palette.panel))
+        })
+        .child(
+            div()
+                .w(px(ROW_RAIL_WIDTH))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_1p5()
+                .text_xs()
+                .text_color(palette.muted)
+                .border_r_1()
+                .border_color(palette.border)
+                .child((page.offset as usize + row_index + 1).to_string()),
+        );
 
     if editable {
         row_view = row_view.child(
@@ -716,6 +918,8 @@ fn render_data_row(
                 .flex()
                 .items_center()
                 .justify_center()
+                .border_r_1()
+                .border_color(palette.border)
                 .child(
                     Button::new(SharedString::from(format!("delete-row-{row_index}")))
                         .ghost()
@@ -747,11 +951,18 @@ fn render_data_row(
                 .id(SharedString::from(format!(
                     "cell-{row_index}-{column_index}"
                 )))
-                .w(px(CELL_WIDTH))
+                .w(px(column_widths
+                    .get(column_index)
+                    .copied()
+                    .unwrap_or(CELL_WIDTH)))
                 .flex_shrink_0()
                 .px_2()
                 .py_1()
+                .border_l_1()
+                .border_r_1()
+                .border_color(palette.border)
                 .overflow_hidden()
+                .text_ellipsis()
                 .when(can_edit, |this| {
                     this.cursor_pointer()
                         .hover(|style| style.bg(palette.panel_alt))
@@ -774,6 +985,8 @@ fn render_insert_row(
     insert: &StagedInsert,
     editable: bool,
     palette: Palette,
+    mono: &SharedString,
+    column_widths: &[f32],
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let local_id = insert.local_id;
@@ -782,7 +995,24 @@ fn render_insert_row(
         .h(px(ROW_HEIGHT))
         .border_b_1()
         .border_color(palette.border)
-        .bg(palette.accent_soft);
+        .bg(palette.accent_soft)
+        .font_family(mono.clone())
+        .child(
+            // Inserted rows follow the page, so a number would be a lie; the
+            // rail marks them as new instead.
+            div()
+                .w(px(ROW_RAIL_WIDTH))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_1p5()
+                .text_xs()
+                .text_color(palette.accent)
+                .border_r_1()
+                .border_color(palette.border)
+                .child("new"),
+        );
 
     if editable {
         row_view = row_view.child(
@@ -792,6 +1022,8 @@ fn render_insert_row(
                 .flex()
                 .items_center()
                 .justify_center()
+                .border_r_1()
+                .border_color(palette.border)
                 .child(
                     Button::new(SharedString::from(format!("discard-insert-{local_id}")))
                         .ghost()
@@ -823,10 +1055,16 @@ fn render_insert_row(
                 .id(SharedString::from(format!(
                     "insert-cell-{local_id}-{column_index}"
                 )))
-                .w(px(CELL_WIDTH))
+                .w(px(column_widths
+                    .get(column_index)
+                    .copied()
+                    .unwrap_or(CELL_WIDTH)))
                 .flex_shrink_0()
                 .px_2()
                 .py_1()
+                .border_l_1()
+                .border_r_1()
+                .border_color(palette.border)
                 .overflow_hidden()
                 .when(!generated, |this| {
                     this.cursor_pointer()
@@ -843,6 +1081,7 @@ fn render_insert_row(
                         .text_color(color)
                         .overflow_hidden()
                         .whitespace_nowrap()
+                        .text_ellipsis()
                         .child(label),
                 ),
         );
