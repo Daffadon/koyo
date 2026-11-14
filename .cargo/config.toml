@@ -1,0 +1,7 @@
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[env]
+# Use the system fontconfig at runtime instead of requiring its development
+# headers and pkg-config metadata at build time.
+RUST_FONTCONFIG_DLOPEN = "1"

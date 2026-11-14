@@ -23,29 +23,23 @@ jobs:
           - name: linux-x64
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            args: ""
+            archive: koyo-linux-x64.tar.gz
           - name: windows-x64
             platform: windows-latest
             target: x86_64-pc-windows-msvc
-            args: ""
+            archive: koyo-windows-x64.zip
           - name: macos-intel
             platform: macos-15-intel
             target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin
+            archive: koyo-macos-x64.tar.gz
           - name: macos-apple-silicon
             platform: macos-15
             target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin
+            archive: koyo-macos-arm64.tar.gz
 
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -55,50 +49,76 @@ jobs:
       - name: Cache Rust build
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: . -> target
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            libfuse2 \
-            xdg-utils
+            mold \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libwayland-dev \
+            libxcb1-dev
 
-      - name: Check version consistency
+      - name: Check version and tag
         shell: bash
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -n1)
-          CONF_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "$PKG_VERSION" != "$CARGO_VERSION" ] || [ "$PKG_VERSION" != "$CONF_VERSION" ]; then
-            echo "Version mismatch: package=$PKG_VERSION cargo=$CARGO_VERSION tauri=$CONF_VERSION"
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' koyo/Cargo.toml | head -n1)
+          CORE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' koyo-core/Cargo.toml | head -n1)
+          if [ "$VERSION" != "$CORE_VERSION" ]; then
+            echo "Version mismatch: koyo=$VERSION koyo-core=$CORE_VERSION"
             exit 1
           fi
-          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$PKG_VERSION" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match version v$PKG_VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match version v$VERSION"
             exit 1
           fi
 
-      - name: Install frontend dependencies
-        run: npm ci
+      - name: Build release binary
+        run: cargo build --release -p koyo --target ${{ matrix.target }}
 
-      - name: Build and publish draft release
-        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package Unix binary
+        if: matrix.platform != 'windows-latest'
+        shell: bash
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf "$GITHUB_WORKSPACE/${{ matrix.archive }}" koyo
+
+      - name: Package Windows binary
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.target }}/release/koyo.exe" -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          tagName: v__VERSION__
-          releaseName: Koyo v__VERSION__
-          releaseBody: |
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  publish:
+    name: Publish draft release
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          draft: true
+          prerelease: false
+          name: Koyo ${{ github.ref_name }}
+          body: |
             Koyo desktop builds for Windows, macOS, and Linux.
 
+            Linux requires libxkbcommon, libxkbcommon-x11, X11, Wayland, and fontconfig runtime libraries.
             These builds are unsigned. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn.
-          releaseDraft: true
-          prerelease: false
-          uploadWorkflowArtifacts: true
-          args: ${{ matrix.args }}
+          files: artifacts/*

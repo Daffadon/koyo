@@ -6,7 +6,7 @@ hooks = [
   { id = "trailing-whitespace", args = ["--markdown-linebreak-ext=md"] },
   { id = "end-of-file-fixer" },
   { id = "check-yaml" },
-  { id = "check-json", exclude = '^tsconfig.*\.json$' },
+  { id = "check-json" },
   { id = "check-toml" },
   { id = "check-merge-conflict" },
   { id = "check-added-large-files", args = ["--maxkb=1024"] },
@@ -22,16 +22,16 @@ repo = "local"
 id = "cargo-fmt"
 name = "cargo fmt check"
 language = "system"
-entry = "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check"
+entry = "cargo fmt --all -- --check"
 types = ["rust"]
 pass_filenames = false
 stages = ["pre-commit", "pre-push"]
 
 [[repos.hooks]]
-id = "frontend-build"
-name = "frontend build"
+id = "workspace-check"
+name = "workspace check"
 language = "system"
-entry = "npm run build"
+entry = "cargo check --workspace"
 pass_filenames = false
-files = '^(src/|index\.html|package(-lock)?\.json|vite\.config\.ts|tsconfig.*\.json)'
+files = '\.(rs|toml)$'
 stages = ["pre-push"]

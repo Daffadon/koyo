@@ -6,29 +6,25 @@
 - **Schema browser**: Navigation through the active session's schemas and relations.
 - **Table preview**: A paged view of table rows. Rows are editable only when the table has a primary key.
 - **Staged change**: An insert, update, or delete held in the UI until the user applies or discards it.
-- **Apply**: Execute all staged table changes in one PostgreSQL transaction. A failure rolls back the batch; an uncertain commit requires reloading before retry.
+- **Apply**: Execute all staged table changes in one engine transaction. A failure rolls back the batch; an uncertain commit requires reloading before retry.
 - **Primary key**: Database-declared columns that identify one row. Required for safe grid updates and deletes.
 - **Keyless table**: Table without a primary key. Its preview is read-only.
 - **Credential store**: Platform facility used for saved passwords: Windows Credential Manager, macOS Keychain, or Linux Secret Service.
-- **TLS verification**: Validation that a TLS connection reaches the intended PostgreSQL server, not only that traffic is encrypted.
+- **TLS verification**: Validation that a TLS connection reaches the intended database server, not only that traffic is encrypted.
 - **Relation**: A table, partitioned table, view, or materialized view shown in the explorer.
 - **Read-only relation**: A view, materialized view, or keyless table. Its data grid has no staged edits.
 - **Filter kind**: Column classification that determines which filter operators are available: text, number, temporal, boolean, or other.
 - **Table filter**: A per-column condition applied server-side before paging. Active filters combine with AND.
 - **Sort state**: One sort column and direction. Primary-key columns, or `ctid` for keyless tables, break ties.
 - **Sortable column**: Column whose type has a default btree ordering operator. Other columns cannot be sorted.
-- **Cancel token**: PostgreSQL connection token used to stop the active query, table page load, or edit batch.
+- **Cancel token**: Engine-specific handle used to stop the active query, table page load, or edit batch. Oracle beta cannot cancel.
 - **Structure view**: Read-only metadata for a relation: columns, indexes, constraints, and object definitions.
 - **Object definition**: PostgreSQL-generated SQL for a view, index, or constraint. It is not a reconstructed full `CREATE TABLE` statement.
 - **Workspace tab**: A query tab or table tab. Each owns one database session.
 - **Session**: One live database connection held by one workspace tab until the tab closes.
 - **Session map**: Rust state that maps session IDs to live engine sessions and their cancellation state.
-- **Engine boundary**: The dispatch layer that applies shared commands to PostgreSQL, SQLite, and later engines.
+- **Engine boundary**: The dispatch layer that applies shared commands to PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle.
 - **Workflow parity**: Same user workflows across engines, with engine-specific SQL, authentication, concurrency, and statement limits.
-- **Original-value conflict check**: SQLite stale-row check matching the primary key and every originally loaded column value before applying an edit.
-- **Active session**: A live database connection owned by a workspace tab. Disconnected tabs do not count.
-- **Session cap**: Five live sessions globally across all engines.
-- **Protected session**: Active session with a running query, staged edits, or an open transaction. It cannot be evicted.
-- **Eviction**: Disconnecting the oldest unprotected session when a sixth connection would exceed the cap. The tab and its SQL remain.
-- **Disconnected tab**: Workspace tab whose session was closed or evicted. Its SQL, results, and layout remain; database actions are disabled until reconnect.
-- **Engine picker**: First step of a new connection, choosing PostgreSQL, SQLite, or a later engine before choosing a profile.
+- **Original-value conflict check**: Stale-row check matching the primary key and every comparable originally loaded column value before applying an edit.
+- **Disconnected tab**: Workspace tab whose session was closed. Its SQL, results, and layout remain; database actions are disabled until reconnect.
+- **Engine picker**: First step of a new connection, choosing PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, or Oracle before choosing a profile. Oracle is marked beta.

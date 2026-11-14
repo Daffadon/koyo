@@ -1,6 +1,6 @@
 # ADR 0001: Tauri PostgreSQL client
 
-- Status: Accepted
+- Status: Superseded by [ADR 0009](0009-native-gpui.md) for the desktop shell
 - Date: 2026-11-08
 
 ## Context

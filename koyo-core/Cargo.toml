@@ -1,0 +1,23 @@
+[package]
+name = "koyo-core"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keyring = { version = "4", default-features = false, features = ["v1"] }
+tokio-postgres = "0.7"
+rustls-tokio-postgres = { version = "0.5", features = ["platform-verifier"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+futures-util = "0.3"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls-no-provider", "ring"] }
+tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "rustls-native-certs"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+oracledb = "26.0.0-beta.5"
+chrono = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

@@ -1,7 +1,14 @@
 # ADR 0005: Active session cap and engine-first connection flow
 
-- Status: Accepted
+- Status: Accepted; session cap removed 2026-11-14
 - Date: 2026-11-08
+
+## Amendment: session cap removed (2026-11-14)
+
+The five-session cap and its eviction policy no longer apply. Any number of tabs
+may hold live sessions, and a new connection never disconnects another tab.
+"Active session cap" and "Eviction policy" below are superseded. The
+engine-first connection flow still applies.
 
 ## Context
 
@@ -23,7 +30,7 @@ The requested policy is five active connections maximum and termination of the e
 - The cap is **five live sessions globally**, across all engines and profiles.
 - Disconnected tabs do not count.
 - The Rust session map enforces the cap as a backstop.
-- The frontend owns tab and staged-edit state and selects the eviction candidate.
+- The UI owns tab and staged-edit state and selects the eviction candidate.
 
 ### Eviction policy
 
@@ -54,7 +61,7 @@ The requested policy is five active connections maximum and termination of the e
 - A failed connect can leave an old session disconnected. Its tab state is preserved.
 - Five busy sessions block new connections until the user applies, discards, or finishes work.
 - The backend needs session connection timestamps and a status check for running queries and open transactions.
-- The frontend needs a staged-edit flag per table tab.
+- The UI needs a staged-edit flag per table tab.
 - The engine picker adds one step before the profile list.
 
 ## Alternatives considered
