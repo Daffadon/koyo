@@ -4,7 +4,7 @@ use gpui_kit::component::{ActiveTheme, Disableable, Icon, IconName, Sizable, Siz
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::{CursorStyle, DragMoveEvent, InteractiveElement, StatefulInteractiveElement};
+use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{
     ColumnInfo, FilterKind, FilterOperator, GridRow, TableFilter, TablePage, TableSort,
 };
@@ -28,18 +28,6 @@ const ROW_RAIL_WIDTH: f32 = 56.0;
 /// scroll math is exact. It matches the natural row height: `text_sm`
 /// line box (0.875rem x 1.618 ~= 23px) + `py_1` (8px) + the 1px bottom border.
 const ROW_HEIGHT: f32 = 32.0;
-
-#[derive(Clone)]
-struct ColumnResizeDrag {
-    tab_id: u64,
-    column: usize,
-}
-
-impl Render for ColumnResizeDrag {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
 
 thread_local! {
     /// Virtual list scroll handles keyed by tab id, so the handle (and with it
@@ -628,24 +616,6 @@ fn render_grid(
                                 this.resize_column(tab_id, column_index, pointer_x, pointer_x, cx);
                             }
                         }))
-                        .on_drag_move(cx.listener(
-                            move |this, event: &DragMoveEvent<ColumnResizeDrag>, _, cx| {
-                                let (drag_tab, drag_column) = {
-                                    let drag = event.drag(cx);
-                                    (drag.tab_id, drag.column)
-                                };
-                                let fallback_origin = f32::from(
-                                    event.bounds.origin.x + event.bounds.size.width / 2.0,
-                                );
-                                this.resize_column(
-                                    drag_tab,
-                                    drag_column,
-                                    f32::from(event.event.position.x),
-                                    fallback_origin,
-                                    cx,
-                                );
-                            },
-                        ))
                         .child(
                             v_flex()
                                 .flex_1()
