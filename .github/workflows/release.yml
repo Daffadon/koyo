@@ -28,10 +28,6 @@ jobs:
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             archive: koyo-windows-x64.zip
-          - name: macos-intel
-            platform: macos-15-intel
-            target: x86_64-apple-darwin
-            archive: koyo-macos-x64.tar.gz
           - name: macos-apple-silicon
             platform: macos-15
             target: aarch64-apple-darwin

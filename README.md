@@ -98,7 +98,7 @@ See the [ADRs](docs/adr) for architecture decisions, including [ADR 0009](docs/a
 
 ## Releases
 
-The release workflow builds Linux x64, Windows x64, macOS Intel, and macOS Apple Silicon binaries. It runs on tags, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon binaries. It runs on tags, uploads workflow artifacts, and creates a draft GitHub release.
 
 Keep the workspace version in `koyo/Cargo.toml` and `koyo-core/Cargo.toml` equal, then push a matching tag:
 
