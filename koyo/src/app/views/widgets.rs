@@ -6,7 +6,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
 pub(super) fn render_cell_editor(
     edit: &CellEdit,

@@ -9,7 +9,7 @@ use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::Engine;
 
 use super::widgets::{field_label, input_field};
-use super::{ConnectionDialog, KoyoApp, Palette, engine_label};
+use crate::app::{ConnectionDialog, KoyoApp, Palette, engine_label};
 
 const ENGINES: [Engine; 6] = [
     Engine::Postgres,
@@ -22,12 +22,12 @@ const ENGINES: [Engine; 6] = [
 
 // Official database marks, embedded at compile time. Every fill is
 // `currentColor` so icons follow the button/row text color and theme.
-const ICON_POSTGRES: &[u8] = include_bytes!("../../assets/db-icons/postgresql.svg");
-const ICON_SQLITE: &[u8] = include_bytes!("../../assets/db-icons/sqlite.svg");
-const ICON_MYSQL: &[u8] = include_bytes!("../../assets/db-icons/mysql.svg");
-const ICON_MARIADB: &[u8] = include_bytes!("../../assets/db-icons/mariadb.svg");
-const ICON_SQL_SERVER: &[u8] = include_bytes!("../../assets/db-icons/sqlserver.svg");
-const ICON_ORACLE: &[u8] = include_bytes!("../../assets/db-icons/oracle.svg");
+const ICON_POSTGRES: &[u8] = include_bytes!("../../../assets/db-icons/postgresql.svg");
+const ICON_SQLITE: &[u8] = include_bytes!("../../../assets/db-icons/sqlite.svg");
+const ICON_MYSQL: &[u8] = include_bytes!("../../../assets/db-icons/mysql.svg");
+const ICON_MARIADB: &[u8] = include_bytes!("../../../assets/db-icons/mariadb.svg");
+const ICON_SQL_SERVER: &[u8] = include_bytes!("../../../assets/db-icons/sqlserver.svg");
+const ICON_ORACLE: &[u8] = include_bytes!("../../../assets/db-icons/oracle.svg");
 
 pub(super) fn engine_icon(engine: Engine) -> Icon {
     let svg = match engine {

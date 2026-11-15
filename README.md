@@ -6,10 +6,10 @@ Koyo is a cross-platform native database client for PostgreSQL, SQLite, MySQL, M
 
 - Save PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle connection profiles. Server passwords are kept in Windows Credential Manager, macOS Keychain, or Linux Secret Service; SQLite uses a database file path. Profile files contain no passwords. Oracle uses the official pure-Rust `oracledb` beta driver and needs no Instant Client.
 - Choose the database engine before a profile, then open query and table tabs that each own a dedicated session. All connections share one tab pane: a live PostgreSQL table tab and a live MySQL table tab can stay open side by side, each pinned to its own session. There is no fixed limit on live sessions.
-- Browse tables grouped by schema, then preview table rows. Filter columns server-side, sort by one column, page through results, and cancel a slow page load.
+- Explore tables, views, functions, and triggers grouped by schema and metadata group. Open a table tab to preview rows, filter columns server-side, sort by one column, page through results, and cancel a slow page load. A diagram view shows foreign-key relations for the open table.
 - Edit rows for tables with primary keys. Inserts, updates, and deletes stay staged until **Apply changes**. The batch runs in one transaction and rolls back on stale-row conflicts. If the commit result is uncertain, Koyo clears staged edits and reloads the page; verify data before retrying.
-- Run SQL with the connected session's permissions. The editor suggests SQL keywords, schemas, tables, and columns from the connected database. Results are shown as a table or as a JSON array with one object per row (SQL NULL becomes `null`); each result set is capped at 1,000 displayed rows. A running query can be cancelled. SQLite runs one statement per execution.
-- Switch between the dark theme and a warm, low-contrast light theme from the sidebar.
+- Run SQL with the connected session's permissions. The editor suggests SQL keywords, schemas, tables, columns, and aliases from the connected query. Alias completion scopes `u.` to the table behind `u` and preserves the qualifier when inserting. Results can contain multiple result sets, shown as a table or as a JSON array with one object per row (SQL NULL becomes `null`); each result set is capped at 1,000 displayed rows. Run with **Ctrl+Enter** or **Cmd+Enter**, and cancel a running query. SQLite runs one statement per execution.
+- Switch between the dark theme and a warm, low-contrast light theme from the sidebar. Engine buttons use the official database marks.
 - Verify PostgreSQL TLS server identity by default. **Disable TLS** is available for trusted local connections only.
 
 Tables without primary keys are read-only in the data grid. Linux PostgreSQL password storage requires a running Secret Service provider. Koyo does not save passwords in plaintext if the operating-system credential store is unavailable; passwordless connections do not need the credential store at all.
@@ -18,10 +18,36 @@ Tables without primary keys are read-only in the data grid. Linux PostgreSQL pas
 
 The workspace has two crates:
 
-- `koyo` — native GPUI desktop application. The UI uses GPUI Kit components: buttons, inputs, code editor, tab bars, dialogs, status bar, and icons.
+- `koyo` — native GPUI desktop application.
 - `koyo-core` — database engines, session management, profile storage, and credential handling shared by every engine.
 
-The application never calls a web bridge: UI actions call `koyo-core` async APIs directly and publish results back to the GPUI view.
+Inside `koyo`, the UI is split by responsibility:
+
+```text
+koyo/src/
+  main.rs                  application startup, window, shortcuts
+  app.rs                   module wiring and shared re-exports
+  app/state.rs             tabs, panes, dialogs, staged edits, application state
+  app/theme.rs             palette and light-theme adjustment
+  app/helpers.rs           engine labels, starter SQL, filter helpers, form defaults
+  app/completion.rs        SQL completion catalog and alias parser
+  app/actions/             state transitions and async work
+    workspace.rs           panes, tabs, split, resize, close, confirmations
+    connections.rs         catalog loading, connect, profile dialog, profile storage
+    queries.rs             run, cancel, result selection
+    tables.rs              paging, filtering, sorting, refresh, apply/discard
+    editing.rs             cell editing, inserts, deletes, staged changes
+  app/views/               GPUI rendering only
+    root.rs                root frame and overlays
+    sidebar.rs             explorer and connection list
+    workspace.rs           tab bars, panes, status bar
+    connection.rs          engine picker and connection dialog
+    query/                 editor and result rendering
+    table/                 filter, grid, and diagram rendering
+    widgets.rs             shared dialogs and input widgets
+```
+
+Views read state and emit actions. Actions own session and database work, then update state and notify the GPUI context. `koyo-core` does not depend on GPUI, and the application never calls a web bridge: UI actions call `koyo-core` async APIs directly and publish results back to the view.
 
 ## Development
 
