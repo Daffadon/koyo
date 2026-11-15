@@ -269,20 +269,16 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
             let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel)).await;
         }
     }
-    let cleanup_entry = Arc::clone(&entry);
     let mut session = match tokio::time::timeout(DISCONNECT_TIMEOUT, entry.session.lock()).await {
         Ok(session) => session,
         Err(_) => {
-            // The operation still holds the session. Drop every credential
-            // and the map entry now; a detached waiter clears the session as
-            // soon as the operation releases it, so the id cannot leak.
+            // The operation still holds the session. Drop the map entry and
+            // credentials now. The running task owns the last Arc, so the
+            // session closes when that task releases it; a detached waiter
+            // would keep the connection alive forever if the task never ends.
             *entry.cancel.lock().await = None;
             entry.query_active.store(false, Ordering::SeqCst);
             manager.sessions.lock().await.remove(&session_id);
-            tokio::spawn(async move {
-                let mut session = cleanup_entry.session.lock().await;
-                *session = None;
-            });
             return Err(
                 "A database operation is still running. Cancel it and try again.".to_string(),
             );
