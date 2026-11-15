@@ -20,6 +20,8 @@ use crate::app::*;
 impl KoyoApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, runtime: Arc<Runtime>) -> Self {
         let store = ProfileStore::from_default_dir();
+        let settings = SettingsStore::from_default_dir();
+        let saved = settings.load();
         let (profiles, status) = match store.load_profiles() {
             Ok(profiles) => {
                 let status = if profiles.is_empty() {
@@ -34,6 +36,9 @@ impl KoyoApp {
 
         let mut app = Self {
             store,
+            settings,
+            history: saved.history.clone(),
+            allow_close: false,
             manager: Arc::new(SessionManager::default()),
             runtime,
             profiles,
@@ -43,21 +48,222 @@ impl KoyoApp {
             primary_active: 0,
             secondary_active: 0,
             split: None,
-            split_ratio: 0.5,
+            split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
-            sidebar_open: true,
+            sidebar_open: saved.sidebar_open,
             status,
             dialog: None,
             cell_edit: None,
             confirm: None,
             next_tab_id: 1,
         };
-        let tab = app.make_query_tab(None, window, cx);
-        let id = tab.id;
-        app.tabs.push(tab);
-        app.primary_tabs.push(id);
-        app.primary_active = id;
+        if saved.theme == "light" {
+            Theme::change(ThemeMode::Light, None, cx);
+            apply_calm_light_theme(cx);
+        }
+        app.restore_workspace(&saved.workspace, window, cx);
+        if app.primary_tabs.is_empty() {
+            let tab = app.make_query_tab(None, window, cx);
+            let id = tab.id;
+            app.tabs.push(tab);
+            app.primary_tabs.push(id);
+            app.primary_active = id;
+        }
+
+        let weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |_, cx| {
+            let mut allow = true;
+            let _ = weak.update(cx, |app, cx| {
+                if app.allow_close {
+                    return;
+                }
+                app.persist_state(cx);
+                if app.has_unsaved_work(cx) {
+                    allow = false;
+                    app.confirm_close(cx);
+                }
+            });
+            allow
+        });
         app
+    }
+
+    fn restore_workspace(
+        &mut self,
+        snapshot: &WorkspaceSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.split = match snapshot.split.as_deref() {
+            Some("vertical") => Some(SplitAxis::Vertical),
+            Some("horizontal") => Some(SplitAxis::Horizontal),
+            _ => None,
+        };
+        if !snapshot.secondary.is_empty() && self.split.is_none() {
+            self.split = Some(SplitAxis::Vertical);
+        }
+        if snapshot.secondary.is_empty() {
+            self.split = None;
+        }
+
+        let mut primary_ids = Vec::new();
+        let mut secondary_ids = Vec::new();
+        for (pane, tabs, ids) in [
+            (Pane::Primary, &snapshot.primary, &mut primary_ids),
+            (Pane::Secondary, &snapshot.secondary, &mut secondary_ids),
+        ] {
+            if pane == Pane::Secondary && self.split.is_none() {
+                continue;
+            }
+            for saved_tab in tabs {
+                let profile = saved_tab.profile_id().and_then(|id| {
+                    self.profiles
+                        .iter()
+                        .find(|profile| profile.id.to_string() == id)
+                        .cloned()
+                });
+                match saved_tab {
+                    TabSnapshot::Query { sql, .. } => {
+                        let mut tab = self.make_query_tab(profile, window, cx);
+                        if let TabBody::Query(query) = &mut tab.body {
+                            query.editor.update(cx, |editor, cx| {
+                                editor.set_value(sql.clone(), window, cx);
+                            });
+                            // Restored SQL is not a starter; connection setup
+                            // must not overwrite it.
+                            query.starter = String::new().into();
+                        }
+                        let id = self.add_tab(tab, pane);
+                        ids.push(id);
+                    }
+                    TabSnapshot::Table { schema, table, .. } => {
+                        let Some(profile) = profile else {
+                            continue;
+                        };
+                        let mut tab =
+                            self.make_table_tab(profile, schema.clone(), table.clone(), window, cx);
+                        tab.connecting = false;
+                        tab.notice = "Restored tab. Reconnect to load rows.".into();
+                        if let TabBody::Table(table) = &mut tab.body {
+                            table.loading = false;
+                        }
+                        let id = self.add_tab(tab, pane);
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+
+        if primary_ids.is_empty() && secondary_ids.is_empty() {
+            return;
+        }
+        self.primary_active = primary_ids
+            .get(snapshot.primary_active)
+            .copied()
+            .or_else(|| primary_ids.first().copied())
+            .unwrap_or(0);
+        self.secondary_active = secondary_ids
+            .get(snapshot.secondary_active)
+            .copied()
+            .or_else(|| secondary_ids.first().copied())
+            .unwrap_or(0);
+        self.focus = if snapshot.focus_secondary && self.split.is_some() {
+            Pane::Secondary
+        } else {
+            Pane::Primary
+        };
+        self.normalize_panes();
+    }
+
+    pub(crate) fn persist_state(&self, cx: &App) {
+        let state = PersistedState {
+            theme: if cx.theme().is_dark() {
+                "dark"
+            } else {
+                "light"
+            }
+            .into(),
+            sidebar_open: self.sidebar_open,
+            split: self.split.map(|axis| {
+                match axis {
+                    SplitAxis::Vertical => "vertical",
+                    SplitAxis::Horizontal => "horizontal",
+                }
+                .to_string()
+            }),
+            split_ratio: self.split_ratio,
+            history: self.history.clone(),
+            workspace: self.workspace_snapshot(cx),
+        };
+        let _ = self.settings.save(&state);
+    }
+
+    fn workspace_snapshot(&self, cx: &App) -> WorkspaceSnapshot {
+        let snapshot = |tab: &Tab| -> Option<TabSnapshot> {
+            let profile_id = tab.profile.as_ref().map(|profile| profile.id.to_string());
+            match &tab.body {
+                TabBody::Query(query) => Some(TabSnapshot::Query {
+                    profile_id,
+                    sql: query.editor.read(cx).value().to_string(),
+                }),
+                TabBody::Table(table) => Some(TabSnapshot::Table {
+                    profile_id,
+                    schema: table.schema.clone(),
+                    table: table.table.clone(),
+                }),
+            }
+        };
+        let primary = self
+            .primary_tabs
+            .iter()
+            .filter_map(|id| self.tab_index(*id))
+            .filter_map(|index| snapshot(&self.tabs[index]))
+            .collect::<Vec<_>>();
+        let secondary = self
+            .secondary_tabs
+            .iter()
+            .filter_map(|id| self.tab_index(*id))
+            .filter_map(|index| snapshot(&self.tabs[index]))
+            .collect::<Vec<_>>();
+        WorkspaceSnapshot {
+            split: self.split.map(|axis| {
+                match axis {
+                    SplitAxis::Vertical => "vertical",
+                    SplitAxis::Horizontal => "horizontal",
+                }
+                .to_string()
+            }),
+            primary_active: self
+                .primary_tabs
+                .iter()
+                .position(|id| *id == self.primary_active)
+                .unwrap_or(0),
+            secondary_active: self
+                .secondary_tabs
+                .iter()
+                .position(|id| *id == self.secondary_active)
+                .unwrap_or(0),
+            primary,
+            secondary,
+            focus_secondary: self.focus == Pane::Secondary,
+        }
+    }
+
+    pub(crate) fn has_unsaved_work(&self, cx: &App) -> bool {
+        self.tabs.iter().any(|tab| match &tab.body {
+            TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
+            TabBody::Table(table) => !table.staged.is_empty(),
+        })
+    }
+
+    pub(crate) fn confirm_close(&mut self, cx: &mut Context<Self>) {
+        self.confirm = Some(ConfirmState {
+            title: "Close Koyo?".into(),
+            description: "A query is running, a SQL editor has text, or edits are staged. Running queries stop and staged edits are discarded; saved workspace SQL is restored when possible.".into(),
+            action: std::rc::Rc::new(|_, _| {}),
+            close_window: true,
+        });
+        cx.notify();
     }
 
     pub(crate) fn tab_index(&self, tab_id: u64) -> Option<usize> {
@@ -107,6 +313,7 @@ impl KoyoApp {
     pub(crate) fn focus_pane(&mut self, pane: Pane, cx: &mut Context<Self>) {
         if self.pane_index(pane).is_some() && self.focus != pane {
             self.focus = pane;
+            self.persist_state(cx);
             cx.notify();
         }
     }
@@ -131,11 +338,13 @@ impl KoyoApp {
         if !next.is_dark() {
             apply_calm_light_theme(cx);
         }
+        self.persist_state(cx);
         cx.notify();
     }
 
     pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.sidebar_open = !self.sidebar_open;
+        self.persist_state(cx);
         cx.notify();
     }
 
@@ -171,6 +380,7 @@ impl KoyoApp {
             self.secondary_active = 0;
             self.split = None;
             self.focus = Pane::Primary;
+            self.persist_state(cx);
             cx.notify();
             return;
         }
@@ -182,6 +392,7 @@ impl KoyoApp {
             self.split = Some(axis);
         }
         self.focus = Pane::Primary;
+        self.persist_state(cx);
         cx.notify();
     }
 
@@ -253,6 +464,9 @@ impl KoyoApp {
                 cancelling: false,
                 duration_ms: None,
                 results_collapsed: false,
+                pending_run: false,
+                result_column_widths: Vec::new(),
+                result_resize_pointer_x: None,
             }),
         }
     }
@@ -467,6 +681,7 @@ impl KoyoApp {
         if let Some(profile) = profile {
             self.connect_profile(profile.id, Some(tab_id), false, window, cx);
         }
+        self.persist_state(cx);
         cx.notify();
     }
 
@@ -487,7 +702,7 @@ impl KoyoApp {
             return;
         };
         let needs_confirm = match &self.tabs[index].body {
-            TabBody::Query(query) => query.running,
+            TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
             TabBody::Table(table) => !table.staged.is_empty(),
         };
         if needs_confirm {
@@ -495,7 +710,7 @@ impl KoyoApp {
                 window,
                 cx,
                 "Close tab?",
-                "A query is running or edits are staged. Closing discards them.",
+                "The editor has SQL or a query is running or edits are staged. Closing discards them.",
                 move |this, cx| this.close_tab_now(tab_id, cx),
             );
         } else {
@@ -533,6 +748,7 @@ impl KoyoApp {
         }
         self.tabs.remove(index);
         self.normalize_panes();
+        self.persist_state(cx);
         cx.notify();
     }
 
@@ -548,14 +764,30 @@ impl KoyoApp {
             title: title.to_string(),
             description: description.to_string(),
             action: std::rc::Rc::new(action),
+            close_window: false,
         });
         cx.notify();
     }
 
-    pub(crate) fn resolve_confirm(&mut self, confirmed: bool, cx: &mut Context<Self>) {
+    pub(crate) fn resolve_confirm(
+        &mut self,
+        confirmed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(pending) = self.confirm.take() else {
             return;
         };
+        if pending.close_window {
+            if confirmed {
+                self.persist_state(cx);
+                self.allow_close = true;
+                window.remove_window();
+            } else {
+                cx.notify();
+            }
+            return;
+        }
         if confirmed {
             (pending.action)(self, cx);
         }
@@ -607,6 +839,7 @@ impl KoyoApp {
         }
         self.focus = target;
         self.normalize_panes();
+        self.persist_state(cx);
         cx.notify();
     }
 
@@ -620,6 +853,7 @@ impl KoyoApp {
         }
         self.focus = pane;
         self.normalize_panes();
+        self.persist_state(cx);
         cx.notify();
     }
 

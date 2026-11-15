@@ -22,6 +22,7 @@ impl KoyoApp {
         };
         let tab = self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
         let tab_id = self.add_tab(tab, self.focus);
+        self.persist_state(cx);
         cx.notify();
 
         let manager = self.manager.clone();

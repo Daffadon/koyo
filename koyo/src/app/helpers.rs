@@ -1,8 +1,8 @@
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;
-use koyo_core::models::{ConnectionProfile, Engine, FilterKind, FilterOperator};
+use koyo_core::models::{ConnectionProfile, Engine, FilterKind, FilterOperator, QueryResultSet};
 
-use super::state::{ConnectionDialog, Tab};
+use super::state::{ConnectionDialog, QueryTab, Tab};
 
 pub(crate) fn query_tab_title(profile: Option<&ConnectionProfile>) -> SharedString {
     let Some(profile) = profile else {
@@ -31,6 +31,55 @@ pub(crate) fn starter_sql(engine: Engine) -> String {
         Engine::SqlServer => "SELECT DB_NAME(), SUSER_SNAME();".into(),
         Engine::Oracle => "SELECT SYS_CONTEXT('USERENV', 'DB_NAME'), USER FROM dual;".into(),
     }
+}
+
+/// Tab text counts as unsaved when it differs from the starter SQL that
+/// connection setup may still replace.
+pub(crate) fn query_has_unsaved_sql(query: &QueryTab, cx: &App) -> bool {
+    query.editor.read(cx).value() != query.starter
+}
+
+/// Active result set as CSV. NULL and an empty string both export as an empty
+/// field; CSV cannot represent the difference without a non-standard marker.
+pub(crate) fn results_as_csv(result: &QueryResultSet) -> String {
+    if result.columns.is_empty() {
+        return String::new();
+    }
+    let mut output = String::new();
+    push_csv_row(&mut output, result.columns.iter().map(String::as_str));
+    for row in &result.rows {
+        push_csv_row(
+            &mut output,
+            (0..result.columns.len())
+                .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or("")),
+        );
+    }
+    output
+}
+
+fn push_csv_row<'a>(output: &mut String, fields: impl Iterator<Item = &'a str>) {
+    for (index, field) in fields.enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        push_csv_field(output, field);
+    }
+    output.push('\n');
+}
+
+fn push_csv_field(output: &mut String, field: &str) {
+    if !field.contains(|character| matches!(character, ',' | '"' | '\n' | '\r')) {
+        output.push_str(field);
+        return;
+    }
+    output.push('"');
+    for character in field.chars() {
+        if character == '"' {
+            output.push('"');
+        }
+        output.push(character);
+    }
+    output.push('"');
 }
 
 pub(crate) fn engine_label(engine: Engine) -> &'static str {
@@ -167,4 +216,38 @@ pub(crate) fn apply_defaults(
 
 pub(crate) fn this_notice(tab: &mut Tab, message: impl Into<String>) {
     tab.notice = message.into();
+}
+
+#[cfg(test)]
+mod tests {
+    use koyo_core::models::QueryResultSet;
+
+    use super::results_as_csv;
+
+    #[test]
+    fn csv_quotes_commas_quotes_newlines_and_nulls() {
+        let result = QueryResultSet {
+            columns: vec!["name".into(), "note, quoted".into()],
+            rows: vec![
+                vec![Some("Ada".into()), Some("a,b".into())],
+                vec![Some("quote\"d".into()), None],
+                vec![Some("line\nbreak".into()), Some(String::new())],
+            ],
+        };
+
+        assert_eq!(
+            results_as_csv(&result),
+            "name,\"note, quoted\"\nAda,\"a,b\"\n\"quote\"\"d\",\n\"line\nbreak\",\n"
+        );
+    }
+
+    #[test]
+    fn csv_without_columns_is_empty() {
+        let result = QueryResultSet {
+            columns: Vec::new(),
+            rows: Vec::new(),
+        };
+
+        assert!(results_as_csv(&result).is_empty());
+    }
 }

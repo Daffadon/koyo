@@ -68,6 +68,10 @@ impl KoyoApp {
                             this.set_split_ratio(x / width, cx);
                         },
                     ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.persist_state(cx)),
+                    )
                     .child(
                         div()
                             .flex_grow(ratio)
@@ -119,6 +123,10 @@ impl KoyoApp {
                             this.set_split_ratio(y / height, cx);
                         },
                     ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.persist_state(cx)),
+                    )
                     .child(
                         div()
                             .flex_grow(ratio)

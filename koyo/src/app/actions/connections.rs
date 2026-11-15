@@ -255,6 +255,7 @@ impl KoyoApp {
                         }
                         this.status = format!("Connected to {}.", info.profile.name);
                         this.load_tables(tab_id, cx);
+                        let mut run_pending = false;
                         match &mut this.tabs[index].body {
                             TabBody::Query(query) => {
                                 query.completion.borrow_mut().clear();
@@ -264,6 +265,10 @@ impl KoyoApp {
                                 query.active_result = 0;
                                 query.running = false;
                                 query.cancelling = false;
+                                if query.pending_run {
+                                    query.pending_run = false;
+                                    run_pending = true;
+                                }
                             }
                             TabBody::Table(table) => {
                                 let offset =
@@ -279,12 +284,18 @@ impl KoyoApp {
                                 this.load_page(tab_id, offset, filters, sort, cx);
                             }
                         }
+                        if run_pending {
+                            this.run_query(tab_id, cx);
+                        }
                         if from_dialog {
                             this.dialog = None;
                         }
                     }
                     Err(error) => {
                         this.tabs[index].connecting = false;
+                        if let TabBody::Query(query) = &mut this.tabs[index].body {
+                            query.pending_run = false;
+                        }
                         this.tabs[index].notice = error.clone();
                         this.status = error.clone();
                         if from_dialog {
@@ -332,9 +343,13 @@ impl KoyoApp {
         let Some(dialog) = self.dialog.as_mut() else {
             return;
         };
+        if dialog.engine == engine {
+            return;
+        }
         dialog.engine = engine;
-        dialog.editing = None;
         dialog.error.clear();
+        // Keep the edit target when the engine changes; saving updates the
+        // profile and requires a new password for the new target.
         apply_defaults(dialog, engine, window, cx);
         cx.notify();
     }
@@ -510,7 +525,7 @@ impl KoyoApp {
             window,
             cx,
             "Remove connection?",
-            "Tabs using it will close; running queries are cancelled and staged edits are discarded.",
+            "Tabs using it will close; running queries are cancelled, SQL editor contents are discarded, and staged edits are discarded.",
             move |this, cx| {
                 let store = this.store.clone();
                 match store.delete_profile(id) {

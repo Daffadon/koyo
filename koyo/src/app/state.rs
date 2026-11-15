@@ -13,11 +13,14 @@ use koyo_core::models::{
 use koyo_core::{ProfileStore, SessionManager};
 
 use super::completion::CompletionCatalog;
+use super::settings::{QueryHistoryEntry, SettingsStore};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 pub(crate) const PAGE_LIMIT: u32 = 100;
 pub(crate) const DEFAULT_COLUMN_WIDTH: f32 = 170.0;
+pub(crate) const RESULT_COLUMN_WIDTH: f32 = 180.0;
+pub(crate) const RESULT_ROW_RAIL_WIDTH: f32 = 56.0;
 pub(crate) const MIN_COLUMN_WIDTH: f32 = 72.0;
 pub(crate) const MAX_COLUMN_WIDTH: f32 = 640.0;
 
@@ -89,6 +92,9 @@ pub(crate) struct QueryTab {
     pub(crate) cancelling: bool,
     pub(crate) duration_ms: Option<u128>,
     pub(crate) results_collapsed: bool,
+    pub(crate) pending_run: bool,
+    pub(crate) result_column_widths: Vec<Vec<f32>>,
+    pub(crate) result_resize_pointer_x: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,10 +191,14 @@ pub(crate) struct ConfirmState {
     pub(crate) title: String,
     pub(crate) description: String,
     pub(crate) action: std::rc::Rc<dyn Fn(&mut KoyoApp, &mut Context<KoyoApp>)>,
+    pub(crate) close_window: bool,
 }
 
 pub(crate) struct KoyoApp {
     pub(crate) store: ProfileStore,
+    pub(crate) settings: SettingsStore,
+    pub(crate) history: Vec<QueryHistoryEntry>,
+    pub(crate) allow_close: bool,
     pub(crate) manager: Arc<SessionManager>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) profiles: Vec<ConnectionProfile>,

@@ -9,7 +9,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use crate::app::{KoyoApp, Palette, TabBody, engine_label};
+use crate::app::{KoyoApp, Palette, TabBody, engine_label, unix_seconds};
 
 fn metadata_group_icon(name: &str) -> IconName {
     match name {
@@ -42,6 +42,24 @@ fn schema_kind_icon(kind: koyo_core::models::SchemaObjectKind) -> IconName {
     }
 }
 
+fn history_preview(sql: &str) -> String {
+    let mut preview = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if preview.chars().count() > 70 {
+        preview = preview.chars().take(67).collect::<String>() + "...";
+    }
+    preview
+}
+
+fn history_age(at: u64) -> String {
+    let seconds = unix_seconds().saturating_sub(at);
+    match seconds {
+        0..=59 => "now".to_string(),
+        60..=3_599 => format!("{}m ago", seconds / 60),
+        3_600..=86_399 => format!("{}h ago", seconds / 3_600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
 impl KoyoApp {
     pub(super) fn render_sidebar(
         &self,
@@ -62,6 +80,7 @@ impl KoyoApp {
             TabBody::Query(_) => None,
         };
         let live = connection.is_some();
+        let history = &self.history;
         let reconnect_profile = if matches!(tab.body, TabBody::Table(_)) && !live {
             profile.as_ref().map(|profile| profile.id)
         } else {
@@ -375,6 +394,119 @@ impl KoyoApp {
             );
         }
 
+        let history_panel = if history.is_empty() {
+            None
+        } else {
+            Some(
+                v_flex()
+                    .flex_shrink_0()
+                    .max_h(px(240.0))
+                    .border_t_1()
+                    .border_color(palette.sidebar_border)
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .px_4()
+                            .pt_3()
+                            .pb_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("HISTORY ({})", history.len())),
+                            )
+                            .child(
+                                Button::new("clear-history")
+                                    .ghost()
+                                    .compact()
+                                    .icon(IconName::Delete)
+                                    .tooltip("Clear query history")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.request_clear_history(window, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .id("history-list")
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px_2()
+                            .pb_2()
+                            .gap_1()
+                            .children(history.iter().enumerate().map(|(index, entry)| {
+                                let preview = history_preview(&entry.sql);
+                                let detail = format!(
+                                    "{} · {} · {} ms",
+                                    history_age(entry.at),
+                                    entry.profile_name,
+                                    entry.duration_ms
+                                );
+                                div()
+                                    .id(("history-entry", index))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(palette.panel))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.load_history_entry(index, window, cx);
+                                    }))
+                                    .child(
+                                        div()
+                                            .w(px(6.0))
+                                            .h(px(6.0))
+                                            .flex_shrink_0()
+                                            .rounded_full()
+                                            .bg(if entry.success {
+                                                palette.success
+                                            } else {
+                                                palette.danger
+                                            }),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .child(preview),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(palette.muted)
+                                                    .overflow_hidden()
+                                                    .whitespace_nowrap()
+                                                    .text_ellipsis()
+                                                    .child(detail),
+                                            ),
+                                    )
+                                    .child(
+                                        Button::new(("history-run", index))
+                                            .ghost()
+                                            .compact()
+                                            .icon(IconName::Play)
+                                            .tooltip("Re-run query")
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                cx.stop_propagation();
+                                                this.rerun_history(index, window, cx);
+                                            })),
+                                    )
+                            })),
+                    ),
+            )
+        };
+
         v_flex()
             .w(px(300.0))
             .h_full()
@@ -663,6 +795,7 @@ impl KoyoApp {
                         ),
                 )
             })
+            .when_some(history_panel, |this, panel| this.child(panel))
             .child(
                 div()
                     .flex()

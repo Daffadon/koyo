@@ -85,6 +85,11 @@ pub(super) fn render(
                 .min(output.result_sets.len().saturating_sub(1))
         })
         .unwrap_or(0);
+    let result_widths = query
+        .result_column_widths
+        .get(active_result)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     prune_result_scroll_handles(
         app,
         tab_id,
@@ -207,7 +212,15 @@ pub(super) fn render(
                 if result_view == ResultView::Json {
                     json::result_json(result, tab_id, active_result, palette, &mono, cx)
                 } else {
-                    grid::result_grid(result, tab_id, active_result, palette, &mono, cx)
+                    grid::result_grid(
+                        result,
+                        tab_id,
+                        active_result,
+                        result_widths,
+                        palette,
+                        &mono,
+                        cx,
+                    )
                 }
             } else {
                 empty_state("No results", "Run a statement to see rows.", palette)
@@ -293,6 +306,21 @@ pub(super) fn render(
                 .when_some(duration, |this, duration| {
                     this.child(format!("{duration} ms"))
                 })
+                .when(
+                    output.is_some_and(|output| !output.result_sets.is_empty()),
+                    |this| {
+                        this.child(
+                            Button::new(("copy-result-csv", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy active result as CSV")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_active_result(tab_id, cx);
+                                })),
+                        )
+                    },
+                )
                 .when(output.is_some_and(|output| output.truncated), |this| {
                     this.child("Each result capped at 1,000 rows")
                 }),

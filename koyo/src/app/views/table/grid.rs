@@ -1,4 +1,5 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -355,7 +356,20 @@ fn render_data_row(
         StagedChange::Update { values, .. } => Some(values),
         _ => None,
     });
+    let copy_row_text = page
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(column_index, column)| {
+            update_values
+                .and_then(|values| values.get(&column.name).cloned())
+                .unwrap_or_else(|| row.values[column_index].clone())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
 
+    let row_text_for_rail = copy_row_text.clone();
     let mut row_view = h_flex()
         .id(SharedString::from(format!(
             "table-row-{tab_id}-{row_index}"
@@ -373,6 +387,9 @@ fn render_data_row(
         })
         .child(
             div()
+                .id(SharedString::from(format!(
+                    "table-row-rail-{tab_id}-{row_index}"
+                )))
                 .w(px(ROW_RAIL_WIDTH))
                 .flex_shrink_0()
                 .flex()
@@ -383,6 +400,11 @@ fn render_data_row(
                 .text_color(palette.muted)
                 .border_r_1()
                 .border_color(palette.border)
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.panel_alt))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_to_clipboard(row_text_for_rail.clone(), "Copied row.", cx);
+                }))
                 .child((page.offset as usize + row_index + 1).to_string()),
         );
 
@@ -422,6 +444,8 @@ fn render_data_row(
             .and_then(|values| values.get(&column.name).cloned())
             .unwrap_or_else(|| row.values[column_index].clone());
         let can_edit = editable && !deleted && !column.generated && !column.identity;
+        let copy_value = value.clone().unwrap_or_default();
+        let copy_row = copy_row_text.clone();
         row_view = row_view.child(
             div()
                 .id(SharedString::from(format!(
@@ -448,6 +472,16 @@ fn render_data_row(
                         this.open_cell_editor(tab_id, row_index, column_index, window, cx);
                     }
                 }))
+                .context_menu(move |menu, _, _| {
+                    let cell = copy_value.clone();
+                    let row = copy_row.clone();
+                    menu.item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
+                    }))
+                    .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(row.clone()));
+                    }))
+                })
                 .child(value_text(&value, &palette)),
         );
     }
