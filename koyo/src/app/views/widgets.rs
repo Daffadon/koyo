@@ -10,11 +10,9 @@ use gpui_kit::*;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
-const TOP_TOOLTIP_WIDTH: f32 = 160.0;
-
-/// Keep top-bar tooltips one width so switching buttons does not resize the
-/// popup mid-animation.
-pub(super) fn fixed_tooltip(
+/// Top-bar tooltip sized to its label. Each button owns its tooltip, so moving
+/// to another button closes this one before the next is shown.
+pub(super) fn header_tooltip(
     id: impl Into<ElementId>,
     element: impl IntoElement,
     label: &'static str,
@@ -24,13 +22,7 @@ pub(super) fn fixed_tooltip(
         .child(element)
         .tooltip_show_delay(std::time::Duration::from_millis(120))
         .tooltip(move |window, cx| {
-            Tooltip::element(move |_, _| {
-                div()
-                    .w(px(TOP_TOOLTIP_WIDTH))
-                    .child(label)
-                    .into_any_element()
-            })
-            .build(window, cx)
+            Tooltip::element(move |_, _| div().child(label).into_any_element()).build(window, cx)
         })
         .into_any_element()
 }

@@ -64,7 +64,7 @@ pub(super) fn render(
             h_flex()
                 .items_center()
                 .gap_1()
-                .child(super::widgets::fixed_tooltip(
+                .child(super::widgets::header_tooltip(
                     "top-tooltip-ai-new",
                     Button::new("ai-new-chat")
                         .ghost()
@@ -76,7 +76,7 @@ pub(super) fn render(
                         })),
                     "New chat",
                 ))
-                .child(super::widgets::fixed_tooltip(
+                .child(super::widgets::header_tooltip(
                     "top-tooltip-ai-settings",
                     Button::new("ai-settings")
                         .ghost()
@@ -88,7 +88,7 @@ pub(super) fn render(
                         })),
                     "AI provider settings",
                 ))
-                .child(super::widgets::fixed_tooltip(
+                .child(super::widgets::header_tooltip(
                     "top-tooltip-ai-close",
                     Button::new("ai-close")
                         .ghost()

@@ -552,7 +552,7 @@ impl KoyoApp {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(super::widgets::fixed_tooltip(
+                            .child(super::widgets::header_tooltip(
                                 "top-tooltip-manage",
                                 Button::new("manage-connections")
                                     .ghost()
@@ -563,7 +563,7 @@ impl KoyoApp {
                                     })),
                                 "Manage connections",
                             ))
-                            .child(super::widgets::fixed_tooltip(
+                            .child(super::widgets::header_tooltip(
                                 "top-tooltip-theme",
                                 Button::new("theme-toggle")
                                     .ghost()
@@ -582,7 +582,7 @@ impl KoyoApp {
                                     "Dark theme"
                                 },
                             ))
-                            .child(super::widgets::fixed_tooltip(
+                            .child(super::widgets::header_tooltip(
                                 "top-tooltip-collapse-sidebar",
                                 Button::new("collapse-sidebar")
                                     .ghost()

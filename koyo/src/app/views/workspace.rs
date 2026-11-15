@@ -302,7 +302,7 @@ impl KoyoApp {
                     .border_color(palette.border)
                     .when(focused, |this| this.bg(palette.panel))
                     .when(show_sidebar_toggle && !sidebar_open, |this| {
-                        this.child(widgets::fixed_tooltip(
+                        this.child(widgets::header_tooltip(
                             "top-tooltip-sidebar",
                             Button::new("expand-sidebar")
                                 .ghost()
@@ -321,7 +321,7 @@ impl KoyoApp {
                                 .max_width(px(260.0))
                                 .selected_index(selected)
                                 .children(tabs)
-                                .suffix(widgets::fixed_tooltip(
+                                .suffix(widgets::header_tooltip(
                                     ("top-tooltip-new", index),
                                     Button::new(("pane-new-tab", index))
                                         .ghost()
@@ -335,7 +335,7 @@ impl KoyoApp {
                                 )),
                         ),
                     )
-                    .child(widgets::fixed_tooltip(
+                    .child(widgets::header_tooltip(
                         ("top-tooltip-close", index),
                         Button::new(format!("close-active-{pane:?}"))
                             .flex_shrink_0()
@@ -356,7 +356,7 @@ impl KoyoApp {
                             Pane::Primary => IconName::ArrowRight,
                             Pane::Secondary => IconName::ArrowLeft,
                         };
-                        this.child(widgets::fixed_tooltip(
+                        this.child(widgets::header_tooltip(
                             ("top-tooltip-move", index),
                             Button::new(format!("move-tab-{pane:?}"))
                                 .flex_shrink_0()
@@ -375,7 +375,7 @@ impl KoyoApp {
                                 .flex_shrink_0()
                                 .items_center()
                                 .gap_1()
-                                .child(widgets::fixed_tooltip(
+                                .child(widgets::header_tooltip(
                                     "top-tooltip-ai",
                                     Button::new("toggle-ai")
                                         .when(ai_open, |this| this.secondary())
@@ -387,7 +387,7 @@ impl KoyoApp {
                                         })),
                                     if ai_open { "Hide AI" } else { "Show AI" },
                                 ))
-                                .child(widgets::fixed_tooltip(
+                                .child(widgets::header_tooltip(
                                     "top-tooltip-split-vertical",
                                     Button::new("split-vertical")
                                         .when(split == Some(SplitAxis::Vertical), |this| {
@@ -407,7 +407,7 @@ impl KoyoApp {
                                         "Split vertically"
                                     },
                                 ))
-                                .child(widgets::fixed_tooltip(
+                                .child(widgets::header_tooltip(
                                     "top-tooltip-split-horizontal",
                                     Button::new("split-horizontal")
                                         .when(split == Some(SplitAxis::Horizontal), |this| {
