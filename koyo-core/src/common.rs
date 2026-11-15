@@ -3,6 +3,104 @@ use crate::models::{ColumnInfo, FilterKind, FilterOperator, TableSort};
 pub const QUERY_ROW_LIMIT: usize = 1_000;
 pub const TABLE_PAGE_LIMIT: u32 = 200;
 pub const MAX_CELL_CHARS: usize = 65_536;
+pub const MAX_RESULT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Budget shared by every SQL-result path. It caps each cell and the total
+/// retained bytes while rows are copied, so an oversized result cannot grow
+/// the client heap before a post-processing pass sees it.
+pub struct QueryBudget {
+    remaining: usize,
+    truncated: bool,
+}
+
+impl Default for QueryBudget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QueryBudget {
+    pub fn new() -> Self {
+        Self {
+            remaining: MAX_RESULT_BYTES,
+            truncated: false,
+        }
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.remaining == 0
+    }
+
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    pub fn column(&mut self, mut value: String) -> String {
+        if self.remaining == 0 {
+            self.truncated = true;
+            return String::new();
+        }
+        let cap = self.remaining.min(MAX_CELL_CHARS);
+        if value.len() > cap {
+            value.truncate(floor_char_boundary(&value, cap));
+            if !value.ends_with(" [truncated]") {
+                value.push_str(" [truncated]");
+            }
+            self.truncated = true;
+        }
+        self.remaining = self.remaining.saturating_sub(value.len());
+        value
+    }
+
+    pub fn cell(&mut self, value: Option<String>) -> Option<String> {
+        let Some(mut value) = value else {
+            return None;
+        };
+        if self.remaining == 0 {
+            self.truncated = true;
+            return None;
+        }
+        let cap = self.remaining.min(MAX_CELL_CHARS);
+        if value.len() > cap {
+            value.truncate(floor_char_boundary(&value, cap));
+            if !value.ends_with(" [truncated]") {
+                value.push_str(" [truncated]");
+            }
+            self.truncated = true;
+        }
+        self.remaining = self.remaining.saturating_sub(value.len());
+        Some(value)
+    }
+
+    pub fn cell_str(&mut self, value: Option<&str>) -> Option<String> {
+        let value = value?;
+        if self.remaining == 0 {
+            self.truncated = true;
+            return None;
+        }
+        let cap = self.remaining.min(MAX_CELL_CHARS);
+        let end = floor_char_boundary(value, cap);
+        let clipped = end < value.len();
+        let mut output = String::with_capacity(end + if clipped { 12 } else { 0 });
+        output.push_str(&value[..end]);
+        if clipped {
+            output.push_str(" [truncated]");
+            self.truncated = true;
+        }
+        self.remaining = self.remaining.saturating_sub(output.len());
+        Some(output)
+    }
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    if index >= value.len() {
+        return value.len();
+    }
+    while !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
 
 pub struct TableMeta {
     pub columns: Vec<ColumnInfo>,
@@ -195,4 +293,42 @@ pub fn quote_mysql_identifier(identifier: &str) -> String {
 
 pub fn quote_mssql_identifier(identifier: &str) -> String {
     format!("[{}]", identifier.replace(']', "]]"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_budget_caps_cells_and_total() {
+        let mut budget = QueryBudget::new();
+        let value = "a".repeat(MAX_CELL_CHARS + 10);
+        let capped = budget.cell(Some(value)).expect("cell");
+        assert!(capped.ends_with(" [truncated]"));
+        assert!(capped.len() <= MAX_CELL_CHARS + " [truncated]".len());
+        assert!(budget.truncated());
+    }
+
+    #[test]
+    fn query_budget_drops_cells_after_exhaustion() {
+        let mut budget = QueryBudget {
+            remaining: 0,
+            truncated: false,
+        };
+        assert_eq!(budget.cell(Some("value".into())), None);
+        assert_eq!(budget.column("name".into()), "");
+        assert!(budget.truncated());
+    }
+
+    #[test]
+    fn query_budget_stops_after_total_budget() {
+        let mut budget = QueryBudget {
+            remaining: 8,
+            truncated: false,
+        };
+        assert_eq!(budget.cell(Some("1234".into())), Some("1234".into()));
+        assert_eq!(budget.cell(Some("5678".into())), Some("5678".into()));
+        assert_eq!(budget.cell(Some("9".into())), None);
+        assert!(budget.truncated());
+    }
 }

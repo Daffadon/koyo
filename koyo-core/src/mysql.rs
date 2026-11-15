@@ -1,4 +1,4 @@
-use crate::common::{self, QUERY_ROW_LIMIT, TABLE_PAGE_LIMIT};
+use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
@@ -444,6 +444,7 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
     update_transaction_flag(sql, &mut session.transaction_open);
     let mut result_sets = Vec::new();
     let mut affected_rows = Vec::new();
+    let mut budget = QueryBudget::new();
     let mut truncated = false;
     loop {
         let columns = result.columns_ref().to_vec();
@@ -456,19 +457,19 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
         } else {
             let column_names = columns
                 .iter()
-                .map(|column| column.name_str().into_owned())
+                .map(|column| budget.column(column.name_str().into_owned()))
                 .collect::<Vec<_>>();
             let mut rows = Vec::new();
             while let Some(row) = result.next().await.map_err(|error| error.to_string())? {
-                if rows.len() == QUERY_ROW_LIMIT {
+                if rows.len() == QUERY_ROW_LIMIT || budget.exhausted() {
                     truncated = true;
                     break;
                 }
-                rows.push(
-                    (0..columns.len())
-                        .map(|index| row.as_ref(index).and_then(value_text))
-                        .collect(),
-                );
+                let mut values = Vec::with_capacity(columns.len());
+                for index in 0..columns.len() {
+                    values.push(budget.cell(row.as_ref(index).and_then(value_text)));
+                }
+                rows.push(values);
             }
             result_sets.push(QueryResultSet {
                 columns: column_names,
@@ -486,7 +487,7 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
     Ok(QueryOutput {
         result_sets,
         affected_rows,
-        truncated,
+        truncated: truncated || budget.truncated(),
     })
 }
 
@@ -1160,6 +1161,14 @@ mod tests {
         );
         run_sql(&mut session, "ROLLBACK").await.expect("rollback");
         assert!(!has_open_transaction(&mut session).await.expect("status"));
+
+        let output = run_sql(&mut session, "SELECT REPEAT('x', 1000000) AS value")
+            .await
+            .expect("large select");
+        assert!(output.truncated);
+        let cell = output.result_sets[0].rows[0][0].as_deref().expect("cell");
+        assert!(cell.ends_with(" [truncated]"));
+        assert!(cell.len() <= common::MAX_CELL_CHARS + " [truncated]".len());
 
         let output = run_sql(&mut session, "SELECT 1 AS a; SELECT 2 AS b")
             .await

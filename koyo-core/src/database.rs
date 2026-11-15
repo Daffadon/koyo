@@ -1,7 +1,7 @@
 use crate::{
     common::{
-        QUERY_ROW_LIMIT, TABLE_PAGE_LIMIT, TableMeta, ensure_filter_operator, ensure_one_row,
-        ensure_writable, find_column, quote_identifier,
+        QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT, TableMeta, ensure_filter_operator,
+        ensure_one_row, ensure_writable, find_column, quote_identifier,
     },
     models::{
         ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionInfo, ConnectionProfile, Engine,
@@ -266,7 +266,7 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
     let entry = get_session(manager, session_id).await?;
     if entry.query_active.load(Ordering::SeqCst) {
         if let Some(cancel) = entry.cancel.lock().await.clone() {
-            let _ = send_cancel(&cancel).await;
+            let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel)).await;
         }
     }
     let cleanup_entry = Arc::clone(&entry);
@@ -306,7 +306,9 @@ pub async fn cancel_query(manager: &SessionManager, session_id: Uuid) -> Result<
         .await
         .clone()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
-    send_cancel(&cancel).await
+    tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel))
+        .await
+        .map_err(|_| "Cancellation timed out.".to_string())?
 }
 
 async fn send_cancel(cancel: &CancelState) -> Result<(), String> {
@@ -1175,9 +1177,22 @@ async fn collect_query(
 
     let mut result_sets: Vec<QueryResultSet> = Vec::new();
     let mut affected_rows = Vec::new();
+    let mut budget = QueryBudget::new();
     let mut truncated = false;
+    let mut read_deadline: Option<tokio::time::Instant> = None;
     loop {
-        let message = match stream.try_next().await {
+        let message = match read_deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, stream.try_next()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    return Err(
+                        "Query exceeded 1,000 rows and did not stop after cancellation.".into(),
+                    );
+                }
+            },
+            None => stream.try_next().await,
+        };
+        let message = match message {
             Ok(Some(message)) => message,
             Ok(None) => break,
             Err(_) if truncated => break,
@@ -1188,7 +1203,7 @@ async fn collect_query(
                 result_sets.push(QueryResultSet {
                     columns: columns
                         .iter()
-                        .map(|column| column.name().to_owned())
+                        .map(|column| budget.column(column.name().to_owned()))
                         .collect(),
                     rows: Vec::new(),
                 });
@@ -1197,17 +1212,31 @@ async fn collect_query(
                 let Some(result_set) = result_sets.last_mut() else {
                     continue;
                 };
-                if result_set.rows.len() < QUERY_ROW_LIMIT {
-                    result_set.rows.push(
-                        (0..row.len())
-                            .map(|index| row.get(index).map(str::to_owned))
-                            .collect(),
-                    );
+                if result_set.rows.len() < QUERY_ROW_LIMIT && !budget.exhausted() {
+                    let mut values = Vec::with_capacity(row.len());
+                    for index in 0..row.len() {
+                        values.push(budget.cell_str(row.get(index)));
+                    }
+                    result_set.rows.push(values);
                 } else if !truncated {
                     truncated = true;
-                    if let Some(cancel) = cancel {
-                        let _ = send_cancel(cancel).await;
+                    let Some(cancel) = cancel else {
+                        return Err("Query exceeded 1,000 rows, but it cannot be cancelled.".into());
+                    };
+                    match tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(cancel)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => {
+                            return Err(format!(
+                                "Query exceeded 1,000 rows and cancellation failed: {error}"
+                            ));
+                        }
+                        Err(_) => {
+                            return Err(
+                                "Query exceeded 1,000 rows and cancellation timed out.".into()
+                            );
+                        }
                     }
+                    read_deadline = Some(tokio::time::Instant::now() + DISCONNECT_TIMEOUT);
                 }
             }
             SimpleQueryMessage::CommandComplete(count) => affected_rows.push(count),
@@ -1218,7 +1247,7 @@ async fn collect_query(
     Ok(QueryOutput {
         result_sets,
         affected_rows,
-        truncated,
+        truncated: truncated || budget.truncated(),
     })
 }
 
@@ -1961,6 +1990,45 @@ mod tests {
             .expect("cancelled query returns promptly")
             .expect("query task completes");
         assert!(result.is_err(), "cancelled query should fail");
+        connection_task.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOYO_TEST_DATABASE_URL"]
+    async fn caps_result_bytes_and_stops_after_row_cap() {
+        use super::{CancelState, collect_query};
+        use crate::models::SslMode;
+        use tokio_postgres::NoTls;
+
+        let url = std::env::var("KOYO_TEST_DATABASE_URL")
+            .expect("set KOYO_TEST_DATABASE_URL to a disposable PostgreSQL database");
+        let (client, connection) = tokio_postgres::connect(&url, NoTls)
+            .await
+            .expect("connect to test database");
+        let connection_task = tokio::spawn(connection);
+        let cancel = CancelState::Postgres {
+            token: client.cancel_token(),
+            ssl_mode: SslMode::Disable,
+        };
+
+        let output = collect_query(&client, "SELECT repeat('x', 1000000)", Some(&cancel))
+            .await
+            .expect("large select");
+        assert!(output.truncated);
+        let cell = output.result_sets[0].rows[0][0].as_deref().expect("cell");
+        assert!(cell.ends_with(" [truncated]"));
+        assert!(cell.len() <= crate::common::MAX_CELL_CHARS + " [truncated]".len());
+
+        let started = std::time::Instant::now();
+        let output = collect_query(&client, "SELECT generate_series(1, 5000)", Some(&cancel))
+            .await
+            .expect("row-capped select");
+        assert!(output.truncated);
+        assert!(output.result_sets[0].rows.len() <= crate::common::QUERY_ROW_LIMIT);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancellation should stop the oversized result promptly"
+        );
         connection_task.abort();
     }
 }

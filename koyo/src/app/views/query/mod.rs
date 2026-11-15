@@ -322,7 +322,7 @@ pub(super) fn render(
                     },
                 )
                 .when(output.is_some_and(|output| output.truncated), |this| {
-                    this.child("Each result capped at 1,000 rows")
+                    this.child("Results truncated to protect memory")
                 }),
         );
 
