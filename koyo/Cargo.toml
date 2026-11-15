@@ -10,6 +10,7 @@ koyo-core = { path = "../koyo-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 uuid = "1"
 rfd = "0.17"
+fs2 = "0.4"
 lsp-types = "0.97"
 anyhow = "1"
 ropey = "1"

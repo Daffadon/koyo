@@ -427,7 +427,8 @@ fn load_page_sync(
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta.columns, filters, &mut params)?;
-    let order = build_order_by(&meta.columns, &meta.primary_indices, sort)?;
+    let order =
+        common::build_keyed_order_by(&meta.columns, &meta.primary_indices, sort, quote_identifier)?;
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
@@ -550,7 +551,7 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
         let row = row.map_err(|error| error.to_string())?;
         if rows.len() >= QUERY_ROW_LIMIT {
             truncated = true;
-            continue;
+            break;
         }
         rows.push(
             (0..columns.len())
@@ -761,42 +762,6 @@ fn build_filter_predicate(
     Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
 }
 
-fn build_order_by(
-    columns: &[ColumnInfo],
-    primary_indices: &[usize],
-    sort: Option<&TableSort>,
-) -> Result<String, String> {
-    let sort_column = sort
-        .map(|sort| common::find_column(columns, &sort.column))
-        .transpose()?;
-    let mut terms = Vec::with_capacity(primary_indices.len() + 1);
-    if let (Some(sort), Some(column)) = (sort, sort_column) {
-        if !column.sortable {
-            return Err(format!("Column {} cannot be sorted.", column.name));
-        }
-        terms.push(format!(
-            "{} {}",
-            quote_identifier(&column.name),
-            if sort.descending { "DESC" } else { "ASC" }
-        ));
-    }
-    for index in primary_indices {
-        let column = &columns[*index];
-        if sort_column.is_none_or(|sort| sort.name != column.name) {
-            terms.push(format!("{} ASC", quote_identifier(&column.name)));
-        }
-    }
-    if terms.is_empty() {
-        if let Some(column) = columns.first() {
-            terms.push(format!("{} ASC", quote_identifier(&column.name)));
-        }
-    }
-    if terms.is_empty() {
-        return Err("Table has no sortable columns.".into());
-    }
-    Ok(terms.join(", "))
-}
-
 fn build_insert(
     connection: &Connection,
     schema: &str,
@@ -950,7 +915,7 @@ fn original_predicate(
     columns
         .iter()
         .zip(original)
-        .filter(|(column, _)| is_comparable(column))
+        .filter(|(column, value)| is_comparable(column) && !common::is_truncated_cell(value))
         .map(|(column, value)| {
             params.push(value.clone());
             let placeholder = format!(":{}", params.len());

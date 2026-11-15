@@ -6,7 +6,7 @@ Native GPUI desktop application for Koyo. It contains the window, tabs, SQL edit
 cargo run -p koyo
 ```
 
-Database work is provided by the `koyo-core` crate. Profiles are read from the platform config directory (`com.koyo.db/profiles.json`); server passwords live in the operating-system credential store.
+Database work is provided by the `koyo-core` crate. Profiles are read from the platform config directory (`com.koyo.db/profiles.enc`); server passwords live in the operating-system credential store.
 
 The UI uses GPUI Kit components:
 

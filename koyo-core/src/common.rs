@@ -1,7 +1,8 @@
-use crate::models::{ColumnInfo, FilterKind, FilterOperator};
+use crate::models::{ColumnInfo, FilterKind, FilterOperator, TableSort};
 
 pub const QUERY_ROW_LIMIT: usize = 1_000;
 pub const TABLE_PAGE_LIMIT: u32 = 200;
+pub const MAX_CELL_CHARS: usize = 65_536;
 
 pub struct TableMeta {
     pub columns: Vec<ColumnInfo>,
@@ -103,6 +104,49 @@ pub fn ensure_one_row(count: u64) -> Result<(), String> {
         ),
         _ => Err("The change matched more than one row. Reload before retrying.".into()),
     }
+}
+
+pub fn is_truncated_cell(value: &Option<String>) -> bool {
+    value
+        .as_deref()
+        .is_some_and(|value| value.ends_with(" [truncated]"))
+}
+
+pub fn build_keyed_order_by(
+    columns: &[ColumnInfo],
+    primary_indices: &[usize],
+    sort: Option<&TableSort>,
+    quote: impl Fn(&str) -> String,
+) -> Result<String, String> {
+    let sort_column = sort
+        .map(|sort| find_column(columns, &sort.column))
+        .transpose()?;
+    let mut terms = Vec::with_capacity(primary_indices.len() + 1);
+    if let (Some(sort), Some(column)) = (sort, sort_column) {
+        if !column.sortable {
+            return Err(format!("Column {} cannot be sorted.", column.name));
+        }
+        terms.push(format!(
+            "{} {}",
+            quote(&column.name),
+            if sort.descending { "DESC" } else { "ASC" }
+        ));
+    }
+    for index in primary_indices {
+        let column = &columns[*index];
+        if sort_column.is_none_or(|sort| sort.name != column.name) {
+            terms.push(format!("{} ASC", quote(&column.name)));
+        }
+    }
+    if terms.is_empty() {
+        if let Some(column) = columns.first() {
+            terms.push(format!("{} ASC", quote(&column.name)));
+        }
+    }
+    if terms.is_empty() {
+        return Err("Table has no sortable columns.".into());
+    }
+    Ok(terms.join(", "))
 }
 
 pub fn filter_kind(type_name: &str) -> FilterKind {

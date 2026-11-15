@@ -59,6 +59,7 @@ impl KoyoApp {
         let session_id = connection.session_id;
         self.spawn_task(
             cx,
+            tab_id,
             async move { database::run_sql(&manager, session_id, sql).await },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -113,6 +114,7 @@ impl KoyoApp {
             .map(|profile| profile.engine);
         self.spawn_task(
             cx,
+            tab_id,
             async move { database::cancel_query(&manager, connection.session_id).await },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {

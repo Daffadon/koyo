@@ -41,16 +41,22 @@ pub(super) fn result_scroll_handle(tab_id: u64, result_index: usize) -> UniformL
 }
 
 /// Drop handles for closed tabs and for result sets the query no longer has.
-fn prune_result_scroll_handles(app: &KoyoApp, tab_id: u64, result_count: usize) {
+pub(super) fn prune_scroll_handles(app: &KoyoApp) {
     RESULT_SCROLL_HANDLES.with(|handles| {
         let mut handles = handles.borrow_mut();
-        handles.retain(|(handle_tab_id, result_index), _| {
-            if *handle_tab_id == tab_id {
-                *result_index < result_count
-            } else {
-                app.tabs.iter().any(|tab| tab.id == *handle_tab_id)
-            }
+        handles.retain(|(tab_id, result_index), _| {
+            app.tabs
+                .iter()
+                .find(|tab| tab.id == *tab_id)
+                .and_then(|tab| match &tab.body {
+                    TabBody::Query(query) => query.output.as_ref(),
+                    TabBody::Table(_) => None,
+                })
+                .is_some_and(|output| *result_index < output.result_sets.len())
         });
+        if handles.capacity() > handles.len().saturating_mul(4).max(16) {
+            handles.shrink_to_fit();
+        }
     });
 }
 
@@ -90,12 +96,6 @@ pub(super) fn render(
         .get(active_result)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    prune_result_scroll_handles(
-        app,
-        tab_id,
-        output.map(|output| output.result_sets.len()).unwrap_or(0),
-    );
-
     let run_button = Button::new("run-query")
         .primary()
         // Constant label: changing it between "Run query" and "Running"

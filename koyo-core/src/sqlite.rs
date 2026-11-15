@@ -8,7 +8,8 @@ use crate::models::{
     SchemaObjectKind, TableFilter, TablePage, TableSort, TableSummary,
 };
 use rusqlite::{
-    Connection, InterruptHandle, TransactionBehavior, params_from_iter, types::ValueRef,
+    Connection, InterruptHandle, OptionalExtension, TransactionBehavior, params_from_iter,
+    types::ValueRef,
 };
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -359,14 +360,7 @@ fn load_page_sync(
     let selected = meta
         .columns
         .iter()
-        .map(|column| {
-            let identifier = quote_identifier(&column.name);
-            if is_binary(column) {
-                format!("hex({identifier})")
-            } else {
-                format!("CAST({identifier} AS TEXT)")
-            }
-        })
+        .map(page_column_expression)
         .collect::<Vec<_>>()
         .join(", ");
     let mut params = Vec::new();
@@ -488,7 +482,7 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
             if result_rows.len() == QUERY_ROW_LIMIT {
                 truncated = true;
-                continue;
+                break;
             }
             result_rows.push(
                 (0..column_count)
@@ -529,9 +523,20 @@ fn load_meta(connection: &Connection, table: &str) -> Result<TableMeta, String> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
     if rows.is_empty() {
-        return Err("Table has no visible columns.".into());
+        return Err("Relation has no visible columns.".into());
     }
-    Ok(TableMeta::new(rows, None))
+    let relation_kind: Option<String> = connection
+        .query_row(
+            "SELECT type FROM sqlite_schema WHERE name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let relation_kind = relation_kind
+        .filter(|kind| kind == "view")
+        .map(|_| "view".to_string());
+    Ok(TableMeta::new(rows, relation_kind))
 }
 
 fn xinfo_column(
@@ -594,6 +599,29 @@ fn filter_kind(declared: &str) -> FilterKind {
         FilterKind::Text
     } else {
         FilterKind::Other
+    }
+}
+
+fn page_column_expression(column: &ColumnInfo) -> String {
+    let identifier = quote_identifier(&column.name);
+    if column.primary_key {
+        return if is_binary(column) {
+            format!("hex({identifier})")
+        } else {
+            format!("CAST({identifier} AS TEXT)")
+        };
+    }
+    let limit = crate::common::MAX_CELL_CHARS;
+    if is_binary(column) {
+        format!(
+            "CASE WHEN length({identifier}) > {limit} THEN substr(hex({identifier}), 1, {}) || ' [truncated]' ELSE hex({identifier}) END",
+            limit * 2
+        )
+    } else {
+        let text = format!("CAST({identifier} AS TEXT)");
+        format!(
+            "CASE WHEN length({text}) > {limit} THEN substr({text}, 1, {limit}) || ' [truncated]' ELSE {text} END"
+        )
     }
 }
 
@@ -672,10 +700,16 @@ fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, 
         }
     }
     if meta.primary_indices.is_empty() {
-        terms.push("rowid".into());
+        if meta.relation_kind.as_deref() == Some("view") {
+            if let Some(column) = meta.columns.first() {
+                terms.push(format!("{} ASC", quote_identifier(&column.name)));
+            }
+        } else {
+            terms.push("rowid".into());
+        }
     }
     if terms.is_empty() {
-        terms.push("rowid".into());
+        return Err("Relation has no sortable columns.".into());
     }
     Ok(terms.join(", "))
 }
@@ -782,7 +816,9 @@ fn original_predicate(
         predicates.push(format!("{expression} IS ?"));
     }
     for (index, column) in meta.columns.iter().enumerate() {
-        if meta.primary_indices.contains(&index) {
+        if meta.primary_indices.contains(&index)
+            || crate::common::is_truncated_cell(&original[index])
+        {
             continue;
         }
         params.push(original[index].clone());
@@ -831,6 +867,57 @@ mod tests {
             connection: Arc::new(Mutex::new(connection)),
             interrupt,
         }
+    }
+
+    #[tokio::test]
+    async fn stops_reading_at_the_query_row_cap() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        connection
+            .execute_batch(
+                "CREATE TABLE numbers (value INTEGER);
+                 WITH RECURSIVE count(value) AS (
+                     SELECT 1 UNION ALL SELECT value + 1 FROM count WHERE value < 1001
+                 ) INSERT INTO numbers SELECT value FROM count;",
+            )
+            .expect("create sqlite fixture");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+
+        let output = run_sql(&session, "SELECT value FROM numbers ORDER BY value")
+            .await
+            .expect("run query");
+        assert!(output.truncated);
+        assert_eq!(output.result_sets[0].rows.len(), QUERY_ROW_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn pages_views_without_rowid() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        connection
+            .execute_batch(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
+                 INSERT INTO items (id, name) VALUES (1, 'Alice'), (2, 'Bob');
+                 CREATE VIEW item_names AS SELECT id, name FROM items;",
+            )
+            .expect("create sqlite fixture");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+
+        let page = load_page(&session, "main", "item_names", 0, 10, &[], None)
+            .await
+            .expect("page view");
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(
+            page.rows[0].values,
+            vec![Some("1".into()), Some("Alice".into())]
+        );
+        assert!(!page.editable);
     }
 
     #[tokio::test]

@@ -44,11 +44,16 @@ fn table_scroll_handle(tab_id: u64) -> UniformListScrollHandle {
 }
 
 /// Drop handles for tabs that no longer exist so closing tables does not leak.
-fn prune_table_scroll_handles(app: &KoyoApp) {
+pub(super) fn prune_scroll_handles(app: &KoyoApp) {
     TABLE_SCROLL_HANDLES.with(|handles| {
         let mut handles = handles.borrow_mut();
-        if handles.len() > app.tabs.len() {
-            handles.retain(|tab_id, _| app.tabs.iter().any(|tab| tab.id == *tab_id));
+        handles.retain(|tab_id, _| {
+            app.tabs
+                .iter()
+                .any(|tab| tab.id == *tab_id && matches!(tab.body, TabBody::Table(_)))
+        });
+        if handles.capacity() > handles.len().saturating_mul(4).max(16) {
+            handles.shrink_to_fit();
         }
     });
 }
@@ -69,7 +74,6 @@ pub(super) fn render(
     let connected = tab.connection.is_some();
     let loading = table.loading;
     let cancelling = table.cancelling;
-    prune_table_scroll_handles(app);
     let staged: Rc<Vec<StagedChange>> = Rc::new(table.staged.clone());
     let page: Option<Rc<TablePage>> = table.page.clone().map(Rc::new);
     let sort = table.sort.clone();

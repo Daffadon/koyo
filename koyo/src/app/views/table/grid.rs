@@ -356,20 +356,21 @@ fn render_data_row(
         StagedChange::Update { values, .. } => Some(values),
         _ => None,
     });
-    let copy_row_text = page
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(column_index, column)| {
-            update_values
-                .and_then(|values| values.get(&column.name).cloned())
-                .unwrap_or_else(|| row.values[column_index].clone())
-                .unwrap_or_default()
-        })
-        .collect::<Vec<_>>()
-        .join("\t");
+    let copy_row_text = Rc::new(
+        page.columns
+            .iter()
+            .enumerate()
+            .map(|(column_index, column)| {
+                update_values
+                    .and_then(|values| values.get(&column.name).cloned())
+                    .unwrap_or_else(|| row.values[column_index].clone())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
 
-    let row_text_for_rail = copy_row_text.clone();
+    let row_text_for_rail = Rc::clone(&copy_row_text);
     let mut row_view = h_flex()
         .id(SharedString::from(format!(
             "table-row-{tab_id}-{row_index}"
@@ -403,7 +404,7 @@ fn render_data_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(palette.panel_alt))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_to_clipboard(row_text_for_rail.clone(), "Copied row.", cx);
+                    this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
                 }))
                 .child((page.offset as usize + row_index + 1).to_string()),
         );
@@ -445,7 +446,7 @@ fn render_data_row(
             .unwrap_or_else(|| row.values[column_index].clone());
         let can_edit = editable && !deleted && !column.generated && !column.identity;
         let copy_value = value.clone().unwrap_or_default();
-        let copy_row = copy_row_text.clone();
+        let copy_row = Rc::clone(&copy_row_text);
         row_view = row_view.child(
             div()
                 .id(SharedString::from(format!(
@@ -479,7 +480,7 @@ fn render_data_row(
                         cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
                     }))
                     .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(row.clone()));
+                        cx.write_to_clipboard(ClipboardItem::new_string(row.to_string()));
                     }))
                 })
                 .child(value_text(&value, &palette)),

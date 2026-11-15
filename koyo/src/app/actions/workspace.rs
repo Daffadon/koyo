@@ -11,7 +11,6 @@ use koyo_core::database;
 use koyo_core::models::{ConnectionProfile, Engine, FilterOperator};
 use koyo_core::{ProfileStore, SessionManager};
 use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::app::completion::{CompletionCatalog, SqlCompletionProvider};
@@ -21,8 +20,11 @@ impl KoyoApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, runtime: Arc<Runtime>) -> Self {
         let store = ProfileStore::from_default_dir();
         let settings = SettingsStore::from_default_dir();
-        let saved = settings.load();
-        let (profiles, status) = match store.load_profiles() {
+        let (saved, state_warning, persistence_error) = match settings.load() {
+            Ok(loaded) => (loaded.state, loaded.warning, None),
+            Err(error) => (PersistedState::default(), Some(error.clone()), Some(error)),
+        };
+        let (profiles, mut status) = match store.load_profiles() {
             Ok(profiles) => {
                 let status = if profiles.is_empty() {
                     "Add a connection to get started.".to_string()
@@ -33,12 +35,15 @@ impl KoyoApp {
             }
             Err(error) => (Vec::new(), error),
         };
-
+        if let Some(warning) = state_warning {
+            status = warning;
+        }
         let mut app = Self {
             store,
             settings,
             history: saved.history.clone(),
             allow_close: false,
+            persistence_disabled: persistence_error.is_some(),
             manager: Arc::new(SessionManager::default()),
             runtime,
             profiles,
@@ -175,7 +180,10 @@ impl KoyoApp {
         self.normalize_panes();
     }
 
-    pub(crate) fn persist_state(&self, cx: &App) {
+    pub(crate) fn persist_state(&mut self, cx: &App) {
+        if self.persistence_disabled {
+            return;
+        }
         let state = PersistedState {
             theme: if cx.theme().is_dark() {
                 "dark"
@@ -195,7 +203,12 @@ impl KoyoApp {
             history: self.history.clone(),
             workspace: self.workspace_snapshot(cx),
         };
-        let _ = self.settings.save(&state);
+        if let Err(error) = self.settings.save(&state) {
+            // A locked or temporarily unavailable keyring must not disable
+            // persistence for the rest of the session. Keep retrying on the
+            // next state change, but show the current failure.
+            self.status = error;
+        }
     }
 
     fn workspace_snapshot(&self, cx: &App) -> WorkspaceSnapshot {
@@ -599,22 +612,57 @@ impl KoyoApp {
     pub(crate) fn spawn_task<T, F>(
         &self,
         cx: &mut Context<Self>,
+        tab_id: u64,
         task: impl Future<Output = T> + Send + 'static,
         done: F,
     ) where
         T: Send + 'static,
         F: FnOnce(&mut Self, &mut Context<Self>, T) + 'static,
     {
-        let (tx, rx) = oneshot::channel();
-        self.runtime.spawn(async move {
-            let _ = tx.send(task.await);
-        });
-        cx.spawn(async move |this, cx| {
-            if let Ok(value) = rx.await {
+        let handle = self.runtime.spawn(task);
+        cx.spawn(async move |this, cx| match handle.await {
+            Ok(value) => {
                 let _ = this.update(cx, |this, cx| done(this, cx, value));
+            }
+            Err(error) => {
+                let message = format!("Background task failed unexpectedly: {error}");
+                let _ = this.update(cx, |this, cx| this.fail_task(tab_id, message, cx));
             }
         })
         .detach();
+    }
+
+    pub(crate) fn fail_task(&mut self, tab_id: u64, error: String, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            if let Some(dialog) = self.dialog.as_mut() {
+                dialog.busy = false;
+                dialog.error = error.clone();
+            }
+            self.status = error;
+            cx.notify();
+            return;
+        };
+        self.tabs[index].connecting = false;
+        self.tabs[index].notice = error.clone();
+        match &mut self.tabs[index].body {
+            TabBody::Query(query) => {
+                query.running = false;
+                query.cancelling = false;
+                query.pending_run = false;
+                query.error = error.clone();
+            }
+            TabBody::Table(table) => {
+                table.loading = false;
+                table.cancelling = false;
+                table.foreign_keys_loading = false;
+            }
+        }
+        if let Some(dialog) = self.dialog.as_mut() {
+            dialog.busy = false;
+            dialog.error = error.clone();
+        }
+        self.status = error;
+        cx.notify();
     }
 
     pub(crate) fn disconnect_session(&self, session_id: Uuid) {
@@ -724,6 +772,13 @@ impl KoyoApp {
         };
         if let Some(connection) = self.tabs[index].connection.take() {
             self.disconnect_session(connection.session_id);
+        }
+        if self
+            .cell_edit
+            .as_ref()
+            .is_some_and(|edit| edit.tab_id == tab_id)
+        {
+            self.cell_edit = None;
         }
         let pane = if self.primary_tabs.contains(&tab_id) {
             Some(Pane::Primary)
