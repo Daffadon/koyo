@@ -3815,6 +3815,7 @@ dependencies = [
  "fs2",
  "gpui-kit",
  "koyo-core",
+ "libc",
  "lsp-types",
  "rfd",
  "ropey 1.6.1",
