@@ -12,19 +12,35 @@ use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
 /// Top-bar tooltip sized to its label. Each button owns its tooltip, so moving
 /// to another button closes this one before the next is shown.
-pub(super) fn header_tooltip(
+pub(super) fn button_tooltip(
     id: impl Into<ElementId>,
     element: impl IntoElement,
-    label: &'static str,
+    label: impl Into<SharedString>,
 ) -> AnyElement {
+    let label = label.into();
     div()
         .id(id)
         .child(element)
         .tooltip_show_delay(std::time::Duration::from_millis(120))
         .tooltip(move |window, cx| {
-            Tooltip::element(move |_, _| div().child(label).into_any_element()).build(window, cx)
+            let label = label.clone();
+            Tooltip::element(move |_, _| div().child(label.clone()).into_any_element())
+                .build(window, cx)
         })
         .into_any_element()
+}
+
+pub(super) fn button_tooltip_if(
+    enabled: bool,
+    id: impl Into<ElementId>,
+    element: impl IntoElement,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    if enabled {
+        button_tooltip(id, element, label)
+    } else {
+        div().child(element).into_any_element()
+    }
 }
 
 pub(super) fn render_cell_editor(

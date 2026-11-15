@@ -66,6 +66,7 @@ impl Render for KoyoApp {
         div()
             .flex()
             .size_full()
+            .key_context("Koyo")
             .bg(palette.background)
             .text_color(palette.foreground)
             .when(self.sidebar_open, |this| {

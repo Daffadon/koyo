@@ -417,16 +417,17 @@ impl KoyoApp {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("HISTORY ({})", history.len())),
                             )
-                            .child(
+                            .child(super::widgets::button_tooltip(
+                                "tooltip-clear-history",
                                 Button::new("clear-history")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::Delete)
-                                    .tooltip("Clear query history")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.request_clear_history(window, cx);
                                     })),
-                            ),
+                                "Clear query history",
+                            )),
                     )
                     .child(
                         v_flex()
@@ -491,17 +492,18 @@ impl KoyoApp {
                                                     .child(detail),
                                             ),
                                     )
-                                    .child(
+                                    .child(super::widgets::button_tooltip(
+                                        ("tooltip-history-run", index),
                                         Button::new(("history-run", index))
                                             .ghost()
                                             .compact()
                                             .icon(IconName::Play)
-                                            .tooltip("Re-run query")
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
                                                 this.rerun_history(index, window, cx);
                                             })),
-                                    )
+                                        "Re-run query",
+                                    ))
                             })),
                     ),
             )
@@ -552,7 +554,7 @@ impl KoyoApp {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(super::widgets::header_tooltip(
+                            .child(super::widgets::button_tooltip(
                                 "top-tooltip-manage",
                                 Button::new("manage-connections")
                                     .ghost()
@@ -563,7 +565,7 @@ impl KoyoApp {
                                     })),
                                 "Manage connections",
                             ))
-                            .child(super::widgets::header_tooltip(
+                            .child(super::widgets::button_tooltip(
                                 "top-tooltip-theme",
                                 Button::new("theme-toggle")
                                     .ghost()
@@ -582,7 +584,7 @@ impl KoyoApp {
                                     "Dark theme"
                                 },
                             ))
-                            .child(super::widgets::header_tooltip(
+                            .child(super::widgets::button_tooltip(
                                 "top-tooltip-collapse-sidebar",
                                 Button::new("collapse-sidebar")
                                     .ghost()
@@ -735,16 +737,17 @@ impl KoyoApp {
                             .child("EXPLORER"),
                     )
                     .when(live, |this| {
-                        this.child(
+                        this.child(super::widgets::button_tooltip(
+                            ("tooltip-refresh-tables", tab_id),
                             Button::new("refresh-tables")
                                 .ghost()
                                 .compact()
                                 .icon(IconName::RefreshCw)
-                                .tooltip("Refresh tables")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.refresh_tables(tab_id, cx);
                                 })),
-                        )
+                            "Refresh tables",
+                        ))
                     }),
             )
             .when(live, |this| this.child(tree))

@@ -117,10 +117,10 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
                 KeyBinding::new("cmd-enter", RunQuery, Some("Input")),
-                KeyBinding::new("ctrl-b", ToggleSidebar, None),
-                KeyBinding::new("cmd-b", ToggleSidebar, None),
-                KeyBinding::new("ctrl-alt-b", ToggleAi, None),
-                KeyBinding::new("cmd-alt-b", ToggleAi, None),
+                KeyBinding::new("ctrl-b", ToggleSidebar, Some("Koyo")),
+                KeyBinding::new("cmd-b", ToggleSidebar, Some("Koyo")),
+                KeyBinding::new("ctrl-alt-b", ToggleAi, Some("Koyo")),
+                KeyBinding::new("cmd-alt-b", ToggleAi, Some("Koyo")),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1440.0), px(960.0)), cx);

@@ -64,7 +64,8 @@ pub(super) fn render(
             h_flex()
                 .items_center()
                 .gap_1()
-                .child(super::widgets::header_tooltip(
+                .child(super::widgets::button_tooltip_if(
+                    !(app.ai_pending || app.ai_messages().is_empty()),
                     "top-tooltip-ai-new",
                     Button::new("ai-new-chat")
                         .ghost()
@@ -76,7 +77,8 @@ pub(super) fn render(
                         })),
                     "New chat",
                 ))
-                .child(super::widgets::header_tooltip(
+                .child(super::widgets::button_tooltip_if(
+                    !app.ai_pending,
                     "top-tooltip-ai-settings",
                     Button::new("ai-settings")
                         .ghost()
@@ -88,7 +90,7 @@ pub(super) fn render(
                         })),
                     "AI provider settings",
                 ))
-                .child(super::widgets::header_tooltip(
+                .child(super::widgets::button_tooltip(
                     "top-tooltip-ai-close",
                     Button::new("ai-close")
                         .ghost()
@@ -119,17 +121,18 @@ pub(super) fn render(
         .py_1()
         .border_b_1()
         .border_color(palette.sidebar_border)
-        .child(
+        .child(super::widgets::button_tooltip(
+            "top-tooltip-ai-prev",
             Button::new("ai-thread-prev")
                 .ghost()
                 .compact()
                 .icon(IconName::ChevronLeft)
-                .tooltip("Previous chat")
                 .disabled(app.ai_pending || thread_count < 2)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.switch_ai_thread(-1, cx);
                 })),
-        )
+            "Previous chat",
+        ))
         .child(
             div()
                 .flex_1()
@@ -145,39 +148,42 @@ pub(super) fn render(
             thread_index + 1,
             thread_count
         )))
-        .child(
+        .child(super::widgets::button_tooltip(
+            "top-tooltip-ai-next",
             Button::new("ai-thread-next")
                 .ghost()
                 .compact()
                 .icon(IconName::ChevronRight)
-                .tooltip("Next chat")
                 .disabled(app.ai_pending || thread_count < 2)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.switch_ai_thread(1, cx);
                 })),
-        )
-        .child(
+            "Next chat",
+        ))
+        .child(super::widgets::button_tooltip(
+            "top-tooltip-ai-compact",
             Button::new("ai-compact")
                 .ghost()
                 .compact()
                 .icon(IconName::Minimize)
-                .tooltip("Compact context")
                 .disabled(app.ai_pending || app.ai_messages().is_empty())
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.compact_ai_context(window, cx);
                 })),
-        )
-        .child(
+            "Compact context",
+        ))
+        .child(super::widgets::button_tooltip(
+            "top-tooltip-ai-delete",
             Button::new("ai-thread-delete")
                 .ghost()
                 .compact()
                 .icon(IconName::CircleX)
-                .tooltip("Delete chat")
                 .disabled(app.ai_pending || thread_count <= 1)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.request_delete_ai_thread(window, cx);
                 })),
-        );
+            "Delete chat",
+        ));
 
     let settings = v_flex()
         .id("ai-settings")

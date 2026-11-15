@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::widgets::empty_state;
+use super::widgets::{button_tooltip, empty_state};
 use crate::app::{KoyoApp, Palette, StagedChange, TabBody, TableMode};
 
 mod diagram;
@@ -215,17 +215,18 @@ pub(super) fn render(
                             this.apply_changes(tab_id, cx);
                         })),
                 )
-                .child(
+                .child(button_tooltip(
+                    "tooltip-refresh-table",
                     Button::new("refresh-table")
                         .ghost()
                         .compact()
                         .icon(IconName::RefreshCw)
-                        .tooltip("Refresh table")
                         .disabled(loading || !connected)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.refresh_current_table(tab_id, window, cx);
                         })),
-                )
+                    "Refresh table",
+                ))
                 .when(editable, |this| {
                     this.child(
                         Button::new("add-row")

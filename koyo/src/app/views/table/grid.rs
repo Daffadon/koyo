@@ -9,7 +9,7 @@ use koyo_core::models::{GridRow, TablePage, TableSort};
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::super::widgets::value_text;
+use super::super::widgets::{button_tooltip, value_text};
 use super::{ACTION_WIDTH, CELL_WIDTH, ROW_HEIGHT, ROW_RAIL_WIDTH, table_scroll_handle};
 use crate::app::*;
 
@@ -419,7 +419,8 @@ fn render_data_row(
                 .justify_center()
                 .border_r_1()
                 .border_color(palette.border)
-                .child(
+                .child(button_tooltip(
+                    ("tooltip-delete-row", row_index),
                     Button::new(SharedString::from(format!("delete-row-{row_index}")))
                         .ghost()
                         .compact()
@@ -428,15 +429,15 @@ fn render_data_row(
                         } else {
                             IconName::Delete
                         })
-                        .tooltip(if deleted {
-                            "Undo delete"
-                        } else {
-                            "Stage delete"
-                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.toggle_row_delete(tab_id, row_index, window, cx);
                         })),
-                ),
+                    if deleted {
+                        "Undo delete"
+                    } else {
+                        "Stage delete"
+                    },
+                )),
         );
     }
 
@@ -535,16 +536,17 @@ fn render_insert_row(
                 .justify_center()
                 .border_r_1()
                 .border_color(palette.border)
-                .child(
+                .child(button_tooltip(
+                    ("tooltip-discard-insert", local_id),
                     Button::new(SharedString::from(format!("discard-insert-{local_id}")))
                         .ghost()
                         .compact()
                         .icon(IconName::Delete)
-                        .tooltip("Discard new row")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.discard_insert(tab_id, local_id, cx);
                         })),
-                ),
+                    "Discard new row",
+                )),
         );
     }
 
