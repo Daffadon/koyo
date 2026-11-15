@@ -109,6 +109,10 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            gpui_kit::component::tooltip::TooltipDefaults::new()
+                .with_show_delay(std::time::Duration::from_millis(120))
+                .with_grace_period(std::time::Duration::from_millis(600))
+                .install(cx);
             Theme::change(ThemeMode::Dark, None, cx);
             cx.bind_keys([
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
