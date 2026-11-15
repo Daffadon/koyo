@@ -139,7 +139,11 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        if qualifier.is_none() {
+        // When the cursor is still on a table reference with no alias,
+        // existing aliases belong to other tables. Showing them here invites
+        // the user to create a duplicate; only alias candidates are relevant.
+        let adding_alias = adding_table_alias(&refs);
+        if qualifier.is_none() && !adding_alias {
             for alias in refs.iter().filter_map(|table_ref| table_ref.alias.as_ref()) {
                 if starts_with(alias) {
                     let table = refs
@@ -159,21 +163,23 @@ impl CompletionProvider for SqlCompletionProvider {
                     );
                 }
             }
+        }
 
-            if let Some(last) = refs.last() {
-                for alias in suggest_aliases(last, &refs) {
-                    if starts_with(&alias) {
-                        push_item(
-                            &mut items,
-                            &mut seen,
-                            CompletionItem {
-                                label: alias,
-                                kind: Some(CompletionItemKind::VARIABLE),
-                                detail: Some(format!("{} table alias", last.table)),
-                                ..Default::default()
-                            },
-                        );
-                    }
+        if qualifier.is_none()
+            && let Some(last) = refs.last()
+        {
+            for alias in suggest_aliases(last, &refs) {
+                if starts_with(&alias) {
+                    push_item(
+                        &mut items,
+                        &mut seen,
+                        CompletionItem {
+                            label: alias,
+                            kind: Some(CompletionItemKind::VARIABLE),
+                            detail: Some(format!("{} table alias", last.table)),
+                            ..Default::default()
+                        },
+                    );
                 }
             }
         }
@@ -458,6 +464,20 @@ fn default_alias(table: &str) -> String {
     }
 }
 
+fn adding_table_alias(refs: &[TableRef]) -> bool {
+    let Some(last) = refs.last() else {
+        return false;
+    };
+    let previous = &refs[..refs.len().saturating_sub(1)];
+    last.alias.is_none()
+        || previous.iter().any(|table_ref| same_table(table_ref, last))
+        || last.alias.as_ref().is_some_and(|alias| {
+            previous
+                .iter()
+                .any(|table_ref| table_ref.alias.as_deref() == Some(alias))
+        })
+}
+
 fn suggest_aliases(last: &TableRef, refs: &[TableRef]) -> Vec<String> {
     let last_index = refs.len().saturating_sub(1);
     let mut used = refs[..last_index]
@@ -701,6 +721,23 @@ mod tests {
             },
         ];
         assert_eq!(suggest_aliases(&refs[1], &refs), vec!["u2", "u3", "u4"]);
+    }
+
+    #[test]
+    fn repeated_table_is_adding_an_alias() {
+        let refs = vec![
+            TableRef {
+                schema: None,
+                table: "users".into(),
+                alias: Some("u".into()),
+            },
+            TableRef {
+                schema: None,
+                table: "users".into(),
+                alias: Some("u".into()),
+            },
+        ];
+        assert!(adding_table_alias(&refs));
     }
 
     #[test]

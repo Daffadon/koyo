@@ -3772,6 +3772,7 @@ dependencies = [
  "lsp-types",
  "rfd",
  "ropey 1.6.1",
+ "serde",
  "serde_json",
  "tokio",
  "uuid",

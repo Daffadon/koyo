@@ -6,7 +6,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
 pub(super) fn render_cell_editor(
     edit: &CellEdit,
@@ -264,9 +264,9 @@ pub(super) fn render_confirm(
         .flex()
         .items_center()
         .justify_center()
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
-                this.resolve_confirm(false, cx);
+                this.resolve_confirm(false, window, cx);
             }
         }))
         .child(
@@ -275,8 +275,8 @@ pub(super) fn render_confirm(
                 .absolute()
                 .inset_0()
                 .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.resolve_confirm(false, cx);
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.resolve_confirm(false, window, cx);
                 })),
         )
         .child(
@@ -311,16 +311,16 @@ pub(super) fn render_confirm(
                             Button::new("confirm-cancel")
                                 .secondary()
                                 .label("Cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.resolve_confirm(false, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.resolve_confirm(false, window, cx);
                                 })),
                         )
                         .child(
                             Button::new("confirm-continue")
                                 .primary()
                                 .label("Continue")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.resolve_confirm(true, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.resolve_confirm(true, window, cx);
                                 })),
                         ),
                 ),

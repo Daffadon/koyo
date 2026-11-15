@@ -6,22 +6,22 @@ use gpui_kit::component::{h_flex, resizable_panel, v_flex, v_resizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
-use koyo_core::models::{Engine, QueryResultSet};
+use koyo_core::models::Engine;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ops::Range;
-use std::rc::Rc;
 
-use super::widgets::{empty_state, value_text};
-use super::{KoyoApp, Palette, ResultView, TabBody};
+use super::widgets::empty_state;
+use crate::app::{KoyoApp, Palette, ResultView, TabBody};
 
-/// Height of the results header bar when the results area is collapsed.
+mod grid;
+mod json;
+
 const COLLAPSED_RESULTS_HEIGHT: f32 = 38.0;
 
 /// Fixed result row height so the virtual list's uniform scroll math is exact.
-/// Matches `table_view::ROW_HEIGHT`: `text_sm` line box (0.875rem x 1.618
+/// Matches `table::ROW_HEIGHT`: `text_sm` line box (0.875rem x 1.618
 /// ~= 23px) + `py_1` (8px) + the 1px bottom border.
-const ROW_HEIGHT: f32 = 32.0;
+pub(super) const ROW_HEIGHT: f32 = 32.0;
 
 thread_local! {
     /// Virtual list scroll handles keyed by (tab id, result set index) so the
@@ -30,7 +30,7 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
-fn result_scroll_handle(tab_id: u64, result_index: usize) -> UniformListScrollHandle {
+pub(super) fn result_scroll_handle(tab_id: u64, result_index: usize) -> UniformListScrollHandle {
     RESULT_SCROLL_HANDLES.with(|handles| {
         handles
             .borrow_mut()
@@ -85,6 +85,11 @@ pub(super) fn render(
                 .min(output.result_sets.len().saturating_sub(1))
         })
         .unwrap_or(0);
+    let result_widths = query
+        .result_column_widths
+        .get(active_result)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     prune_result_scroll_handles(
         app,
         tab_id,
@@ -125,12 +130,62 @@ pub(super) fn render(
         });
 
     let result_body = match (error.is_empty(), output) {
-        (false, _) => div()
-            .p_4()
-            .font_family(mono)
-            .text_sm()
-            .text_color(palette.danger)
-            .child(error.clone())
+        (false, _) => v_flex()
+            .id(("query-error", tab_id))
+            .flex_1()
+            .min_h(px(0.0))
+            .w_full()
+            .p_5()
+            .overflow_y_scroll()
+            .child(
+                h_flex()
+                    .items_stretch()
+                    .w_full()
+                    .max_w(px(900.0))
+                    .bg(palette.panel)
+                    .border_1()
+                    .border_color(palette.border)
+                    .child(div().w(px(2.0)).flex_shrink_0().bg(palette.danger))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_2()
+                            .p_4()
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        gpui_kit::component::Icon::new(IconName::CircleAlert)
+                                            .with_size(Size::Small)
+                                            .text_color(palette.danger),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette.danger)
+                                            .child("Query failed"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .font_family(mono)
+                                    .text_sm()
+                                    .text_color(palette.foreground)
+                                    .whitespace_normal()
+                                    .child(error.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.muted)
+                                    .whitespace_normal()
+                                    .child("Fix the statement and run it again."),
+                            ),
+                    ),
+            )
             .into_any_element(),
         (true, Some(output)) => {
             if output.result_sets.is_empty() {
@@ -155,9 +210,17 @@ pub(super) fn render(
                     .into_any_element()
             } else if let Some(result) = output.result_sets.get(active_result) {
                 if result_view == ResultView::Json {
-                    result_json(result, tab_id, active_result, palette, &mono, cx)
+                    json::result_json(result, tab_id, active_result, palette, &mono, cx)
                 } else {
-                    result_grid(result, tab_id, active_result, palette, &mono, cx)
+                    grid::result_grid(
+                        result,
+                        tab_id,
+                        active_result,
+                        result_widths,
+                        palette,
+                        &mono,
+                        cx,
+                    )
                 }
             } else {
                 empty_state("No results", "Run a statement to see rows.", palette)
@@ -240,12 +303,24 @@ pub(super) fn render(
                                 })),
                         ),
                 )
-                .when(!error.is_empty(), |this| {
-                    this.child(div().text_color(palette.danger).child("Query failed"))
-                })
                 .when_some(duration, |this, duration| {
                     this.child(format!("{duration} ms"))
                 })
+                .when(
+                    output.is_some_and(|output| !output.result_sets.is_empty()),
+                    |this| {
+                        this.child(
+                            Button::new(("copy-result-csv", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy active result as CSV")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_active_result(tab_id, cx);
+                                })),
+                        )
+                    },
+                )
                 .when(output.is_some_and(|output| output.truncated), |this| {
                     this.child("Each result capped at 1,000 rows")
                 }),
@@ -398,313 +473,4 @@ pub(super) fn render(
             ),
         )
         .into_any_element()
-}
-
-const JSON_LINE_HEIGHT: f32 = 22.0;
-
-fn result_json(
-    result: &QueryResultSet,
-    tab_id: u64,
-    result_index: usize,
-    palette: &Palette,
-    mono: &SharedString,
-    cx: &mut Context<KoyoApp>,
-) -> AnyElement {
-    let lines = Rc::new(json_result_lines(result));
-    let scroll_handle = result_scroll_handle(tab_id, result_index);
-    let palette = *palette;
-    let widest = lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(2);
-    // monospace 14px text is roughly 8px/character; keep a comfortable gutter.
-    let width = ((widest as f32) * 8.0 + 48.0).max(420.0);
-    let lines_for_rows = Rc::clone(&lines);
-    let rows = uniform_list(
-        (
-            SharedString::from(format!("result-json-rows-{tab_id}")),
-            result_index,
-        ),
-        lines.len(),
-        cx.processor(
-            move |_app: &mut KoyoApp,
-                  range: Range<usize>,
-                  _window: &mut Window,
-                  _cx: &mut Context<KoyoApp>| {
-                range
-                    .map(|line_index| {
-                        let line = lines_for_rows.get(line_index).cloned().unwrap_or_default();
-                        div()
-                            .flex_shrink_0()
-                            .h(px(JSON_LINE_HEIGHT))
-                            .px_4()
-                            .flex()
-                            .items_center()
-                            .whitespace_nowrap()
-                            .text_sm()
-                            .text_color(palette.foreground)
-                            .child(line)
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>()
-            },
-        ),
-    )
-    .flex_1()
-    .min_h(px(0.0))
-    .track_scroll(&scroll_handle);
-
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .child(
-            div()
-                .id(("result-json-hscroll", tab_id))
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_x_scroll()
-                .child(
-                    div()
-                        .w(px(width))
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .child(rows),
-                ),
-        )
-        .font_family(mono.clone())
-        .into_any_element()
-}
-
-fn json_result_lines(result: &QueryResultSet) -> Vec<String> {
-    let mut lines = Vec::with_capacity(result.rows.len() + 2);
-    lines.push("[".to_string());
-    for (row_index, row) in result.rows.iter().enumerate() {
-        let mut line = String::from("  {");
-        for (column_index, column) in result.columns.iter().enumerate() {
-            if column_index > 0 {
-                line.push_str(", ");
-            }
-            push_json_string(&mut line, column);
-            line.push_str(": ");
-            match row.get(column_index).and_then(Option::as_deref) {
-                Some(value) => push_json_string(&mut line, value),
-                None => line.push_str("null"),
-            }
-        }
-        line.push('}');
-        if row_index + 1 < result.rows.len() {
-            line.push(',');
-        }
-        lines.push(line);
-    }
-    lines.push("]".to_string());
-    lines
-}
-
-fn push_json_string(output: &mut String, value: &str) {
-    output.push('"');
-    for character in value.chars() {
-        match character {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            '\u{08}' => output.push_str("\\b"),
-            '\u{0c}' => output.push_str("\\f"),
-            character if character < ' ' => {
-                use std::fmt::Write as _;
-                let _ = write!(output, "\\u{:04x}", character as u32);
-            }
-            character => output.push(character),
-        }
-    }
-    output.push('"');
-}
-
-fn result_grid(
-    result: &QueryResultSet,
-    tab_id: u64,
-    result_index: usize,
-    palette: &Palette,
-    mono: &SharedString,
-    cx: &mut Context<KoyoApp>,
-) -> AnyElement {
-    let width = (result.columns.len().max(1) * 180) as f32;
-    let palette = *palette;
-    let header = h_flex()
-        .flex_shrink_0()
-        .bg(palette.panel)
-        .border_b_1()
-        .border_color(palette.border)
-        .children(result.columns.iter().enumerate().map(|(index, column)| {
-            div()
-                .id(SharedString::from(format!("result-head-{index}")))
-                .w(px(180.0))
-                .flex_shrink_0()
-                .px_2()
-                .py_2()
-                .text_xs()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette.muted)
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .child(column.clone())
-        }));
-
-    let row_count = result.rows.len();
-
-    // Only the rows inside the viewport are built; the uniform list measures
-    // `ROW_HEIGHT` from the first row and computes the scroll range from it.
-    let rows: AnyElement = if row_count == 0 {
-        v_flex()
-            .flex_1()
-            .min_h(px(0.0))
-            .p_4()
-            .text_xs()
-            .text_color(palette.muted)
-            .child("No rows returned.")
-            .into_any_element()
-    } else {
-        let scroll_handle = result_scroll_handle(tab_id, result_index);
-        uniform_list(
-            (
-                SharedString::from(format!("result-rows-{tab_id}")),
-                result_index,
-            ),
-            row_count,
-            cx.processor(
-                move |app: &mut KoyoApp,
-                      range: Range<usize>,
-                      _window: &mut Window,
-                      _cx: &mut Context<KoyoApp>| {
-                    let Some(result) = app
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.id == tab_id)
-                        .and_then(|tab| match &tab.body {
-                            TabBody::Query(query) => query.output.as_ref(),
-                            TabBody::Table(_) => None,
-                        })
-                        .and_then(|output| output.result_sets.get(result_index))
-                    else {
-                        return Vec::new();
-                    };
-                    range
-                        .map(|row_index| render_result_row(result, row_index, palette))
-                        .collect::<Vec<_>>()
-                },
-            ),
-        )
-        .flex_1()
-        .min_h(px(0.0))
-        .track_scroll(&scroll_handle)
-        .into_any_element()
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .child(
-            div()
-                .id(("result-hscroll", tab_id))
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_x_scroll()
-                .child(div().w(px(width)).flex().flex_col().child(header))
-                .child(
-                    div()
-                        .w(px(width))
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .child(rows),
-                ),
-        )
-        .font_family(mono.clone())
-        .into_any_element()
-}
-
-fn render_result_row(result: &QueryResultSet, row_index: usize, palette: Palette) -> AnyElement {
-    let Some(row) = result.rows.get(row_index) else {
-        return div().h(px(ROW_HEIGHT)).into_any_element();
-    };
-    h_flex()
-        .flex_shrink_0()
-        .h(px(ROW_HEIGHT))
-        .border_b_1()
-        .border_color(palette.border)
-        .when(row_index % 2 == 1, |this| this.bg(palette.panel))
-        .children((0..result.columns.len()).map(|column_index| {
-            let value = row.get(column_index).cloned().unwrap_or(None);
-            div()
-                .w(px(180.0))
-                .flex_shrink_0()
-                .px_2()
-                .py_1()
-                .overflow_hidden()
-                .child(value_text(&value, &palette))
-        }))
-        .into_any_element()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{QueryResultSet, json_result_lines};
-
-    fn result(columns: &[&str], rows: Vec<Vec<Option<&str>>>) -> QueryResultSet {
-        QueryResultSet {
-            columns: columns.iter().map(|column| column.to_string()).collect(),
-            rows: rows
-                .into_iter()
-                .map(|row| {
-                    row.into_iter()
-                        .map(|value| value.map(str::to_string))
-                        .collect()
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn json_view_is_an_array_of_row_objects() {
-        let result = result(
-            &["id", "note", "missing"],
-            vec![
-                vec![Some("1"), Some("a\"b\nline"), None],
-                vec![Some("2"), Some("back\\slash"), Some("ok")],
-            ],
-        );
-        let text = json_result_lines(&result).join("\n");
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        let rows = parsed.as_array().expect("top-level array");
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0]["id"], "1");
-        assert_eq!(rows[0]["note"], "a\"b\nline");
-        assert!(rows[0]["missing"].is_null());
-        assert_eq!(rows[1]["note"], "back\\slash");
-        assert_eq!(rows[1]["missing"], "ok");
-    }
-
-    #[test]
-    fn json_view_has_no_rows_when_the_result_is_empty() {
-        assert_eq!(
-            json_result_lines(&result(&["id"], Vec::new())),
-            vec!["[", "]"]
-        );
-    }
 }

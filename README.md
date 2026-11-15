@@ -1,79 +1,221 @@
+<div align="center">
+
 # Koyo
 
-Koyo is a cross-platform native database client for PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle. It is built with Rust and [GPUI Kit](https://gpui-kit.com), with no WebView and no JavaScript runtime. Oracle support is marked beta because it uses the official pre-1.0 pure-Rust driver.
+**A fast, native database client for PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle.**
+
+[![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![GPUI Kit](https://img.shields.io/badge/UI-GPUI%20Kit-5A7D6A?style=flat-square)](https://gpui-kit.com)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-4C6EF5?style=flat-square)](#supported-engines)
+[![No WebView](https://img.shields.io/badge/runtime-no%20WebView%20%C2%B7%20no%20JavaScript-2F9E44?style=flat-square)](#architecture)
+
+[Features](#features) · [Quick start](#quick-start) · [Engines](#supported-engines) · [Architecture](#architecture) · [Development](#development) · [Limitations](#known-limitations)
+
+</div>
+
+Koyo is a cross-platform desktop database client written in Rust and built with [GPUI Kit](https://gpui-kit.com). It renders natively, talks to databases directly from Rust, and keeps every workspace tab on its own database session. There is no WebView, no JavaScript runtime, and no frontend IPC bridge.
+
+Koyo is for everyday work: run SQL with completion and history, inspect schemas, page through tables, filter and sort server-side, and stage row edits before applying them in one transaction.
 
 ## Features
 
-- Save PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle connection profiles. Server passwords are kept in Windows Credential Manager, macOS Keychain, or Linux Secret Service; SQLite uses a database file path. Profile files contain no passwords. Oracle uses the official pure-Rust `oracledb` beta driver and needs no Instant Client.
-- Choose the database engine before a profile, then open query and table tabs that each own a dedicated session. All connections share one tab pane: a live PostgreSQL table tab and a live MySQL table tab can stay open side by side, each pinned to its own session. There is no fixed limit on live sessions.
-- Browse tables grouped by schema, then preview table rows. Filter columns server-side, sort by one column, page through results, and cancel a slow page load.
-- Edit rows for tables with primary keys. Inserts, updates, and deletes stay staged until **Apply changes**. The batch runs in one transaction and rolls back on stale-row conflicts. If the commit result is uncertain, Koyo clears staged edits and reloads the page; verify data before retrying.
-- Run SQL with the connected session's permissions. The editor suggests SQL keywords, schemas, tables, and columns from the connected database. Results are shown as a table or as a JSON array with one object per row (SQL NULL becomes `null`); each result set is capped at 1,000 displayed rows. A running query can be cancelled. SQLite runs one statement per execution.
-- Switch between the dark theme and a warm, low-contrast light theme from the sidebar.
-- Verify PostgreSQL TLS server identity by default. **Disable TLS** is available for trusted local connections only.
+### SQL workbench
 
-Tables without primary keys are read-only in the data grid. Linux PostgreSQL password storage requires a running Secret Service provider. Koyo does not save passwords in plaintext if the operating-system credential store is unavailable; passwordless connections do not need the credential store at all.
+- SQL editor with keyword, schema, table, column, and alias completion. `u.` completion resolves through the table behind the alias.
+- Run with **Ctrl+Enter** or **Cmd+Enter**; cancel a running statement where the engine supports it.
+- Multiple result sets per execution, shown as a data grid or as JSON (one object per row).
+- Copy the active result set as CSV, copy individual cells, or copy rows as TSV.
+- Drag column edges to resize query-result columns.
+- Persistent query history: load an old statement or re-run it against the same profile. History keeps the latest 100 distinct SQL/profile pairs.
+- Each result set is capped at 1,000 displayed rows.
 
-## Architecture
+### Table browser and data editing
 
-The workspace has two crates:
+- Explore tables, views, functions, triggers, and engine metadata grouped by schema.
+- Preview rows with server-side filters, one-column sorting, offset paging, and cancellable page loads.
+- Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
+- Foreign-key diagram for the open table.
+- Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
+- Stale-row checks roll back the batch when a row changed after it was loaded.
+- Keyless tables and views are read-only.
+- Right-click a table cell to copy its value or the row; click a row number to copy the row.
 
-- `koyo` — native GPUI desktop application. The UI uses GPUI Kit components: buttons, inputs, code editor, tab bars, dialogs, status bar, and icons.
-- `koyo-core` — database engines, session management, profile storage, and credential handling shared by every engine.
+### Connections and workspace
 
-The application never calls a web bridge: UI actions call `koyo-core` async APIs directly and publish results back to the GPUI view.
+- Six engines with an engine-first connection flow and per-engine profile forms.
+- Create, edit, and delete profiles. Profiles contain no passwords.
+- Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
+- Query and table tabs each own a dedicated session. Multiple databases can stay live side by side in one tab strip.
+- Split panes, tab drag between panes, resizable panes, and resizable table columns.
+- Theme, sidebar state, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
+- Dark theme and a warm, low-contrast light theme.
+- Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
 
-## Development
+## Supported engines
 
-Install Rust 1.88 or newer. On Linux, GPUI needs the native windowing and font development packages:
+| Engine | Driver | Default port | Notes |
+| --- | --- | --- | --- |
+| PostgreSQL | `tokio-postgres` + `rustls` | 5432 | TLS server identity verified by default; cancel supported |
+| SQLite | `rusqlite` (bundled) | — | File-based; one statement per execution; cancel supported |
+| MySQL | `mysql_async` + `rustls` | 3306 | Server-side filters, paging, staged edits, cancel |
+| MariaDB | `mysql_async` + `rustls` | 3306 | Same workflow as MySQL |
+| SQL Server | `tiberius` + `rustls` | 1433 | SQL authentication; cancel closes the session, so reconnect afterward |
+| Oracle | `oracledb` (beta) | 1521 | No Instant Client; cancellation unavailable in the beta driver |
+
+> [!NOTE]
+> Oracle support is beta because it uses the official pre-1.0 pure-Rust `oracledb` driver. The driver, profile surface, and SQL behavior may change.
+
+> [!WARNING]
+> **Disable TLS** is intended only for trusted local connections. PostgreSQL verifies the server identity by default; the other network engines request TLS and validate certificates in `verify-full` mode.
+
+## Quick start
+
+### Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer.
+- On Linux, native windowing and font development packages. On Debian/Ubuntu:
+
+  ```sh
+  sudo apt-get install -y \
+    build-essential \
+    libxkbcommon-dev \
+    libxkbcommon-x11-dev \
+    libx11-xcb-dev \
+    libwayland-dev \
+    libxcb1-dev
+  ```
+
+- On macOS, Xcode Command Line Tools.
+- On Windows, the MSVC Rust toolchain plus Visual Studio Build Tools with the Windows SDK.
+
+### Build and run
 
 ```sh
-sudo apt-get install -y \
-  build-essential \
-  libxkbcommon-dev \
-  libxkbcommon-x11-dev \
-  libx11-xcb-dev \
-  libwayland-dev \
-  libxcb1-dev
-```
-
-The workspace is configured to link with [mold](https://github.com/rui314/mold) on `x86_64-unknown-linux-gnu` for faster builds:
-
-```sh
-sudo apt-get install -y mold
+git clone https://github.com/Daffadon/koyo.git
+cd koyo
 cargo run -p koyo
 ```
 
-`.cargo/config.toml` passes `-fuse-ld=mold`. On macOS, Windows, and non-x86_64 Linux the setting is ignored and the platform linker is used. If mold is not installed on an x86_64 Linux host, remove that target section or install mold before building.
+The first run creates an empty workspace. Open **Manage connections**, choose an engine, add a profile, and connect. A query tab opens with starter SQL for the engine.
 
-Build a release binary with:
+For a release build:
 
 ```sh
 cargo build --release -p koyo
 ```
 
-The binary is written to `target/release/koyo`. Linux builds additionally need `libxkbcommon`, `libxkbcommon-x11`, X11, Wayland, and fontconfig runtime libraries, which are standard on desktop distributions.
+The binary is written to `target/release/koyo`. Linux release builds additionally need the `libxkbcommon`, `libxkbcommon-x11`, X11, Wayland, and fontconfig runtime libraries.
 
-### Tests
+> [!IMPORTANT]
+> x86_64 Linux builds link with [mold](https://github.com/rui314/mold) through `.cargo/config.toml`. Install `mold`, or remove the `[target.x86_64-unknown-linux-gnu]` section if you prefer the platform linker. Other targets ignore the setting.
+
+## Architecture
+
+Koyo is a two-crate Rust workspace:
+
+- **`koyo`** — native GPUI desktop application: window, tabs, editor, schema explorer, grids, dialogs, persistence, and shortcuts.
+- **`koyo-core`** — database engines, session management, SQL generation, metadata discovery, profile storage, and credential handling. It does not depend on GPUI.
+
+```text
+┌──────────────────────────────────────────────┐
+│ koyo (GPUI)                                  │
+│  views render state · actions update state   │
+└──────────────────────┬───────────────────────┘
+                       │ async koyo-core APIs
+┌──────────────────────▼───────────────────────┐
+│ koyo-core                                    │
+│  SessionManager · profiles · credentials     │
+│  PostgreSQL · SQLite · MySQL · MariaDB       │
+│  SQL Server · Oracle                         │
+└──────────────────────────────────────────────┘
+```
+
+Inside `koyo`:
+
+```text
+koyo/src/
+  main.rs                  application startup, window, shortcuts
+  app.rs                   module wiring and shared re-exports
+  app/state.rs             tabs, panes, dialogs, staged edits, app state
+  app/settings.rs          persisted theme, workspace, and query history
+  app/theme.rs             palette and light-theme adjustment
+  app/helpers.rs           labels, starter SQL, filters, form defaults, CSV
+  app/completion.rs        SQL completion catalog and alias parser
+  app/actions/             state transitions and async work
+    workspace.rs           panes, tabs, splits, persistence, confirmations
+    connections.rs         connect, catalog loading, profile dialog/storage
+    queries.rs             run, cancel, history, result selection and resize
+    tables.rs              paging, filtering, sorting, refresh, apply/discard
+    editing.rs             cell editing, inserts, deletes, staged changes
+  app/views/               GPUI rendering only
+    root.rs                root frame and overlays
+    sidebar.rs             explorer, connection summary, query history
+    workspace.rs           tab bars, panes, status bar
+    connection.rs          engine picker and connection dialog
+    query/                 editor and result rendering
+    table/                 filter, grid, and diagram rendering
+    widgets.rs             shared dialogs and input widgets
+```
+
+Views read state and emit actions. Actions perform session and database work, then update state and notify GPUI. Database work runs on a Tokio runtime owned by the application; the UI never blocks on a database call.
+
+## Configuration and security
+
+Koyo stores application data in the platform config directory:
+
+| Platform | Path |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME/com.koyo.db` or `~/.config/com.koyo.db` |
+| macOS | `~/Library/Application Support/com.koyo.db` |
+| Windows | `%APPDATA%\com.koyo.db` |
+
+- `profiles.json` contains connection profiles without passwords.
+- `state.json` contains the theme, workspace snapshot, and query history.
+- Passwords are stored separately in the operating-system credential store.
+- If the credential store is unavailable, Koyo reports an error instead of writing a plaintext password.
+- Linux saved passwords require a running Secret Service provider. Passwordless connections do not need one.
+
+> [!NOTE]
+> `state.json` contains SQL text from query history and restored tabs. It is written with private permissions on Unix but is not encrypted. Avoid running sensitive statements if this local history is not acceptable.
+
+## Development
+
+### Checks
 
 ```sh
+cargo fmt --all -- --check
+cargo check --workspace
 cargo test --workspace
 ```
 
-The database integration tests are ignored by default; point them at disposable databases:
+### Tests
+
+The database integration tests are ignored by default. Point them at disposable databases.
+
+PostgreSQL:
 
 ```sh
 KOYO_TEST_DATABASE_URL="host=127.0.0.1 user=postgres password=... dbname=koyo_test sslmode=disable" \
   cargo test -p koyo-core -- --ignored
 ```
 
-The MySQL, MariaDB, SQL Server, and Oracle workflow tests are also ignored by default:
+MySQL or MariaDB:
 
 ```sh
 KOYO_TEST_DB_HOST=127.0.0.1 KOYO_TEST_MYSQL_PORT=3306 KOYO_TEST_MYSQL_ENGINE=mysql \
   cargo test -p koyo-core --lib mysql_workflow -- --ignored
+```
+
+SQL Server:
+
+```sh
 KOYO_TEST_DB_HOST=127.0.0.1 KOYO_TEST_MSSQL_PORT=1433 \
   cargo test -p koyo-core --lib mssql_workflow -- --ignored
+```
+
+Oracle:
+
+```sh
 KOYO_TEST_ORACLE_HOST=127.0.0.1 KOYO_TEST_ORACLE_PORT=1521 KOYO_TEST_ORACLE_SERVICE=FREEPDB1 \
 KOYO_TEST_ORACLE_USER=koyo KOYO_TEST_ORACLE_PASSWORD=koyo \
   cargo test -p koyo-core --lib oracle_workflow -- --ignored
@@ -92,13 +234,11 @@ prek install --force
 - **pre-commit**: whitespace, file endings, YAML/JSON/TOML syntax, large files, private keys, case and Windows-name conflicts, `cargo fmt --all --check`.
 - **pre-push**: pre-commit checks plus `cargo check --workspace`.
 
-Run every hook manually with `prek run --all-files`. The hooks assume the native development packages from above are installed.
+Run every hook manually with `prek run --all-files`.
 
-See the [ADRs](docs/adr) for architecture decisions, including [ADR 0009](docs/adr/0009-native-gpui.md) for the GPUI migration and mold linker, and the [glossary](docs/glossary.md) for product terms.
+### Releases
 
-## Releases
-
-The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon binaries. It runs on tags, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon binaries on version tags, uploads workflow artifacts, and creates a draft GitHub release.
 
 Keep the workspace version in `koyo/Cargo.toml` and `koyo-core/Cargo.toml` equal, then push a matching tag:
 
@@ -107,4 +247,20 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-Builds are unsigned; macOS may require right-click **Open**, and Windows SmartScreen may warn.
+Builds are unsigned. macOS may require right-click **Open**; Windows SmartScreen may warn.
+
+## Known limitations
+
+- SQLite executes one statement per run.
+- Oracle beta cannot cancel a running statement.
+- SQL Server cancellation terminates the session; reconnect before continuing.
+- Binary and large object values display according to each engine's text contract. Binary editing is not supported.
+- Offset paging can skip or repeat rows when data changes concurrently. Views without an explicit sort have no stable page order.
+- Multi-column sorting, filter groups, keyset paging, SSH tunnels, client certificates, Windows integrated authentication, and schema editing are not implemented.
+- Query results are capped at 1,000 rows per result set; table pages are capped at 100 rows.
+- Tables without primary keys are read-only in the data grid.
+
+## Documentation
+
+- [Architecture decision records](docs/adr) — engine boundaries, sessions, GPUI migration, result views, and theme decisions.
+- [Glossary](docs/glossary.md) — product terms used by the UI and docs.

@@ -1121,13 +1121,17 @@ async fn collect_query(client: &Client, sql: &str) -> Result<QueryOutput, String
     let stream = client
         .simple_query_raw(sql)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     futures_util::pin_mut!(stream);
 
     let mut result_sets: Vec<QueryResultSet> = Vec::new();
     let mut affected_rows = Vec::new();
     let mut truncated = false;
-    while let Some(message) = stream.try_next().await.map_err(|error| error.to_string())? {
+    while let Some(message) = stream
+        .try_next()
+        .await
+        .map_err(|error| format_pg_error(&error))?
+    {
         match message {
             SimpleQueryMessage::RowDescription(columns) => {
                 result_sets.push(QueryResultSet {
@@ -1162,6 +1166,29 @@ async fn collect_query(client: &Client, sql: &str) -> Result<QueryOutput, String
         affected_rows,
         truncated,
     })
+}
+
+/// Postgres' top-level Display is only "db error"; the useful message,
+/// SQLSTATE, detail, hint, and position live on the nested `DbError`.
+fn format_pg_error(error: &tokio_postgres::Error) -> String {
+    let Some(db_error) = error.as_db_error() else {
+        return error.to_string();
+    };
+    let mut message = format!("SQLSTATE {}: {db_error}", db_error.code().code());
+    if let Some(position) = db_error.position() {
+        match position {
+            tokio_postgres::error::ErrorPosition::Original(position) => {
+                message.push_str(&format!("\nPOSITION: {position}"));
+            }
+            tokio_postgres::error::ErrorPosition::Internal { position, .. } => {
+                message.push_str(&format!("\nPOSITION: {position}"));
+            }
+        }
+    }
+    if let Some(context) = db_error.where_() {
+        message.push_str(&format!("\nCONTEXT: {context}"));
+    }
+    message
 }
 
 async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<TableMeta, String> {

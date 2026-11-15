@@ -4,7 +4,7 @@ use std::fs;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 pub const APP_IDENTIFIER: &str = "com.koyo.db";
@@ -43,6 +43,45 @@ pub fn default_config_dir() -> PathBuf {
     PathBuf::from(APP_IDENTIFIER)
 }
 
+/// Replace `path` atomically with private permissions. The temporary file sits
+/// beside the target so the rename stays on one filesystem.
+pub fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Invalid application config path".to_string())?;
+    let mut directory_builder = fs::DirBuilder::new();
+    directory_builder.recursive(true);
+    #[cfg(unix)]
+    directory_builder.mode(0o700);
+    directory_builder
+        .create(directory)
+        .map_err(|error| format!("Could not create application config directory: {error}"))?;
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("state");
+    let temporary_path = directory.join(format!(".{file_name}-{}.tmp", Uuid::new_v4()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&temporary_path)
+        .map_err(|error| format!("Could not write {file_name}: {error}"))?;
+    let write_result = file.write_all(contents);
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not write {file_name}: {error}"));
+    }
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(format!("Could not replace {file_name}: {error}"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct ProfileStore {
     config_dir: PathBuf,
@@ -79,39 +118,10 @@ impl ProfileStore {
     }
 
     fn write_profiles(&self, profiles: &[ConnectionProfile]) -> Result<(), String> {
-        let path = self.profile_path();
-        let directory = path
-            .parent()
-            .ok_or_else(|| "Invalid application config path".to_string())?;
-        let mut directory_builder = fs::DirBuilder::new();
-        directory_builder.recursive(true);
-        #[cfg(unix)]
-        directory_builder.mode(0o700);
-        directory_builder
-            .create(directory)
-            .map_err(|error| format!("Could not create application config directory: {error}"))?;
-
-        let temporary_path = directory.join(format!(".profiles-{}.tmp", Uuid::new_v4()));
         let contents = serde_json::to_vec_pretty(profiles)
             .map_err(|error| format!("Could not encode connection profiles: {error}"))?;
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(&temporary_path)
-            .map_err(|error| format!("Could not write connection profiles: {error}"))?;
-        let write_result = file.write_all(&contents);
-        drop(file);
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(format!("Could not write connection profiles: {error}"));
-        }
-        if let Err(error) = fs::rename(&temporary_path, &path) {
-            let _ = fs::remove_file(&temporary_path);
-            return Err(format!("Could not save connection profiles: {error}"));
-        }
-        Ok(())
+        write_private_file(&self.profile_path(), &contents)
+            .map_err(|error| format!("Could not save connection profiles: {error}"))
     }
 
     pub fn save_profile(
