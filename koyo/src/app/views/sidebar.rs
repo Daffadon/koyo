@@ -552,17 +552,19 @@ impl KoyoApp {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(
+                            .child(super::widgets::fixed_tooltip(
+                                "top-tooltip-manage",
                                 Button::new("manage-connections")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::Plus)
-                                    .tooltip("Manage connections")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_connection_dialog(None, window, cx);
                                     })),
-                            )
-                            .child(
+                                "Manage connections",
+                            ))
+                            .child(super::widgets::fixed_tooltip(
+                                "top-tooltip-theme",
                                 Button::new("theme-toggle")
                                     .ghost()
                                     .compact()
@@ -571,25 +573,26 @@ impl KoyoApp {
                                     } else {
                                         IconName::Moon
                                     })
-                                    .tooltip(if cx.theme().is_dark() {
-                                        "Light theme"
-                                    } else {
-                                        "Dark theme"
-                                    })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_theme(cx);
                                     })),
-                            )
-                            .child(
+                                if cx.theme().is_dark() {
+                                    "Light theme"
+                                } else {
+                                    "Dark theme"
+                                },
+                            ))
+                            .child(super::widgets::fixed_tooltip(
+                                "top-tooltip-collapse-sidebar",
                                 Button::new("collapse-sidebar")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::PanelLeftClose)
-                                    .tooltip("Hide sidebar")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_sidebar(cx);
                                     })),
-                            ),
+                                "Hide sidebar",
+                            )),
                     ),
             )
             .child(

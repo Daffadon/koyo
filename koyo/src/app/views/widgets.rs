@@ -1,12 +1,39 @@
+use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+
+const TOP_TOOLTIP_WIDTH: f32 = 160.0;
+
+/// Keep top-bar tooltips one width so switching buttons does not resize the
+/// popup mid-animation.
+pub(super) fn fixed_tooltip(
+    id: impl Into<ElementId>,
+    element: impl IntoElement,
+    label: &'static str,
+) -> AnyElement {
+    div()
+        .id(id)
+        .child(element)
+        .tooltip_show_delay(std::time::Duration::from_millis(120))
+        .tooltip(move |window, cx| {
+            Tooltip::element(move |_, _| {
+                div()
+                    .w(px(TOP_TOOLTIP_WIDTH))
+                    .child(label)
+                    .into_any_element()
+            })
+            .build(window, cx)
+        })
+        .into_any_element()
+}
 
 pub(super) fn render_cell_editor(
     edit: &CellEdit,

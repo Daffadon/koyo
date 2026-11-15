@@ -9,7 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{CursorStyle, DragMoveEvent, InteractiveElement, StatefulInteractiveElement};
 
-use super::{query, table};
+use super::{query, table, widgets};
 use crate::app::{KoyoApp, Palette, Pane, SplitAxis, TabBody, engine_label};
 
 struct PaneSplitDrag;
@@ -302,16 +302,17 @@ impl KoyoApp {
                     .border_color(palette.border)
                     .when(focused, |this| this.bg(palette.panel))
                     .when(show_sidebar_toggle && !sidebar_open, |this| {
-                        this.child(
+                        this.child(widgets::fixed_tooltip(
+                            "top-tooltip-sidebar",
                             Button::new("expand-sidebar")
                                 .ghost()
                                 .compact()
                                 .icon(IconName::PanelLeftOpen)
-                                .tooltip("Show sidebar")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.toggle_sidebar(cx);
                                 })),
-                        )
+                            "Show sidebar",
+                        ))
                     })
                     .child(
                         div().flex_1().min_w(px(0.0)).overflow_hidden().child(
@@ -320,30 +321,32 @@ impl KoyoApp {
                                 .max_width(px(260.0))
                                 .selected_index(selected)
                                 .children(tabs)
-                                .suffix(
+                                .suffix(widgets::fixed_tooltip(
+                                    ("top-tooltip-new", index),
                                     Button::new(("pane-new-tab", index))
                                         .ghost()
                                         .compact()
                                         .icon(IconName::Plus)
-                                        .tooltip("New tab")
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.focus_pane(pane, cx);
                                             this.new_sql_tab(window, cx);
                                         })),
-                                ),
+                                    "New tab",
+                                )),
                         ),
                     )
-                    .child(
+                    .child(widgets::fixed_tooltip(
+                        ("top-tooltip-close", index),
                         Button::new(format!("close-active-{pane:?}"))
                             .flex_shrink_0()
                             .ghost()
                             .compact()
                             .icon(IconName::Close)
-                            .tooltip("Close active tab")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.close_active_tab(pane, window, cx);
                             })),
-                    )
+                        "Close active tab",
+                    ))
                     .when(split.is_some(), |this| {
                         let target = match pane {
                             Pane::Primary => Pane::Secondary,
@@ -353,17 +356,18 @@ impl KoyoApp {
                             Pane::Primary => IconName::ArrowRight,
                             Pane::Secondary => IconName::ArrowLeft,
                         };
-                        this.child(
+                        this.child(widgets::fixed_tooltip(
+                            ("top-tooltip-move", index),
                             Button::new(format!("move-tab-{pane:?}"))
                                 .flex_shrink_0()
                                 .ghost()
                                 .compact()
                                 .icon(icon)
-                                .tooltip("Move active tab to other pane")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.move_tab_to_pane(tab_id, target, cx);
                                 })),
-                        )
+                            "Move active tab to other pane",
+                        ))
                     })
                     .when(pane == Pane::Primary, |this| {
                         this.child(
@@ -371,18 +375,20 @@ impl KoyoApp {
                                 .flex_shrink_0()
                                 .items_center()
                                 .gap_1()
-                                .child(
+                                .child(widgets::fixed_tooltip(
+                                    "top-tooltip-ai",
                                     Button::new("toggle-ai")
                                         .when(ai_open, |this| this.secondary())
                                         .when(!ai_open, |this| this.ghost())
                                         .compact()
                                         .icon(IconName::Bot)
-                                        .tooltip(if ai_open { "Hide AI" } else { "Show AI" })
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.toggle_ai(window, cx);
                                         })),
-                                )
-                                .child(
+                                    if ai_open { "Hide AI" } else { "Show AI" },
+                                ))
+                                .child(widgets::fixed_tooltip(
+                                    "top-tooltip-split-vertical",
                                     Button::new("split-vertical")
                                         .when(split == Some(SplitAxis::Vertical), |this| {
                                             this.secondary()
@@ -392,16 +398,17 @@ impl KoyoApp {
                                         })
                                         .compact()
                                         .icon(IconName::PanelLeft)
-                                        .tooltip(if split == Some(SplitAxis::Vertical) {
-                                            "Close split"
-                                        } else {
-                                            "Split vertically"
-                                        })
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.toggle_split(SplitAxis::Vertical, window, cx);
                                         })),
-                                )
-                                .child(
+                                    if split == Some(SplitAxis::Vertical) {
+                                        "Close split"
+                                    } else {
+                                        "Split vertically"
+                                    },
+                                ))
+                                .child(widgets::fixed_tooltip(
+                                    "top-tooltip-split-horizontal",
                                     Button::new("split-horizontal")
                                         .when(split == Some(SplitAxis::Horizontal), |this| {
                                             this.secondary()
@@ -411,15 +418,15 @@ impl KoyoApp {
                                         })
                                         .compact()
                                         .icon(IconName::PanelBottom)
-                                        .tooltip(if split == Some(SplitAxis::Horizontal) {
-                                            "Close split"
-                                        } else {
-                                            "Split horizontally"
-                                        })
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.toggle_split(SplitAxis::Horizontal, window, cx);
                                         })),
-                                ),
+                                    if split == Some(SplitAxis::Horizontal) {
+                                        "Close split"
+                                    } else {
+                                        "Split horizontally"
+                                    },
+                                )),
                         )
                     }),
             )

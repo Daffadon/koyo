@@ -64,38 +64,41 @@ pub(super) fn render(
             h_flex()
                 .items_center()
                 .gap_1()
-                .child(
+                .child(super::widgets::fixed_tooltip(
+                    "top-tooltip-ai-new",
                     Button::new("ai-new-chat")
                         .ghost()
                         .compact()
                         .icon(IconName::Plus)
-                        .tooltip("New chat")
                         .disabled(app.ai_pending || app.ai_messages().is_empty())
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.new_ai_thread(window, cx);
                         })),
-                )
-                .child(
+                    "New chat",
+                ))
+                .child(super::widgets::fixed_tooltip(
+                    "top-tooltip-ai-settings",
                     Button::new("ai-settings")
                         .ghost()
                         .compact()
                         .icon(IconName::Settings)
-                        .tooltip("AI provider settings")
                         .disabled(app.ai_pending)
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_ai_settings(window, cx);
                         })),
-                )
-                .child(
+                    "AI provider settings",
+                ))
+                .child(super::widgets::fixed_tooltip(
+                    "top-tooltip-ai-close",
                     Button::new("ai-close")
                         .ghost()
                         .compact()
                         .icon(IconName::PanelRightClose)
-                        .tooltip("Hide AI")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_ai(cx);
                         })),
-                ),
+                    "Hide AI",
+                )),
         );
 
     let thread_index = app
