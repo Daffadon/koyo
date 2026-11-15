@@ -2,10 +2,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use koyo_core::models::Engine;
-use koyo_core::storage::{default_config_dir, write_private_file};
+use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
 
-const STATE_FILE: &str = "state.json";
+const STATE_FILE: &str = "state.enc";
+const LEGACY_STATE_FILE: &str = "state.json";
 pub(crate) const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,30 +81,79 @@ impl TabSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SettingsStore {
-    path: PathBuf,
+    encrypted: EncryptedStateStore,
+    legacy_path: PathBuf,
+}
+
+pub(crate) struct LoadedState {
+    pub(crate) state: PersistedState,
+    pub(crate) warning: Option<String>,
 }
 
 impl SettingsStore {
     pub(crate) fn from_default_dir() -> Self {
-        Self::new(default_config_dir().join(STATE_FILE))
+        Self::new(default_config_dir())
     }
 
-    pub(crate) fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+    pub(crate) fn new(config_dir: impl Into<PathBuf>) -> Self {
+        let config_dir = config_dir.into();
+        Self {
+            encrypted: EncryptedStateStore::new(config_dir.join(STATE_FILE)),
+            legacy_path: config_dir.join(LEGACY_STATE_FILE),
+        }
     }
 
-    pub(crate) fn load(&self) -> PersistedState {
-        fs::read(&self.path)
-            .ok()
-            .and_then(|contents| serde_json::from_slice(&contents).ok())
-            .unwrap_or_default()
+    #[cfg(test)]
+    pub(crate) fn with_key(config_dir: impl Into<PathBuf>, key: [u8; 32]) -> Self {
+        let config_dir = config_dir.into();
+        Self {
+            encrypted: EncryptedStateStore::with_key(config_dir.join(STATE_FILE), key),
+            legacy_path: config_dir.join(LEGACY_STATE_FILE),
+        }
+    }
+
+    pub(crate) fn load(&self) -> Result<LoadedState, String> {
+        if let Some(contents) = self.encrypted.load()? {
+            let state = serde_json::from_slice(&contents)
+                .map_err(|error| format!("Could not decode application state: {error}"))?;
+            let warning = remove_legacy_state(&self.legacy_path);
+            return Ok(LoadedState { state, warning });
+        }
+
+        if self.legacy_path.exists() {
+            let contents = fs::read(&self.legacy_path)
+                .map_err(|error| format!("Could not read legacy application state: {error}"))?;
+            let state: PersistedState = serde_json::from_slice(&contents)
+                .map_err(|error| format!("Could not decode legacy application state: {error}"))?;
+            let encoded = serde_json::to_vec_pretty(&state)
+                .map_err(|error| format!("Could not encode application state: {error}"))?;
+            self.encrypted.save(&encoded)?;
+            let warning = remove_legacy_state(&self.legacy_path);
+            return Ok(LoadedState { state, warning });
+        }
+
+        Ok(LoadedState {
+            state: PersistedState::default(),
+            warning: None,
+        })
     }
 
     pub(crate) fn save(&self, state: &PersistedState) -> Result<(), String> {
         let contents = serde_json::to_vec_pretty(state)
             .map_err(|error| format!("Could not encode application state: {error}"))?;
-        write_private_file(&self.path, &contents)
+        self.encrypted.save(&contents)
     }
+}
+
+fn remove_legacy_state(path: &std::path::Path) -> Option<String> {
+    if !path.exists() {
+        return None;
+    }
+    fs::remove_file(path).err().map(|error| {
+        format!(
+            "Encrypted application state is in use, but the old plaintext state.json could not be removed: {error}"
+        )
+    })
 }
 
 pub(crate) fn unix_seconds() -> u64 {
@@ -171,15 +221,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_store_writes_and_reads_state() {
-        let directory = std::env::temp_dir().join(format!("koyo-settings-{}", std::process::id()));
+    fn settings_store_encrypts_and_reads_state() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-settings-encrypted-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&directory);
-        let store = SettingsStore::new(directory.join("state.json"));
+        let store = SettingsStore::with_key(&directory, [7u8; 32]);
         let mut state = PersistedState::default();
         state.theme = "light".into();
         state.sidebar_open = false;
         state.history.push(QueryHistoryEntry {
-            sql: "select 1".into(),
+            sql: "select secret_value".into(),
             profile_id: None,
             profile_name: "No profile".into(),
             engine: Engine::Postgres,
@@ -189,11 +240,71 @@ mod tests {
         });
 
         store.save(&state).expect("save state");
-        let loaded = store.load();
+        let encrypted = std::fs::read(directory.join("state.enc")).expect("read encrypted state");
+        assert!(
+            !encrypted
+                .windows(b"select secret_value".len())
+                .any(|window| window == b"select secret_value"),
+            "plaintext SQL must not be written to state.enc"
+        );
 
+        let loaded = store.load().expect("load state").state;
         assert_eq!(loaded.theme, "light");
         assert!(!loaded.sidebar_open);
         assert_eq!(loaded.history.len(), 1);
+        assert_eq!(loaded.history[0].sql, "select secret_value");
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn encrypted_state_rejects_tampering() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-settings-tamper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let store = SettingsStore::with_key(&directory, [9u8; 32]);
+        store.save(&PersistedState::default()).expect("save state");
+        let path = directory.join("state.enc");
+        let mut contents = std::fs::read(&path).expect("read state");
+        let last = contents.len() - 1;
+        contents[last] ^= 0x01;
+        std::fs::write(&path, contents).expect("write tampered state");
+
+        assert!(store.load().is_err());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn leftover_plaintext_state_is_removed_when_encrypted_state_exists() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-settings-cleanup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let store = SettingsStore::with_key(&directory, [13u8; 32]);
+        store.save(&PersistedState::default()).expect("save state");
+        std::fs::write(directory.join("state.json"), b"{}").expect("write stale plaintext");
+
+        store.load().expect("load encrypted state");
+
+        assert!(!directory.join("state.json").exists());
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn plaintext_state_is_migrated_and_removed() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-settings-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("create config dir");
+        let mut state = PersistedState::default();
+        state.theme = "light".into();
+        let plaintext = serde_json::to_vec_pretty(&state).expect("encode legacy state");
+        std::fs::write(directory.join("state.json"), plaintext).expect("write legacy state");
+
+        let store = SettingsStore::with_key(&directory, [11u8; 32]);
+        let loaded = store.load().expect("migrate state").state;
+
+        assert_eq!(loaded.theme, "light");
+        assert!(!directory.join("state.json").exists());
+        assert!(directory.join("state.enc").exists());
         let _ = std::fs::remove_dir_all(directory);
     }
 }

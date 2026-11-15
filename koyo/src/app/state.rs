@@ -199,6 +199,7 @@ pub(crate) struct KoyoApp {
     pub(crate) settings: SettingsStore,
     pub(crate) history: Vec<QueryHistoryEntry>,
     pub(crate) allow_close: bool,
+    pub(crate) persistence_disabled: bool,
     pub(crate) manager: Arc<SessionManager>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) profiles: Vec<ConnectionProfile>,

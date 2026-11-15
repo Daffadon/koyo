@@ -21,8 +21,11 @@ impl KoyoApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, runtime: Arc<Runtime>) -> Self {
         let store = ProfileStore::from_default_dir();
         let settings = SettingsStore::from_default_dir();
-        let saved = settings.load();
-        let (profiles, status) = match store.load_profiles() {
+        let (saved, state_warning, persistence_error) = match settings.load() {
+            Ok(loaded) => (loaded.state, loaded.warning, None),
+            Err(error) => (PersistedState::default(), Some(error.clone()), Some(error)),
+        };
+        let (profiles, mut status) = match store.load_profiles() {
             Ok(profiles) => {
                 let status = if profiles.is_empty() {
                     "Add a connection to get started.".to_string()
@@ -33,12 +36,15 @@ impl KoyoApp {
             }
             Err(error) => (Vec::new(), error),
         };
-
+        if let Some(warning) = state_warning {
+            status = warning;
+        }
         let mut app = Self {
             store,
             settings,
             history: saved.history.clone(),
             allow_close: false,
+            persistence_disabled: persistence_error.is_some(),
             manager: Arc::new(SessionManager::default()),
             runtime,
             profiles,
@@ -175,7 +181,10 @@ impl KoyoApp {
         self.normalize_panes();
     }
 
-    pub(crate) fn persist_state(&self, cx: &App) {
+    pub(crate) fn persist_state(&mut self, cx: &App) {
+        if self.persistence_disabled {
+            return;
+        }
         let state = PersistedState {
             theme: if cx.theme().is_dark() {
                 "dark"
@@ -195,7 +204,10 @@ impl KoyoApp {
             history: self.history.clone(),
             workspace: self.workspace_snapshot(cx),
         };
-        let _ = self.settings.save(&state);
+        if let Err(error) = self.settings.save(&state) {
+            self.persistence_disabled = true;
+            self.status = error;
+        }
     }
 
     fn workspace_snapshot(&self, cx: &App) -> WorkspaceSnapshot {

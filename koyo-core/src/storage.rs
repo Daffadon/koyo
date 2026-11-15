@@ -1,4 +1,6 @@
 use crate::models::{ConnectionProfile, ProfileInput, SslMode};
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use keyring::v1::{Entry, Error as KeyringError};
 use std::fs;
 use std::io::Write;
@@ -6,10 +8,14 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 pub const APP_IDENTIFIER: &str = "com.koyo.db";
 const SERVICE_NAME: &str = "com.koyo.db";
 const PROFILE_FILE: &str = "profiles.json";
+const STATE_KEY_ACCOUNT: &str = "state:key";
+const STATE_MAGIC: &[u8] = b"KOYO-STATE-1\n";
+const STATE_NONCE_LEN: usize = 24;
 
 pub fn default_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
@@ -80,6 +86,170 @@ pub fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
         return Err(format!("Could not replace {file_name}: {error}"));
     }
     Ok(())
+}
+
+/// Encrypted application state. The 32-byte data key lives in the operating
+/// system credential store; the file itself is XChaCha20-Poly1305 ciphertext.
+#[derive(Clone)]
+pub struct EncryptedStateStore {
+    path: PathBuf,
+    key_override: Option<[u8; 32]>,
+}
+
+impl std::fmt::Debug for EncryptedStateStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EncryptedStateStore")
+            .field("path", &self.path)
+            .field("has_key_override", &self.key_override.is_some())
+            .finish()
+    }
+}
+
+impl EncryptedStateStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            key_override: None,
+        }
+    }
+
+    /// Inject a key for tests or embedders that manage their own key material.
+    pub fn with_key(path: impl Into<PathBuf>, key: [u8; 32]) -> Self {
+        Self {
+            path: path.into(),
+            key_override: Some(key),
+        }
+    }
+
+    pub fn load(&self) -> Result<Option<Vec<u8>>, String> {
+        let contents = match fs::read(&self.path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "Could not read encrypted application state: {error}"
+                ));
+            }
+        };
+        let key = self.existing_state_key()?;
+        decrypt_state(&key, &contents).map(Some)
+    }
+
+    pub fn save(&self, plaintext: &[u8]) -> Result<(), String> {
+        let key = if self.path.exists() {
+            self.existing_state_key()?
+        } else {
+            self.create_or_load_state_key()?
+        };
+        let encrypted = encrypt_state(&key, plaintext)?;
+        write_private_file(&self.path, &encrypted)
+            .map_err(|error| format!("Could not save encrypted application state: {error}"))
+    }
+
+    fn state_entry(&self) -> Result<Entry, String> {
+        Entry::new(SERVICE_NAME, STATE_KEY_ACCOUNT)
+            .map_err(|error| format!("Could not open encrypted state key: {error}"))
+    }
+
+    fn existing_state_key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
+        if let Some(key) = self.key_override {
+            return Ok(Zeroizing::new(key));
+        }
+        let entry = self.state_entry()?;
+        match entry.get_password() {
+            Ok(encoded) => decode_state_key(&encoded).map(Zeroizing::new),
+            Err(KeyringError::NoEntry) => Err(
+                "Encrypted application state exists, but its key is missing from the OS credential store."
+                    .into(),
+            ),
+            Err(error) => Err(format!(
+                "Could not read encrypted state key from the OS credential store: {error}"
+            )),
+        }
+    }
+
+    fn create_or_load_state_key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
+        if let Some(key) = self.key_override {
+            return Ok(Zeroizing::new(key));
+        }
+        let entry = self.state_entry()?;
+        match entry.get_password() {
+            Ok(encoded) => decode_state_key(&encoded).map(Zeroizing::new),
+            Err(KeyringError::NoEntry) => {
+                let generated = XChaCha20Poly1305::generate_key(&mut OsRng);
+                let mut key = Zeroizing::new([0u8; 32]);
+                key.copy_from_slice(&generated);
+                entry
+                    .set_password(&encode_state_key(&key))
+                    .map_err(|error| {
+                        format!("Could not store encrypted state key in the OS credential store: {error}")
+                    })?;
+                Ok(key)
+            }
+            Err(error) => Err(format!(
+                "Could not read encrypted state key from the OS credential store: {error}"
+            )),
+        }
+    }
+}
+
+fn encrypt_state(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "Encrypted state key has an invalid length.".to_string())?;
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let ciphertext = cipher
+        .encrypt(
+            &nonce,
+            Payload {
+                msg: plaintext,
+                aad: STATE_MAGIC,
+            },
+        )
+        .map_err(|_| "Could not encrypt application state.".to_string())?;
+    let mut output = Vec::with_capacity(STATE_MAGIC.len() + STATE_NONCE_LEN + ciphertext.len());
+    output.extend_from_slice(STATE_MAGIC);
+    output.extend_from_slice(&nonce);
+    output.extend_from_slice(&ciphertext);
+    Ok(output)
+}
+
+fn decrypt_state(key: &[u8; 32], contents: &[u8]) -> Result<Vec<u8>, String> {
+    if !contents.starts_with(STATE_MAGIC) || contents.len() < STATE_MAGIC.len() + STATE_NONCE_LEN {
+        return Err("Encrypted application state is invalid or truncated.".into());
+    }
+    let nonce_start = STATE_MAGIC.len();
+    let nonce = XNonce::from_slice(&contents[nonce_start..nonce_start + STATE_NONCE_LEN]);
+    let ciphertext = &contents[nonce_start + STATE_NONCE_LEN..];
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|_| "Encrypted state key has an invalid length.".to_string())?;
+    cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad: STATE_MAGIC,
+            },
+        )
+        .map_err(|_| {
+            "Could not decrypt application state. The state key or file is invalid.".into()
+        })
+}
+
+fn encode_state_key(key: &[u8; 32]) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_state_key(encoded: &str) -> Result<[u8; 32], String> {
+    if encoded.len() != 64 {
+        return Err("Encrypted application state key is invalid.".into());
+    }
+    let mut key = [0u8; 32];
+    for (index, byte) in key.iter_mut().enumerate() {
+        let start = index * 2;
+        *byte = u8::from_str_radix(&encoded[start..start + 2], 16)
+            .map_err(|_| "Encrypted application state key is invalid.".to_string())?;
+    }
+    Ok(key)
 }
 
 #[derive(Clone, Debug)]
