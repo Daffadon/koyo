@@ -33,6 +33,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 - Explore tables, views, functions, triggers, and engine metadata grouped by schema.
 - Preview rows with server-side filters, one-column sorting, offset paging, and cancellable page loads.
+- Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
 - Foreign-key diagram for the open table.
 - Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
 - Stale-row checks roll back the batch when a row changed after it was loaded.

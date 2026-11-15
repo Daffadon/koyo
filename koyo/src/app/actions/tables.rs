@@ -20,6 +20,9 @@ impl KoyoApp {
             cx.notify();
             return;
         };
+        if self.focus_existing_table(profile.id, &schema, &table, cx) {
+            return;
+        }
         let tab = self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
         let tab_id = self.add_tab(tab, self.focus);
         self.persist_state(cx);
@@ -104,6 +107,46 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+    }
+
+    fn focus_existing_table(
+        &mut self,
+        profile_id: uuid::Uuid,
+        schema: &str,
+        table: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((pane, tab_id)) = self.tabs.iter().find_map(|tab| {
+            if !tab
+                .profile
+                .as_ref()
+                .is_some_and(|profile| profile.id == profile_id)
+            {
+                return None;
+            }
+            let TabBody::Table(open) = &tab.body else {
+                return None;
+            };
+            if open.schema != schema || open.table != table {
+                return None;
+            }
+            if self.primary_tabs.contains(&tab.id) {
+                Some((Pane::Primary, tab.id))
+            } else if self.secondary_tabs.contains(&tab.id) {
+                Some((Pane::Secondary, tab.id))
+            } else {
+                None
+            }
+        }) else {
+            return false;
+        };
+        let Some(order) = self.pane_tab_ids(pane).iter().position(|id| *id == tab_id) else {
+            return false;
+        };
+        self.switch_tab(pane, order, cx);
+        self.status = format!("Focused {schema}.{table}.");
+        cx.notify();
+        true
     }
 
     pub(crate) fn load_page(
