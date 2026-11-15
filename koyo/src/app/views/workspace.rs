@@ -266,6 +266,7 @@ impl KoyoApp {
         let selected = self.pane_selected(pane);
         let focused = self.focus == pane;
         let sidebar_open = self.sidebar_open;
+        let ai_open = self.ai_open;
         let split = self.split;
         let tab_bar_id: SharedString = match pane {
             Pane::Primary => "primary-tabs".into(),
@@ -370,6 +371,17 @@ impl KoyoApp {
                                 .flex_shrink_0()
                                 .items_center()
                                 .gap_1()
+                                .child(
+                                    Button::new("toggle-ai")
+                                        .when(ai_open, |this| this.secondary())
+                                        .when(!ai_open, |this| this.ghost())
+                                        .compact()
+                                        .icon(IconName::Bot)
+                                        .tooltip(if ai_open { "Hide AI" } else { "Show AI" })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.toggle_ai(window, cx);
+                                        })),
+                                )
                                 .child(
                                     Button::new("split-vertical")
                                         .when(split == Some(SplitAxis::Vertical), |this| {

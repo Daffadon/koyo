@@ -10,10 +10,10 @@ use std::fs::{self, File, OpenOptions};
 use std::path::Path;
 use std::sync::Arc;
 
-actions!(koyo, [RunQuery]);
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
+actions!(koyo, [RunQuery, ToggleAi, ToggleSidebar]);
 
 fn ensure_config_directory(directory: &Path) -> Result<(), String> {
     match fs::symlink_metadata(directory) {
@@ -113,6 +113,10 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
                 KeyBinding::new("cmd-enter", RunQuery, Some("Input")),
+                KeyBinding::new("ctrl-b", ToggleSidebar, None),
+                KeyBinding::new("cmd-b", ToggleSidebar, None),
+                KeyBinding::new("ctrl-alt-b", ToggleAi, None),
+                KeyBinding::new("cmd-alt-b", ToggleAi, None),
             ]);
 
             let bounds = Bounds::centered(None, size(px(1440.0), px(960.0)), cx);

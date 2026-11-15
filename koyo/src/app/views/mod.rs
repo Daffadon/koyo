@@ -1,3 +1,4 @@
+pub(crate) mod ai;
 pub(crate) mod connection;
 pub(crate) mod query;
 pub(crate) mod root;

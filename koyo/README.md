@@ -16,6 +16,8 @@ The UI uses GPUI Kit components:
 - Themed confirmation overlays for destructive actions.
 - `Icon` for built-in monochrome icons.
 - Collapsible explorer, per-pane tab lists, draggable split panes, resizable and collapsible result panes.
+- Resizable, collapsible right-side AI chat panel with multiple threads, stop, compact-context, streaming Markdown, and OpenAI-compatible JSON provider settings.
+- **Ctrl+B** / **Cmd+B** toggles the left sidebar; **Ctrl+Alt+B** / **Cmd+Alt+B** toggles the AI panel.
 - Metadata explorer for tables, views, functions, and triggers, plus a foreign-key relation view per table.
 
 Run the full workspace checks from the repository root:

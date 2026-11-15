@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
 
 use koyo_core::models::Engine;
 use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
+
+use super::ai::{AiMessage, AiThread, DEFAULT_AI_CONFIG, DEFAULT_AI_WIDTH};
 
 const STATE_FILE: &str = "state.enc";
 const LEGACY_STATE_FILE: &str = "state.json";
@@ -14,6 +17,19 @@ pub(crate) const HISTORY_LIMIT: usize = 100;
 pub(crate) struct PersistedState {
     pub(crate) theme: String,
     pub(crate) sidebar_open: bool,
+    pub(crate) ai_open: bool,
+    #[serde(default = "default_ai_width")]
+    pub(crate) ai_width: f32,
+    #[serde(default = "default_ai_config")]
+    pub(crate) ai_config_json: String,
+    #[serde(default, skip_serializing)]
+    pub(crate) ai_messages: Vec<AiMessage>,
+    #[serde(default)]
+    pub(crate) ai_threads: Vec<AiThread>,
+    #[serde(default)]
+    pub(crate) ai_active_thread: u64,
+    #[serde(default = "default_next_ai_thread_id")]
+    pub(crate) next_ai_thread_id: u64,
     pub(crate) split: Option<String>,
     pub(crate) split_ratio: f32,
     pub(crate) history: Vec<QueryHistoryEntry>,
@@ -25,6 +41,13 @@ impl Default for PersistedState {
         Self {
             theme: "dark".into(),
             sidebar_open: true,
+            ai_open: false,
+            ai_width: default_ai_width(),
+            ai_config_json: default_ai_config(),
+            ai_messages: Vec::new(),
+            ai_threads: Vec::new(),
+            ai_active_thread: 0,
+            next_ai_thread_id: 1,
             split: None,
             split_ratio: 0.5,
             history: Vec::new(),
@@ -88,6 +111,86 @@ pub(crate) struct SettingsStore {
 pub(crate) struct LoadedState {
     pub(crate) state: PersistedState,
     pub(crate) warning: Option<String>,
+}
+
+#[derive(Default)]
+struct SaveQueueState {
+    pending: Option<PersistedState>,
+    generation: u64,
+    saved_generation: u64,
+    error: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct StateSaveQueue {
+    state: Mutex<SaveQueueState>,
+    wake: Condvar,
+}
+
+impl StateSaveQueue {
+    pub(crate) fn submit(&self, state: PersistedState) {
+        let mut queue = self.state.lock().expect("state save queue lock");
+        queue.pending = Some(state);
+        queue.generation = queue.generation.wrapping_add(1);
+        queue.error = None;
+        self.wake.notify_one();
+    }
+
+    pub(crate) fn flush(&self, state: PersistedState) -> Result<(), String> {
+        let generation = {
+            let mut queue = self.state.lock().expect("state save queue lock");
+            queue.pending = Some(state);
+            queue.generation = queue.generation.wrapping_add(1);
+            queue.error = None;
+            self.wake.notify_one();
+            queue.generation
+        };
+        let mut queue = self.state.lock().expect("state save queue lock");
+        while queue.saved_generation < generation {
+            queue = self.wake.wait(queue).expect("state save queue lock");
+        }
+        queue.error.take().map_or(Ok(()), Err)
+    }
+
+    fn next(&self) -> (PersistedState, u64) {
+        let mut queue = self.state.lock().expect("state save queue lock");
+        while queue.pending.is_none() {
+            queue = self.wake.wait(queue).expect("state save queue lock");
+        }
+        (
+            queue.pending.take().expect("pending state"),
+            queue.generation,
+        )
+    }
+
+    fn finish(&self, generation: u64, error: Option<String>) {
+        let mut queue = self.state.lock().expect("state save queue lock");
+        if error.is_some() {
+            queue.error = error;
+        }
+        queue.saved_generation = generation;
+        self.wake.notify_all();
+    }
+}
+
+pub(crate) fn spawn_state_save_worker(
+    queue: Arc<StateSaveQueue>,
+    settings: SettingsStore,
+    errors: tokio::sync::mpsc::UnboundedSender<String>,
+) {
+    std::thread::Builder::new()
+        .name("koyo-state-save".into())
+        .spawn(move || {
+            loop {
+                let (state, generation) = queue.next();
+                let result = settings.save(&state);
+                if let Err(error) = &result {
+                    let _ = errors.send(error.clone());
+                }
+                queue.finish(generation, result.err());
+            }
+        })
+        .expect("start state save thread");
 }
 
 impl SettingsStore {
@@ -163,16 +266,43 @@ pub(crate) fn unix_seconds() -> u64 {
         .unwrap_or(0)
 }
 
+fn default_ai_config() -> String {
+    DEFAULT_AI_CONFIG.to_string()
+}
+
+fn default_ai_width() -> f32 {
+    DEFAULT_AI_WIDTH
+}
+
+fn default_next_ai_thread_id() -> u64 {
+    1
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{PersistedState, QueryHistoryEntry, SettingsStore, TabSnapshot, WorkspaceSnapshot};
+    use super::{
+        AiMessage, AiThread, PersistedState, QueryHistoryEntry, SettingsStore, StateSaveQueue,
+        TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker,
+    };
     use koyo_core::models::Engine;
+    use std::sync::Arc;
 
     #[test]
     fn persisted_state_round_trips_history_and_tabs() {
         let state = PersistedState {
             theme: "light".into(),
             sidebar_open: false,
+            ai_open: true,
+            ai_width: 520.0,
+            ai_config_json: r#"{"base_url":"https://example.test/v1","model":"test"}"#.into(),
+            ai_messages: Vec::new(),
+            ai_threads: vec![AiThread {
+                id: 7,
+                title: "Thread".into(),
+                messages: vec![AiMessage::user("hello")],
+            }],
+            ai_active_thread: 7,
+            next_ai_thread_id: 8,
             split: Some("horizontal".into()),
             split_ratio: 0.6,
             history: vec![QueryHistoryEntry {
@@ -206,6 +336,17 @@ mod tests {
 
         assert_eq!(decoded.theme, "light");
         assert!(!decoded.sidebar_open);
+        assert!(decoded.ai_open);
+        assert_eq!(decoded.ai_width, 520.0);
+        assert_eq!(
+            decoded.ai_config_json,
+            r#"{"base_url":"https://example.test/v1","model":"test"}"#
+        );
+        assert_eq!(decoded.ai_threads.len(), 1);
+        assert_eq!(decoded.ai_threads[0].title, "Thread");
+        assert_eq!(decoded.ai_threads[0].messages[0].content, "hello");
+        assert_eq!(decoded.ai_active_thread, 7);
+        assert_eq!(decoded.next_ai_thread_id, 8);
         assert_eq!(decoded.history.len(), 1);
         assert_eq!(decoded.history[0].sql, "select 1");
         assert_eq!(decoded.workspace.secondary.len(), 1);
@@ -217,6 +358,13 @@ mod tests {
         let state: PersistedState = serde_json::from_slice(b"{}").expect("defaults");
         assert_eq!(state.theme, "dark");
         assert!(state.sidebar_open);
+        assert!(!state.ai_open);
+        assert_eq!(state.ai_width, crate::app::DEFAULT_AI_WIDTH);
+        assert_eq!(state.ai_config_json, crate::app::DEFAULT_AI_CONFIG);
+        assert!(state.ai_messages.is_empty());
+        assert!(state.ai_threads.is_empty());
+        assert_eq!(state.ai_active_thread, 0);
+        assert_eq!(state.next_ai_thread_id, 1);
         assert_eq!(state.split_ratio, 0.5);
     }
 
@@ -229,6 +377,10 @@ mod tests {
         let mut state = PersistedState::default();
         state.theme = "light".into();
         state.sidebar_open = false;
+        state.ai_open = true;
+        state.ai_config_json =
+            r#"{"base_url":"https://example.test/v1","api_key":"ai_secret_value","model":"test"}"#
+                .into();
         state.history.push(QueryHistoryEntry {
             sql: "select secret_value".into(),
             profile_id: None,
@@ -247,12 +399,39 @@ mod tests {
                 .any(|window| window == b"select secret_value"),
             "plaintext SQL must not be written to state.enc"
         );
+        assert!(
+            !encrypted
+                .windows(b"ai_secret_value".len())
+                .any(|window| window == b"ai_secret_value"),
+            "plaintext AI API key must not be written to state.enc"
+        );
 
         let loaded = store.load().expect("load state").state;
         assert_eq!(loaded.theme, "light");
         assert!(!loaded.sidebar_open);
+        assert!(loaded.ai_open);
+        assert!(loaded.ai_config_json.contains("ai_secret_value"));
         assert_eq!(loaded.history.len(), 1);
         assert_eq!(loaded.history[0].sql, "select secret_value");
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn background_save_flushes_latest_state() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-settings-worker-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        let store = SettingsStore::with_key(&directory, [17u8; 32]);
+        let queue = Arc::new(StateSaveQueue::default());
+        let (errors, _) = tokio::sync::mpsc::unbounded_channel();
+        spawn_state_save_worker(queue.clone(), store.clone(), errors);
+
+        let mut state = PersistedState::default();
+        state.theme = "light".into();
+        queue.flush(state).expect("flush state");
+
+        let loaded = store.load().expect("load saved state").state;
+        assert_eq!(loaded.theme, "light");
         let _ = std::fs::remove_dir_all(directory);
     }
 
