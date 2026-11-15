@@ -169,16 +169,16 @@ Koyo stores application data in the platform config directory:
 | macOS | `~/Library/Application Support/com.koyo.db` |
 | Windows | `%APPDATA%\com.koyo.db` |
 
-- `profiles.json` contains connection profiles without passwords.
+- `profiles.enc` contains encrypted connection profiles without passwords.
 - `state.enc` contains the theme, workspace snapshot, and query history, encrypted with XChaCha20-Poly1305.
-- The state encryption key and server passwords live in the operating-system credential store.
-- A legacy plaintext `state.json` is encrypted and removed on first successful migration.
+- The data encryption key and server passwords live in the operating-system credential store.
+- Legacy plaintext `state.json` and `profiles.json` files are encrypted and removed on first successful migration.
 - If the credential store is unavailable, Koyo reports an error and disables state persistence instead of writing plaintext.
 - Password fields are masked and cannot copy or cut their values. Saved passwords are never loaded back into the dialog.
-- Linux saved passwords and encrypted state require a running Secret Service provider. Passwordless connections do not need one.
+- Linux saved profiles, passwords, and encrypted state require a running Secret Service provider. Without it, profiles cannot be saved and state persistence is disabled.
 
 > [!NOTE]
-> Query history and restored SQL are inside encrypted `state.enc`, not `state.json`. Losing the `state:key` credential makes the file unreadable; Koyo does not silently overwrite it or fall back to plaintext.
+> Query history, restored SQL, and connection profiles are encrypted at rest. Losing the `state:key` credential makes the files unreadable; Koyo does not silently overwrite them or fall back to plaintext.
 
 ## Development
 

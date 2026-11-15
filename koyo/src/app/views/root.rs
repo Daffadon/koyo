@@ -1,7 +1,7 @@
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::{connection, widgets};
+use super::{connection, query, table, widgets};
 use crate::RunQuery;
 use crate::app::*;
 
@@ -12,6 +12,8 @@ impl Render for KoyoApp {
             self.add_tab(tab, Pane::Primary);
         }
         self.normalize_panes();
+        query::prune_scroll_handles(self);
+        table::prune_scroll_handles(self);
         self.apply_pending_starters(window, cx);
 
         let palette = palette(cx);

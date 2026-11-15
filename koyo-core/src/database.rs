@@ -819,8 +819,9 @@ pub async fn load_table_page(
     };
     let meta = load_table_meta(client, &schema, &table).await?;
     if meta.columns.is_empty() {
-        return Err("Table has no visible columns.".into());
+        return Err("Relation has no visible columns.".into());
     }
+    let is_view = matches!(meta.relation_kind.as_deref(), Some("v" | "m"));
 
     let limit = limit.clamp(1, TABLE_PAGE_LIMIT);
     let fetch_limit = limit + 1;
@@ -843,10 +844,15 @@ pub async fn load_table_page(
     };
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
     for row in rows {
-        let version: String = row.try_get(0).map_err(|error| error.to_string())?;
+        let version: String = if is_view {
+            String::new()
+        } else {
+            row.try_get(0).map_err(|error| error.to_string())?
+        };
+        let value_offset = if is_view { 0 } else { 1 };
         let values = (0..meta.columns.len())
             .map(|index| {
-                row.try_get::<_, Option<String>>(index + 1)
+                row.try_get::<_, Option<String>>(index + value_offset)
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -889,22 +895,45 @@ fn build_table_page_query(
     let selected = meta
         .columns
         .iter()
-        .map(|column| format!("{}::text", quote_identifier(&column.name)))
+        .map(page_column_expression)
         .collect::<Vec<_>>()
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(meta, filters, &mut params)?;
-    let order = build_order_by(meta, sort)?;
-    let mut sql = format!(
-        "SELECT xmin::text, {selected} FROM {}",
-        quote_relation(schema, table)
-    );
+    let is_view = matches!(meta.relation_kind.as_deref(), Some("v" | "m"));
+    let order = build_order_by(meta, sort, is_view)?;
+    let mut sql = if is_view {
+        format!("SELECT {selected} FROM {}", quote_relation(schema, table))
+    } else {
+        format!(
+            "SELECT xmin::text, {selected} FROM {}",
+            quote_relation(schema, table)
+        )
+    };
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
         sql.push_str(&predicate);
     }
     sql.push_str(&format!(" ORDER BY {order} LIMIT {limit} OFFSET {offset}"));
     Ok((sql, params))
+}
+
+fn page_column_expression(column: &ColumnInfo) -> String {
+    let identifier = quote_identifier(&column.name);
+    if column.primary_key {
+        return format!("{identifier}::text");
+    }
+    let limit = crate::common::MAX_CELL_CHARS;
+    if column.filter_type == "bytea" {
+        format!(
+            "CASE WHEN octet_length({identifier}) > {limit} THEN encode(substring({identifier} from 1 for {limit}), 'hex') || ' [truncated]' ELSE encode({identifier}, 'hex') END"
+        )
+    } else {
+        let text = format!("{identifier}::text");
+        format!(
+            "CASE WHEN length({text}) > {limit} THEN left({text}, {limit}) || ' [truncated]' ELSE {text} END"
+        )
+    }
 }
 
 fn build_filter_predicate(
@@ -961,7 +990,11 @@ fn build_filter_predicate(
     Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
 }
 
-fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, String> {
+fn build_order_by(
+    meta: &TableMeta,
+    sort: Option<&TableSort>,
+    is_view: bool,
+) -> Result<String, String> {
     let sort_column = sort
         .map(|sort| find_column(&meta.columns, &sort.column))
         .transpose()?;
@@ -983,10 +1016,21 @@ fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, 
         terms.push(format!("{} ASC", quote_identifier(&column.name)));
     }
     if meta.primary_columns().next().is_none() {
-        if meta.relation_kind.as_deref() == Some("p") {
-            terms.push("tableoid".to_string());
+        if is_view {
+            if let Some(column) = meta.columns.first() {
+                if sort_column.is_none_or(|sort| sort.name != column.name) {
+                    terms.push(format!("{} ASC", quote_identifier(&column.name)));
+                }
+            }
+        } else {
+            if meta.relation_kind.as_deref() == Some("p") {
+                terms.push("tableoid".to_string());
+            }
+            terms.push("ctid".to_string());
         }
-        terms.push("ctid".to_string());
+    }
+    if terms.is_empty() {
+        return Err("Relation has no sortable columns.".into());
     }
     Ok(terms.join(", "))
 }
@@ -1113,11 +1157,16 @@ pub async fn run_sql(
             return oracle::run_sql(oracle_session, &sql).await;
         }
     };
+    let cancel = entry.cancel.lock().await.clone();
     let _active = QueryGuard::begin(&entry.query_active);
-    collect_query(client, &sql).await
+    collect_query(client, &sql, cancel.as_ref()).await
 }
 
-async fn collect_query(client: &Client, sql: &str) -> Result<QueryOutput, String> {
+async fn collect_query(
+    client: &Client,
+    sql: &str,
+    cancel: Option<&CancelState>,
+) -> Result<QueryOutput, String> {
     let stream = client
         .simple_query_raw(sql)
         .await
@@ -1127,11 +1176,13 @@ async fn collect_query(client: &Client, sql: &str) -> Result<QueryOutput, String
     let mut result_sets: Vec<QueryResultSet> = Vec::new();
     let mut affected_rows = Vec::new();
     let mut truncated = false;
-    while let Some(message) = stream
-        .try_next()
-        .await
-        .map_err(|error| format_pg_error(&error))?
-    {
+    loop {
+        let message = match stream.try_next().await {
+            Ok(Some(message)) => message,
+            Ok(None) => break,
+            Err(_) if truncated => break,
+            Err(error) => return Err(format_pg_error(&error)),
+        };
         match message {
             SimpleQueryMessage::RowDescription(columns) => {
                 result_sets.push(QueryResultSet {
@@ -1152,8 +1203,11 @@ async fn collect_query(client: &Client, sql: &str) -> Result<QueryOutput, String
                             .map(|index| row.get(index).map(str::to_owned))
                             .collect(),
                     );
-                } else {
+                } else if !truncated {
                     truncated = true;
+                    if let Some(cancel) = cancel {
+                        let _ = send_cancel(cancel).await;
+                    }
                 }
             }
             SimpleQueryMessage::CommandComplete(count) => affected_rows.push(count),
@@ -1223,7 +1277,7 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
              LEFT JOIN pg_catalog.pg_index i
                ON i.indrelid = t.oid AND i.indisprimary
              WHERE n.nspname::text = $1 AND t.relname::text = $2
-               AND t.relkind IN ('r', 'p')
+               AND t.relkind IN ('r', 'p', 'v', 'm')
                AND a.attnum > 0 AND NOT a.attisdropped
              ORDER BY a.attnum",
             &[&schema, &table],
@@ -1231,7 +1285,9 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
         .await
         .map_err(|error| error.to_string())?;
     if rows.is_empty() {
-        return Err("Table does not exist or is not a regular PostgreSQL table.".into());
+        return Err(
+            "Relation does not exist or is not a table, view, or materialized view.".into(),
+        );
     }
 
     let mut columns = Vec::with_capacity(rows.len());
@@ -1550,6 +1606,16 @@ mod tests {
         assert!(
             build_table_page_query("public", "items", &meta, 0, 101, &[], Some(&sort)).is_err()
         );
+    }
+
+    #[test]
+    fn views_use_no_xmin_or_ctid() {
+        let meta = table_meta(vec![column("label", "text", FilterKind::Text, false)], "v");
+        let (sql, _) = build_table_page_query("public", "item_view", &meta, 0, 101, &[], None)
+            .expect("build view query");
+        assert!(!sql.contains("xmin"));
+        assert!(!sql.contains("ctid"));
+        assert!(sql.contains("ORDER BY \"label\" ASC"));
     }
 
     #[test]
@@ -1886,7 +1952,7 @@ mod tests {
         let connection_task = tokio::spawn(connection);
         let cancel = client.cancel_token();
         let query =
-            tokio::spawn(async move { collect_query(&client, "SELECT pg_sleep(10)").await });
+            tokio::spawn(async move { collect_query(&client, "SELECT pg_sleep(10)", None).await });
 
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         cancel.cancel_query(NoTls).await.expect("send cancellation");

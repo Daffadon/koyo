@@ -35,6 +35,7 @@ impl KoyoApp {
         let table_for_task = table.clone();
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 let password = if profile_for_task.engine.needs_password() {
                     store.load_password(profile_for_task.id)?
@@ -181,6 +182,7 @@ impl KoyoApp {
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 database::load_table_page(
                     &manager,
@@ -258,6 +260,7 @@ impl KoyoApp {
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 database::list_foreign_keys(&manager, connection.session_id, &schema, &table_name)
                     .await
@@ -332,6 +335,7 @@ impl KoyoApp {
         let session_id = connection.session_id;
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 database::apply_grid_changes(&manager, session_id, schema, name, changes).await
             },

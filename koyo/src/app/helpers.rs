@@ -68,6 +68,12 @@ fn push_csv_row<'a>(output: &mut String, fields: impl Iterator<Item = &'a str>) 
 }
 
 fn push_csv_field(output: &mut String, field: &str) {
+    let formula_like = field.chars().next().is_some_and(|first| {
+        matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r') && field.parse::<f64>().is_err()
+    });
+    if formula_like {
+        output.push('\'');
+    }
     if !field.contains(|character| matches!(character, ',' | '"' | '\n' | '\r')) {
         output.push_str(field);
         return;
@@ -238,6 +244,24 @@ mod tests {
         assert_eq!(
             results_as_csv(&result),
             "name,\"note, quoted\"\nAda,\"a,b\"\n\"quote\"\"d\",\n\"line\nbreak\",\n"
+        );
+    }
+
+    #[test]
+    fn csv_guards_spreadsheet_formulas_but_keeps_numbers() {
+        let result = QueryResultSet {
+            columns: vec!["value".into()],
+            rows: vec![
+                vec![Some("=HYPERLINK(\"https://example.test\")".into())],
+                vec![Some("-12.5".into())],
+                vec![Some("-1+2".into())],
+                vec![Some("@cmd".into())],
+            ],
+        };
+
+        assert_eq!(
+            results_as_csv(&result),
+            "value\n'\"=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n'-1+2\n'@cmd\n"
         );
     }
 

@@ -307,19 +307,17 @@ pub async fn load_page(
     let selected = meta
         .columns
         .iter()
-        .map(|column| {
-            let identifier = quote_identifier(&column.name);
-            if is_binary(column) {
-                format!("HEX({identifier})")
-            } else {
-                format!("CAST({identifier} AS CHAR)")
-            }
-        })
+        .map(page_column_expression)
         .collect::<Vec<_>>()
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta.columns, filters, &mut params)?;
-    let order = build_order_by(&meta.columns, meta.primary_indices.as_slice(), sort)?;
+    let order = common::build_keyed_order_by(
+        &meta.columns,
+        meta.primary_indices.as_slice(),
+        sort,
+        quote_identifier,
+    )?;
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
@@ -464,7 +462,7 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
             while let Some(row) = result.next().await.map_err(|error| error.to_string())? {
                 if rows.len() == QUERY_ROW_LIMIT {
                     truncated = true;
-                    continue;
+                    break;
                 }
                 rows.push(
                     (0..columns.len())
@@ -477,7 +475,7 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
                 rows,
             });
         }
-        if result.is_empty() {
+        if truncated || result.is_empty() {
             break;
         }
     }
@@ -622,6 +620,29 @@ async fn load_meta(
     })
 }
 
+fn page_column_expression(column: &ColumnInfo) -> String {
+    let identifier = quote_identifier(&column.name);
+    if column.primary_key {
+        return if is_binary(column) {
+            format!("HEX({identifier})")
+        } else {
+            format!("CAST({identifier} AS CHAR)")
+        };
+    }
+    let limit = common::MAX_CELL_CHARS;
+    if is_binary(column) {
+        format!(
+            "CASE WHEN OCTET_LENGTH({identifier}) > {limit} THEN CONCAT(LEFT(HEX({identifier}), {}), ' [truncated]') ELSE HEX({identifier}) END",
+            limit * 2
+        )
+    } else {
+        let text = format!("CAST({identifier} AS CHAR)");
+        format!(
+            "CASE WHEN CHAR_LENGTH({text}) > {limit} THEN CONCAT(LEFT({text}, {limit}), ' [truncated]') ELSE {text} END"
+        )
+    }
+}
+
 fn build_filter_predicate(
     columns: &[ColumnInfo],
     filters: &[TableFilter],
@@ -668,42 +689,6 @@ fn build_filter_predicate(
         predicates.push(predicate);
     }
     Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
-}
-
-fn build_order_by(
-    columns: &[ColumnInfo],
-    primary_indices: &[usize],
-    sort: Option<&TableSort>,
-) -> Result<String, String> {
-    let sort_column = sort
-        .map(|sort| common::find_column(columns, &sort.column))
-        .transpose()?;
-    let mut terms = Vec::with_capacity(primary_indices.len() + 1);
-    if let (Some(sort), Some(column)) = (sort, sort_column) {
-        if !column.sortable {
-            return Err(format!("Column {} cannot be sorted.", column.name));
-        }
-        terms.push(format!(
-            "{} {}",
-            quote_identifier(&column.name),
-            if sort.descending { "DESC" } else { "ASC" }
-        ));
-    }
-    for index in primary_indices {
-        let column = &columns[*index];
-        if sort_column.is_none_or(|sort| sort.name != column.name) {
-            terms.push(format!("{} ASC", quote_identifier(&column.name)));
-        }
-    }
-    if terms.is_empty() {
-        if let Some(column) = columns.first() {
-            terms.push(format!("{} ASC", quote_identifier(&column.name)));
-        }
-    }
-    if terms.is_empty() {
-        return Err("Table has no sortable columns.".into());
-    }
-    Ok(terms.join(", "))
 }
 
 fn build_insert(
@@ -814,6 +799,7 @@ fn original_predicate(
     columns
         .iter()
         .zip(original)
+        .filter(|(_, value)| !common::is_truncated_cell(value))
         .map(|(column, value)| {
             params.push(string_value(value.clone()));
             let identifier = quote_identifier(&column.name);

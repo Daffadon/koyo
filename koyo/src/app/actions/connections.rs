@@ -62,6 +62,7 @@ impl KoyoApp {
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 let tables: Vec<TableSummary> =
                     database::list_tables(&manager, connection.session_id).await?;
@@ -213,6 +214,7 @@ impl KoyoApp {
         let profile_for_task = profile.clone();
         self.spawn_task(
             cx,
+            tab_id,
             async move {
                 let password = if profile_for_task.engine.needs_password() {
                     store.load_password(profile_for_task.id)?
