@@ -457,6 +457,17 @@ pub(super) fn render(
                                 div()
                                     .size_full()
                                     .min_h(px(0.0))
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &KeyDownEvent, _, cx| {
+                                            let modifiers = event.keystroke.modifiers;
+                                            if event.keystroke.key == "enter"
+                                                && (modifiers.control || modifiers.platform)
+                                            {
+                                                cx.stop_propagation();
+                                                this.run_query(tab_id, cx);
+                                            }
+                                        },
+                                    ))
                                     .child(Editor::new(&query.editor).h_full().bordered(false)),
                             ),
                     )

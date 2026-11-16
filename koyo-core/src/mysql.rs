@@ -354,6 +354,23 @@ pub async fn load_page(
         sort,
         quote_identifier,
     )?;
+    let mut count_sql = format!("SELECT COUNT(*) FROM {}", quote_relation(schema, table));
+    if let Some(predicate) = &predicate {
+        count_sql.push_str(" WHERE ");
+        count_sql.push_str(predicate);
+    }
+    let count_rows: Vec<MysqlRow> = session
+        .conn
+        .exec(&count_sql, Params::Positional(params.clone()))
+        .await
+        .map_err(|error| error.to_string())?;
+    let total_rows = count_rows
+        .first()
+        .and_then(|row| row.as_ref(0))
+        .and_then(value_text)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| "MySQL returned no row count.".to_string())?;
+
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
@@ -401,6 +418,7 @@ pub async fn load_page(
         rows: page_rows,
         offset,
         limit,
+        total_rows,
         has_more,
     })
 }

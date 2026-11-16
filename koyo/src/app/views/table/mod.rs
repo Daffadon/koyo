@@ -16,7 +16,6 @@ mod filter;
 mod grid;
 
 const CELL_WIDTH: f32 = crate::app::DEFAULT_COLUMN_WIDTH;
-pub(super) const ACTION_WIDTH: f32 = 44.0;
 /// Narrow gutter that carries the global row number. It scrolls with the data
 /// columns and must be part of every width calculation in the grid.
 pub(super) const ROW_RAIL_WIDTH: f32 = 56.0;
@@ -77,7 +76,6 @@ pub(super) fn render(
     let staged: Rc<Vec<StagedChange>> = Rc::new(table.staged.clone());
     let page: Option<Rc<TablePage>> = table.page.clone().map(Rc::new);
     let sort = table.sort.clone();
-    let selected_column = table.filter_column;
     let engine = tab.engine();
     let cancel_supported = engine != Some(koyo_core::models::Engine::Oracle);
     let has_staged = !staged.is_empty();
@@ -106,6 +104,8 @@ pub(super) fn render(
         .map(|page| page.limit)
         .unwrap_or(crate::app::PAGE_LIMIT);
     let has_more = page_ref.is_some_and(|page| page.has_more);
+    let total_rows = page_ref.map(|page| page.total_rows).unwrap_or(0);
+    let total_pages = total_rows.div_ceil(u64::from(limit.max(1))).max(1);
     let page_number = offset / limit.max(1) + 1;
 
     let mode_switch = h_flex()
@@ -270,8 +270,7 @@ pub(super) fn render(
             .into_any_element();
     }
 
-    let filter_bar =
-        filter::render_filter_bar(tab_id, table, &columns, selected_column, palette, cx);
+    let filter_bar = filter::render_filter_bar(tab_id, table, palette, cx);
     let column_widths = columns
         .iter()
         .enumerate()
@@ -335,7 +334,7 @@ pub(super) fn render(
                 .text_xs()
                 .text_color(palette.muted)
                 .child(div().font_family(footer_mono.clone()).child(format!(
-                    "{} rows on this page · {} columns",
+                    "{total_rows} rows · {} on this page · {} columns",
                     page_ref.map(|page| page.rows.len()).unwrap_or(0),
                     columns.len()
                 )))
@@ -346,7 +345,7 @@ pub(super) fn render(
                         .child(
                             div()
                                 .font_family(footer_mono)
-                                .child(format!("Page {page_number}")),
+                                .child(format!("Page {page_number} of {total_pages}")),
                         )
                         .child(
                             Button::new("prev-page")
@@ -371,10 +370,19 @@ pub(super) fn render(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::ChevronRight)
-                                .disabled(loading || !connected || !has_more)
-                                .when(loading || !connected || !has_more, |this| {
-                                    this.text_color(palette.foreground)
-                                })
+                                .disabled(
+                                    loading
+                                        || !connected
+                                        || !has_more
+                                        || u64::from(page_number) >= total_pages,
+                                )
+                                .when(
+                                    loading
+                                        || !connected
+                                        || !has_more
+                                        || u64::from(page_number) >= total_pages,
+                                    |this| this.text_color(palette.foreground),
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.request_page(tab_id, offset + limit, window, cx);
                                 })),

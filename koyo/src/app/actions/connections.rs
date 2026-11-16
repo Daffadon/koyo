@@ -362,6 +362,9 @@ impl KoyoApp {
         let dialog = ConnectionDialog::new(target_tab, engine, window, cx);
         let focus = dialog.name.read(cx).focus_handle(cx);
         self.dialog = Some(dialog);
+        self.profile_filter.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
         focus.focus(window, cx);
         cx.notify();
     }
@@ -602,6 +605,17 @@ impl KoyoApp {
             .collect::<Vec<_>>();
         for tab_id in ids {
             self.close_tab_now(tab_id, cx);
+        }
+        let sessions = self
+            .parked_connections
+            .iter()
+            .filter(|parked| parked.profile.id == id)
+            .map(|parked| parked.connection.session_id)
+            .collect::<Vec<_>>();
+        self.parked_connections
+            .retain(|parked| parked.profile.id != id);
+        for session_id in sessions {
+            self.disconnect_session(session_id);
         }
         cx.notify();
     }

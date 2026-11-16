@@ -34,13 +34,6 @@ impl KoyoApp {
         if page.rows.get(row).is_none() || info.generated || info.identity {
             return;
         }
-        if table
-            .staged
-            .iter()
-            .any(|change| matches!(change, StagedChange::Delete { key, .. } if key == &page.rows[row].key))
-        {
-            return;
-        }
         let current = table
             .staged
             .iter()
@@ -278,83 +271,6 @@ impl KoyoApp {
                     change.values.insert(info.name.clone(), Some(value));
                 }
             }
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn toggle_row_delete(
-        &mut self,
-        tab_id: u64,
-        row: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        let TabBody::Table(table) = &self.tabs[index].body else {
-            return;
-        };
-        let Some(page) = table.page.as_ref() else {
-            return;
-        };
-        let Some(row_data) = page.rows.get(row) else {
-            return;
-        };
-        let key = row_data.key.clone();
-        let existing = table.staged.iter().position(|change| match change {
-            StagedChange::Delete {
-                key: staged_key, ..
-            } => staged_key == &key,
-            StagedChange::Update {
-                key: staged_key, ..
-            } => staged_key == &key,
-            _ => false,
-        });
-        match existing {
-            Some(position) if matches!(table.staged[position], StagedChange::Delete { .. }) => {
-                self.stage_row_delete(tab_id, row, false, cx);
-            }
-            Some(_) => {
-                self.confirm(
-                    window,
-                    cx,
-                    "Stage deletion?",
-                    "Staged edits to this row will be discarded.",
-                    move |this, cx| this.stage_row_delete(tab_id, row, true, cx),
-                );
-            }
-            None => {
-                self.stage_row_delete(tab_id, row, true, cx);
-            }
-        }
-    }
-
-    fn stage_row_delete(&mut self, tab_id: u64, row: usize, delete: bool, cx: &mut Context<Self>) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        let Some(page) = table.page.clone() else {
-            return;
-        };
-        let Some(row_data) = page.rows.get(row).cloned() else {
-            return;
-        };
-        let key = row_data.key.clone();
-        table.staged.retain(|change| match change {
-            StagedChange::Insert(_) => true,
-            _ => change.row_key() != Some(key.as_slice()),
-        });
-        if delete {
-            table.staged.push(StagedChange::Delete {
-                key,
-                version: row_data.version,
-                original: row_data.values,
-            });
         }
         cx.notify();
     }

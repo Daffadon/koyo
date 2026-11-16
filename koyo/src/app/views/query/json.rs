@@ -54,11 +54,8 @@ pub(super) fn result_json(
         .flex_1()
         .min_h(px(0.0))
         .overflow_scroll()
+        .restrict_scroll_to_axis()
         .track_scroll(&scroll_handle)
-        .map(|mut this| {
-            this.style().allow_concurrent_scroll = Some(true);
-            this
-        })
         .child(rows)
         .font_family(mono.clone())
         .into_any_element()

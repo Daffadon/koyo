@@ -1,6 +1,9 @@
 use gpui_kit::component::input::InputState;
 use gpui_kit::*;
-use koyo_core::models::{ConnectionProfile, Engine, FilterKind, FilterOperator, QueryResultSet};
+use koyo_core::common::ensure_filter_operator;
+use koyo_core::models::{
+    ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, QueryResultSet, TableFilter,
+};
 
 use super::state::{ConnectionDialog, QueryTab, Tab};
 
@@ -112,45 +115,182 @@ pub(crate) fn filter_needs_value(operator: FilterOperator) -> bool {
     )
 }
 
-pub(crate) fn default_operator(kind: FilterKind) -> FilterOperator {
-    match kind {
-        FilterKind::Text => FilterOperator::Contains,
-        FilterKind::Number | FilterKind::Temporal => FilterOperator::Equals,
-        FilterKind::Boolean => FilterOperator::IsTrue,
-        FilterKind::Other => FilterOperator::IsNull,
+/// Parse a DBeaver-style filter expression. Supported forms:
+/// `column = value`, `column != value`, comparisons, `contains`, and
+/// `is null` / `is not null` / `is true` / `is false`, joined with `AND`.
+pub(crate) fn parse_filter_input(
+    columns: &[ColumnInfo],
+    input: &str,
+) -> Result<Vec<TableFilter>, String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(Vec::new());
     }
+    let mut filters = Vec::new();
+    for condition in split_filter_conditions(input) {
+        filters.push(parse_filter_condition(columns, condition)?);
+    }
+    Ok(filters)
 }
 
-pub(crate) fn operator_options(kind: FilterKind) -> Vec<(FilterOperator, &'static str)> {
-    match kind {
-        FilterKind::Text => vec![
-            (FilterOperator::Contains, "contains"),
-            (FilterOperator::Equals, "equals"),
-            (FilterOperator::NotEquals, "not equals"),
-            (FilterOperator::IsNull, "is null"),
-            (FilterOperator::IsNotNull, "is not null"),
-        ],
-        FilterKind::Number | FilterKind::Temporal => vec![
-            (FilterOperator::Equals, "equals"),
-            (FilterOperator::NotEquals, "not equals"),
-            (FilterOperator::LessThan, "less than"),
-            (FilterOperator::LessThanOrEqual, "at most"),
-            (FilterOperator::GreaterThan, "greater than"),
-            (FilterOperator::GreaterThanOrEqual, "at least"),
-            (FilterOperator::IsNull, "is null"),
-            (FilterOperator::IsNotNull, "is not null"),
-        ],
-        FilterKind::Boolean => vec![
-            (FilterOperator::IsTrue, "is true"),
-            (FilterOperator::IsFalse, "is false"),
-            (FilterOperator::IsNull, "is null"),
-            (FilterOperator::IsNotNull, "is not null"),
-        ],
-        FilterKind::Other => vec![
-            (FilterOperator::IsNull, "is null"),
-            (FilterOperator::IsNotNull, "is not null"),
-        ],
+fn split_filter_conditions(input: &str) -> Vec<&str> {
+    let bytes = input.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut index = 0;
+    let mut quote = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active) = quote {
+            if byte == active {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        let is_and = index + 3 <= bytes.len()
+            && bytes[index..index + 3].eq_ignore_ascii_case(b"and")
+            && index > 0
+            && bytes[index - 1].is_ascii_whitespace()
+            && bytes
+                .get(index + 3)
+                .is_some_and(|byte| byte.is_ascii_whitespace());
+        if is_and {
+            parts.push(input[start..index].trim());
+            index += 3;
+            start = index;
+            continue;
+        }
+        index += 1;
     }
+    parts.push(input[start..].trim());
+    parts
+}
+
+fn parse_filter_condition(columns: &[ColumnInfo], condition: &str) -> Result<TableFilter, String> {
+    let condition = condition.trim();
+    let lower = condition.to_ascii_lowercase();
+    for (suffix, operator) in [
+        (" is not null", FilterOperator::IsNotNull),
+        (" is null", FilterOperator::IsNull),
+        (" is true", FilterOperator::IsTrue),
+        (" is false", FilterOperator::IsFalse),
+    ] {
+        if let Some(column_text) = lower.strip_suffix(suffix) {
+            let column = find_filter_column(columns, condition[..column_text.len()].trim())?;
+            ensure_filter_operator(column, operator)?;
+            return Ok(TableFilter {
+                column: column.name.clone(),
+                operator,
+                value: None,
+            });
+        }
+    }
+    if let Some(position) = lower.find(" contains ") {
+        let column = find_filter_column(columns, condition[..position].trim())?;
+        let value = unquote_filter_value(&condition[position + " contains ".len()..]);
+        if value.is_empty() {
+            return Err(format!("Filter on {} needs a value.", column.name));
+        }
+        ensure_filter_operator(column, FilterOperator::Contains)?;
+        return Ok(TableFilter {
+            column: column.name.clone(),
+            operator: FilterOperator::Contains,
+            value: Some(value),
+        });
+    }
+
+    let (position, operator_text) = find_filter_operator(condition)
+        .ok_or_else(|| format!("Use an operator in filter: {condition}"))?;
+    let column = find_filter_column(columns, condition[..position].trim())?;
+    let value = unquote_filter_value(&condition[position + operator_text.len()..]);
+    if value.is_empty() {
+        return Err(format!("Filter on {} needs a value.", column.name));
+    }
+    let mut operator = match operator_text {
+        "=" => FilterOperator::Equals,
+        "!=" | "<>" => FilterOperator::NotEquals,
+        ">" => FilterOperator::GreaterThan,
+        ">=" => FilterOperator::GreaterThanOrEqual,
+        "<" => FilterOperator::LessThan,
+        "<=" => FilterOperator::LessThanOrEqual,
+        _ => unreachable!(),
+    };
+    if column.filter_kind == FilterKind::Boolean {
+        if operator == FilterOperator::Equals {
+            operator = match value.to_ascii_lowercase().as_str() {
+                "true" | "1" => FilterOperator::IsTrue,
+                "false" | "0" => FilterOperator::IsFalse,
+                _ => return Err("Boolean filters use true or false.".into()),
+            };
+        }
+    }
+    ensure_filter_operator(column, operator)?;
+    Ok(TableFilter {
+        column: column.name.clone(),
+        operator,
+        value: filter_needs_value(operator).then_some(value),
+    })
+}
+
+fn find_filter_column<'a>(columns: &'a [ColumnInfo], name: &str) -> Result<&'a ColumnInfo, String> {
+    let name = name.trim().trim_matches('"');
+    columns
+        .iter()
+        .find(|column| column.name == name)
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(name))
+        })
+        .ok_or_else(|| format!("Column {name} does not exist in this table."))
+}
+
+fn find_filter_operator(condition: &str) -> Option<(usize, &'static str)> {
+    let bytes = condition.as_bytes();
+    let mut quote = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(active) = quote {
+            if byte == active {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        let remaining = &condition[index..];
+        for operator in [">=", "<=", "!=", "<>", "=", ">", "<"] {
+            if remaining.starts_with(operator) {
+                return Some((index, operator));
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn unquote_filter_value(value: &str) -> String {
+    let value = value.trim();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+            || (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+        {
+            return value[1..value.len() - 1].replace("''", "'");
+        }
+    }
+    value.to_string()
 }
 
 pub(crate) fn set_input(
@@ -226,9 +366,9 @@ pub(crate) fn this_notice(tab: &mut Tab, message: impl Into<String>) {
 
 #[cfg(test)]
 mod tests {
-    use koyo_core::models::QueryResultSet;
+    use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, QueryResultSet};
 
-    use super::results_as_csv;
+    use super::{parse_filter_input, results_as_csv};
 
     #[test]
     fn csv_quotes_commas_quotes_newlines_and_nulls() {
@@ -273,5 +413,49 @@ mod tests {
         };
 
         assert!(results_as_csv(&result).is_empty());
+    }
+
+    fn filter_column(name: &str, kind: FilterKind) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            filter_type: "text".into(),
+            filter_kind: kind,
+            sortable: true,
+            nullable: true,
+            primary_key: false,
+            generated: false,
+            identity: false,
+        }
+    }
+
+    #[test]
+    fn filter_input_parses_and_conditions() {
+        let columns = vec![
+            filter_column("name", FilterKind::Text),
+            filter_column("age", FilterKind::Number),
+        ];
+        let filters = parse_filter_input(&columns, "name contains 'A AND B' AND age >= 30")
+            .expect("filter expression");
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].column, "name");
+        assert_eq!(filters[0].operator, FilterOperator::Contains);
+        assert_eq!(filters[0].value.as_deref(), Some("A AND B"));
+        assert_eq!(filters[1].operator, FilterOperator::GreaterThanOrEqual);
+        assert_eq!(filters[1].value.as_deref(), Some("30"));
+    }
+
+    #[test]
+    fn filter_input_maps_boolean_equality() {
+        let columns = vec![filter_column("enabled", FilterKind::Boolean)];
+        let filters = parse_filter_input(&columns, "enabled = false").expect("boolean filter");
+        assert_eq!(filters[0].operator, FilterOperator::IsFalse);
+        assert_eq!(filters[0].value, None);
+    }
+
+    #[test]
+    fn filter_input_rejects_unknown_columns() {
+        let columns = vec![filter_column("name", FilterKind::Text)];
+        assert!(parse_filter_input(&columns, "missing = 1").is_err());
     }
 }

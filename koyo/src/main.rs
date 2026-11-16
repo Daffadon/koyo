@@ -117,6 +117,8 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
                 KeyBinding::new("cmd-enter", RunQuery, Some("Input")),
+                KeyBinding::new("ctrl-enter", RunQuery, Some("Koyo")),
+                KeyBinding::new("cmd-enter", RunQuery, Some("Koyo")),
                 KeyBinding::new("ctrl-b", ToggleSidebar, Some("Koyo")),
                 KeyBinding::new("cmd-b", ToggleSidebar, Some("Koyo")),
                 KeyBinding::new("ctrl-alt-b", ToggleAi, Some("Koyo")),

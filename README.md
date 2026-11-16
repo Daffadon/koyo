@@ -32,10 +32,10 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 ### Table browser and data editing
 
 - Explore tables, views, functions, triggers, and engine metadata grouped by schema.
-- Preview rows with server-side filters, one-column sorting, offset paging, and cancellable page loads.
+- Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
 - Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
 - Foreign-key diagram for the open table.
-- Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
+- Tables with primary keys support staged inserts and updates. Apply the batch in one transaction.
 - Stale-row checks roll back the batch when a row changed after it was loaded.
 - Keyless tables and views are read-only.
 - Right-click a table cell to copy its value or the row; click a row number to copy the row.
@@ -43,9 +43,9 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 ### Connections and workspace
 
 - Six engines with an engine-first connection flow and per-engine profile forms.
-- Create, edit, and delete profiles. Profiles contain no passwords.
+- Create, edit, delete, and search profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
-- Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab that holds a session closes it.
+- Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next workspace tab reuses it. Explicit disconnect, profile deletion, or app exit closes it.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - Split panes, tab drag between panes, resizable panes, and resizable table columns.
 - Theme, sidebar state, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
@@ -168,7 +168,7 @@ koyo/src/
     connections.rs         connect, catalog loading, profile dialog/storage
     queries.rs             run, cancel, history, result selection and resize
     tables.rs              paging, filtering, sorting, refresh, apply/discard
-    editing.rs             cell editing, inserts, deletes, staged changes
+    editing.rs             cell editing, inserts, staged changes
     ai.rs                  AI threads, provider settings, streaming, compacting
   app/views/               GPUI rendering only
     root.rs                root frame and overlays

@@ -463,10 +463,32 @@ pub async fn load_page(
     let order =
         common::build_keyed_order_by(&meta.columns, &meta.primary_indices, sort, quote_identifier)?;
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
-    if let Some(predicate) = predicate {
+    if let Some(predicate) = &predicate {
         sql.push_str(" WHERE ");
-        sql.push_str(&predicate);
+        sql.push_str(predicate);
     }
+    let mut count_sql = format!("SELECT COUNT_BIG(*) FROM {}", quote_relation(schema, table));
+    if let Some(predicate) = &predicate {
+        count_sql.push_str(" WHERE ");
+        count_sql.push_str(predicate);
+    }
+    let mut count_query = Query::new(count_sql);
+    for value in &params {
+        count_query.bind(value.as_deref());
+    }
+    let count_row = count_query
+        .query(&mut session.client)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_row()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "SQL Server returned no row count.".to_string())?;
+    let total_rows = count_row
+        .get::<i64, _>(0)
+        .ok_or_else(|| "SQL Server returned an invalid row count.".to_string())?
+        .max(0) as u64;
+
     sql.push_str(&format!(
         " ORDER BY {order} OFFSET {offset} ROWS FETCH NEXT {} ROWS ONLY",
         limit + 1
@@ -517,6 +539,7 @@ pub async fn load_page(
         rows: page_rows,
         offset,
         limit,
+        total_rows,
         has_more,
     })
 }

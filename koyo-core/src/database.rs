@@ -982,6 +982,17 @@ pub async fn load_table_page(
         sort.as_ref(),
     )?;
 
+    let (count_sql, count_params) = build_table_count_query(&schema, &table, &meta, &filters)?;
+    let total_rows = {
+        let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
+        let row = client
+            .query_one(&count_sql, &sql_params(&count_params))
+            .await
+            .map_err(|error| error.to_string())?;
+        row.try_get::<_, i64>(0)
+            .map_err(|error| error.to_string())?
+            .max(0) as u64
+    };
     let rows = {
         let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
         client
@@ -1032,9 +1043,26 @@ pub async fn load_table_page(
         rows: page_rows,
         offset,
         limit,
+        total_rows,
         has_more,
         editable,
     })
+}
+
+fn build_table_count_query(
+    schema: &str,
+    table: &str,
+    meta: &TableMeta,
+    filters: &[TableFilter],
+) -> Result<(String, Vec<Option<String>>), String> {
+    let mut params = Vec::new();
+    let predicate = build_filter_predicate(meta, filters, &mut params)?;
+    let mut sql = format!("SELECT count(*) FROM {}", quote_relation(schema, table));
+    if let Some(predicate) = predicate {
+        sql.push_str(" WHERE ");
+        sql.push_str(&predicate);
+    }
+    Ok((sql, params))
 }
 
 fn build_table_page_query(

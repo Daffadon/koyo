@@ -48,10 +48,21 @@ pub(super) fn render_dialog(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let busy = dialog.busy;
+    let search = app.profile_filter.read(cx).value().trim().to_lowercase();
     let visible = app
         .profiles
         .iter()
-        .filter(|profile| profile.engine == dialog.engine)
+        .filter(|profile| {
+            if search.is_empty() {
+                profile.engine == dialog.engine
+            } else {
+                profile.name.to_lowercase().contains(&search)
+                    || profile.host.to_lowercase().contains(&search)
+                    || profile.database.to_lowercase().contains(&search)
+                    || profile.username.to_lowercase().contains(&search)
+                    || profile.sqlite_path.to_lowercase().contains(&search)
+            }
+        })
         .cloned()
         .collect::<Vec<_>>();
     let editing_name = dialog
@@ -109,6 +120,19 @@ pub(super) fn render_dialog(
                 ),
         )
         .child(
+            div().px_2().pb_2().child(
+                Input::new(&app.profile_filter)
+                    .w_full()
+                    .cleanable(true)
+                    .with_size(Size::Small)
+                    .prefix(
+                        Icon::new(IconName::Search)
+                            .with_size(Size::Small)
+                            .text_color(palette.muted),
+                    ),
+            ),
+        )
+        .child(
             v_flex()
                 .id("saved-profiles")
                 .flex_1()
@@ -116,16 +140,13 @@ pub(super) fn render_dialog(
                 .p_2()
                 .gap_1()
                 .when(visible.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .p_3()
-                            .text_xs()
-                            .text_color(palette.muted)
-                            .child(format!(
-                                "No saved {} connections yet.",
-                                engine_label(dialog.engine)
-                            )),
-                    )
+                    this.child(div().p_3().text_xs().text_color(palette.muted).child(
+                        if search.is_empty() {
+                            format!("No saved {} connections yet.", engine_label(dialog.engine))
+                        } else {
+                            format!("No saved connections match \"{search}\".")
+                        },
+                    ))
                 })
                 .children(visible.iter().enumerate().map(|(index, profile)| {
                     let profile = profile.clone();
@@ -172,6 +193,12 @@ pub(super) fn render_dialog(
                                         .whitespace_nowrap()
                                         .text_ellipsis()
                                         .child(profile.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .child(engine_label(profile.engine)),
                                 )
                                 .child(button_tooltip(
                                     ("tooltip-profile-edit", index),

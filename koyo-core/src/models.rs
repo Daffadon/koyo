@@ -205,6 +205,7 @@ pub struct TablePage {
     pub rows: Vec<GridRow>,
     pub offset: u32,
     pub limit: u32,
+    pub total_rows: u64,
     pub has_more: bool,
     pub editable: bool,
 }

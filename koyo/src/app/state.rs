@@ -7,8 +7,8 @@ use gpui_kit::component::input::{EditorState, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
-    ConnectionInfo, ConnectionProfile, Engine, FilterOperator, ForeignKeyInfo, MetadataGroup,
-    QueryOutput, SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
+    ConnectionInfo, ConnectionProfile, Engine, ForeignKeyInfo, MetadataGroup, QueryOutput,
+    SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use koyo_core::{ProfileStore, SessionManager};
 
@@ -41,20 +41,6 @@ pub(crate) enum StagedChange {
         values: BTreeMap<String, Option<String>>,
         original: Vec<Option<String>>,
     },
-    Delete {
-        key: Vec<Option<String>>,
-        version: String,
-        original: Vec<Option<String>>,
-    },
-}
-
-impl StagedChange {
-    pub(crate) fn row_key(&self) -> Option<&[Option<String>]> {
-        match self {
-            StagedChange::Insert(_) => None,
-            StagedChange::Update { key, .. } | StagedChange::Delete { key, .. } => Some(key),
-        }
-    }
 }
 
 pub(crate) enum TabBody {
@@ -124,14 +110,22 @@ pub(crate) struct TableTab {
     pub(crate) operation_id: Option<Uuid>,
     pub(crate) next_insert_id: u64,
     pub(crate) load_sequence: u64,
-    pub(crate) filter_column: Option<usize>,
-    pub(crate) filter_operator: FilterOperator,
-    pub(crate) filter_value: Entity<InputState>,
+    pub(crate) filter_input: Entity<InputState>,
     pub(crate) filter_error: String,
     pub(crate) column_widths: Vec<f32>,
     pub(crate) resize_pointer_x: Option<f32>,
     pub(crate) resize_column: Option<usize>,
     pub(crate) column_resized: bool,
+}
+
+/// A connected session kept alive after its last tab closes. Tabs can park
+/// here so opening a new tab does not force a reconnect.
+pub(crate) struct LiveConnection {
+    pub(crate) profile: ConnectionProfile,
+    pub(crate) connection: ConnectionInfo,
+    pub(crate) tables: Vec<TableSummary>,
+    pub(crate) schema_objects: Vec<SchemaObject>,
+    pub(crate) metadata_groups: Vec<MetadataGroup>,
 }
 
 pub(crate) struct Tab {
@@ -213,6 +207,7 @@ pub(crate) struct KoyoApp {
     pub(crate) manager: Arc<SessionManager>,
     pub(crate) runtime: Arc<Runtime>,
     pub(crate) profiles: Vec<ConnectionProfile>,
+    pub(crate) parked_connections: Vec<LiveConnection>,
     pub(crate) tabs: Vec<Tab>,
     pub(crate) primary_tabs: Vec<u64>,
     pub(crate) secondary_tabs: Vec<u64>,
@@ -221,6 +216,7 @@ pub(crate) struct KoyoApp {
     pub(crate) primary_tab_scroll: ScrollHandle,
     pub(crate) secondary_tab_scroll: ScrollHandle,
     pub(crate) explorer_filter: Entity<InputState>,
+    pub(crate) profile_filter: Entity<InputState>,
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,

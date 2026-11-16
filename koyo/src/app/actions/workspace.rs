@@ -8,7 +8,7 @@ use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
-use koyo_core::models::{ConnectionProfile, Engine, FilterOperator};
+use koyo_core::models::{ConnectionProfile, Engine};
 use koyo_core::{ProfileStore, SessionManager};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
@@ -61,6 +61,8 @@ impl KoyoApp {
                 .auto_grow(6, 20)
         });
         let explorer_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables"));
+        let profile_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search saved connections"));
         let mut app = Self {
             store,
             save_queue,
@@ -70,6 +72,7 @@ impl KoyoApp {
             manager: Arc::new(SessionManager::default()),
             runtime,
             profiles,
+            parked_connections: Vec::new(),
             tabs: Vec::new(),
             primary_tabs: Vec::new(),
             secondary_tabs: Vec::new(),
@@ -78,6 +81,7 @@ impl KoyoApp {
             primary_tab_scroll: ScrollHandle::new(),
             secondary_tab_scroll: ScrollHandle::new(),
             explorer_filter,
+            profile_filter,
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
@@ -120,13 +124,7 @@ impl KoyoApp {
             apply_calm_light_theme(cx);
         }
         app.restore_workspace(&saved.workspace, window, cx);
-        if app.primary_tabs.is_empty() {
-            let tab = app.make_query_tab(None, window, cx);
-            let id = tab.id;
-            app.tabs.push(tab);
-            app.primary_tabs.push(id);
-            app.primary_active = id;
-        }
+        app.ensure_workspace_tab(window, cx);
 
         let weak = cx.entity().downgrade();
         window.on_window_should_close(cx, move |_, cx| {
@@ -145,7 +143,32 @@ impl KoyoApp {
         });
         cx.observe(&app.explorer_filter, |_, _, cx| cx.notify())
             .detach();
+        cx.observe(&app.profile_filter, |_, _, cx| cx.notify())
+            .detach();
         app
+    }
+
+    pub(crate) fn ensure_workspace_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.primary_tabs.is_empty() {
+            return;
+        }
+        let parked = self.parked_connections.pop();
+        let mut tab = self.make_query_tab(
+            parked.as_ref().map(|parked| parked.profile.clone()),
+            window,
+            cx,
+        );
+        if let Some(parked) = parked {
+            tab.connection = Some(parked.connection);
+            tab.tables = parked.tables;
+            tab.schema_objects = parked.schema_objects;
+            tab.metadata_groups = parked.metadata_groups;
+            tab.connecting = false;
+        }
+        let id = tab.id;
+        self.tabs.push(tab);
+        self.primary_tabs.push(id);
+        self.primary_active = id;
     }
 
     fn restore_workspace(
@@ -487,6 +510,7 @@ impl KoyoApp {
                 diagram_metadata_loaded: bool,
                 page: Option<koyo_core::models::TablePage>,
                 filters: Vec<koyo_core::models::TableFilter>,
+                filter_text: String,
                 sort: Option<koyo_core::models::TableSort>,
                 column_widths: Vec<f32>,
             },
@@ -518,6 +542,7 @@ impl KoyoApp {
                 diagram_metadata_loaded: table.diagram_metadata_loaded,
                 page: table.page.clone(),
                 filters: table.filters.clone(),
+                filter_text: table.filter_input.read(cx).value().to_string(),
                 sort: table.sort.clone(),
                 column_widths: table.column_widths.clone(),
             },
@@ -548,6 +573,7 @@ impl KoyoApp {
                 diagram_metadata_loaded,
                 page,
                 filters,
+                filter_text,
                 sort,
                 column_widths,
             } => {
@@ -563,6 +589,9 @@ impl KoyoApp {
                     table.diagram_metadata_loaded = diagram_metadata_loaded;
                     table.page = page;
                     table.filters = filters;
+                    table.filter_input.update(cx, |input, cx| {
+                        input.set_value(filter_text, window, cx);
+                    });
                     table.sort = sort;
                     table.column_widths = column_widths;
                     table.loading = false;
@@ -847,7 +876,10 @@ impl KoyoApp {
     ) -> Tab {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
-        let filter_value = cx.new(|cx| InputState::new(window, cx).placeholder("Filter value"));
+        let filter_input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Filter: column = value AND column2 contains text")
+        });
         Tab {
             id,
             title: format!("{schema}.{table}").into(),
@@ -879,9 +911,7 @@ impl KoyoApp {
                 operation_id: None,
                 next_insert_id: 1,
                 load_sequence: 0,
-                filter_column: None,
-                filter_operator: FilterOperator::Contains,
-                filter_value,
+                filter_input,
                 filter_error: String::new(),
                 column_widths: Vec::new(),
                 resize_pointer_x: None,
@@ -1005,6 +1035,8 @@ impl KoyoApp {
             })
             .map(|tab| tab.id)
             .collect::<Vec<_>>();
+        self.parked_connections
+            .retain(|parked| parked.connection.session_id != session_id);
         for tab_id in &ids {
             self.disconnect_now(*tab_id, cx);
         }
@@ -1022,7 +1054,11 @@ impl KoyoApp {
             return;
         };
         if let Some(connection) = self.tabs[index].connection.take() {
-            self.disconnect_session_if_unused(connection.session_id, Some(tab_id));
+            if !self.session_in_use(connection.session_id, Some(tab_id)) {
+                self.parked_connections
+                    .retain(|parked| parked.connection.session_id != connection.session_id);
+                self.disconnect_session(connection.session_id);
+            }
         }
         self.tabs[index].connecting = false;
         self.tabs[index].notice = "Disconnected. Reconnect when needed.".into();
@@ -1125,9 +1161,32 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
-        if let Some(connection) = self.tabs[index].connection.take() {
-            self.disconnect_session_if_unused(connection.session_id, Some(tab_id));
+        if let Some(connection) = self.tabs[index].connection.clone()
+            && !self.session_in_use(connection.session_id, Some(tab_id))
+        {
+            let busy = match &self.tabs[index].body {
+                TabBody::Query(query) => query.running,
+                TabBody::Table(table) => table.loading,
+            };
+            if busy {
+                self.disconnect_session(connection.session_id);
+            } else {
+                let profile = self.tabs[index]
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| connection.profile.clone());
+                self.parked_connections
+                    .retain(|parked| parked.connection.session_id != connection.session_id);
+                self.parked_connections.push(LiveConnection {
+                    profile,
+                    connection,
+                    tables: self.tabs[index].tables.clone(),
+                    schema_objects: self.tabs[index].schema_objects.clone(),
+                    metadata_groups: self.tabs[index].metadata_groups.clone(),
+                });
+            }
         }
+        self.tabs[index].connection = None;
         if self
             .cell_edit
             .as_ref()

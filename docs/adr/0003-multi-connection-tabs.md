@@ -10,6 +10,10 @@ Split panes now duplicate the active tab onto the same live session. New SQL tab
 
 This intentionally trades transaction isolation between tabs for continuity when splitting. A future transaction UI must account for shared session state.
 
+## Amendment: parked sessions
+
+Closing the last tab that holds a clean session no longer disconnects it. The session is parked and reused by the next workspace tab; tab lifetime and connection lifetime are independent. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
+
 ## Context
 
 Koyo currently has one active PostgreSQL session, one cancel token, one query view, and one table view. The next increment adds query tabs, table tabs, and multiple open connections.

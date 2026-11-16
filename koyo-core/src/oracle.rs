@@ -489,6 +489,27 @@ fn load_page_sync(
     let predicate = build_filter_predicate(&meta.columns, filters, &mut params)?;
     let order =
         common::build_keyed_order_by(&meta.columns, &meta.primary_indices, sort, quote_identifier)?;
+    let mut count_sql = format!("SELECT COUNT(*) FROM {}", quote_relation(schema, table));
+    if let Some(predicate) = &predicate {
+        count_sql.push_str(" WHERE ");
+        count_sql.push_str(predicate);
+    }
+    let count_params = params
+        .iter()
+        .map(|value| value as &dyn oracledb::ToDbValue)
+        .collect::<Vec<_>>();
+    let mut count_cursor = connection
+        .query(&count_sql, count_params.as_slice())
+        .map_err(|error| error.to_string())?;
+    let count_row = count_cursor
+        .next()
+        .ok_or_else(|| "Oracle returned no row count.".to_string())?
+        .map_err(|error| error.to_string())?;
+    let total_rows = count_row
+        .get::<i64>(0)
+        .map_err(|error| error.to_string())?
+        .max(0) as u64;
+
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
@@ -538,6 +559,7 @@ fn load_page_sync(
         rows: page_rows,
         offset,
         limit,
+        total_rows,
         has_more,
     })
 }

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
-use koyo_core::models::{FilterOperator, GridChange, TableFilter, TableSort};
+use koyo_core::models::{GridChange, TableFilter, TableSort};
 use uuid::Uuid;
 
 use crate::app::*;
@@ -387,15 +387,6 @@ impl KoyoApp {
                     values,
                     original,
                 },
-                StagedChange::Delete {
-                    key,
-                    version,
-                    original,
-                } => GridChange::Delete {
-                    key,
-                    version,
-                    original,
-                },
             })
             .collect::<Vec<_>>();
         table.loading = true;
@@ -493,20 +484,6 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn discard_insert(&mut self, tab_id: u64, local_id: u64, cx: &mut Context<Self>) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.staged.retain(
-            |change| !matches!(change, StagedChange::Insert(insert) if insert.local_id == local_id),
-        );
-        cx.notify();
-    }
-
     pub(crate) fn request_page(
         &mut self,
         tab_id: u64,
@@ -585,58 +562,7 @@ impl KoyoApp {
         self.load_page(tab_id, 0, filters, next, cx);
     }
 
-    pub(crate) fn set_filter_column(
-        &mut self,
-        tab_id: u64,
-        column: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        let Some(page) = table.page.as_ref() else {
-            return;
-        };
-        let Some(info) = page.columns.get(column) else {
-            return;
-        };
-        table.filter_column = Some(column);
-        table.filter_operator = default_operator(info.filter_kind);
-        table.filter_error.clear();
-        table.filter_value.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
-        cx.notify();
-    }
-
-    pub(crate) fn set_filter_operator(
-        &mut self,
-        tab_id: u64,
-        operator: FilterOperator,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.filter_operator = operator;
-        table.filter_error.clear();
-        cx.notify();
-    }
-
-    pub(crate) fn apply_filter(
-        &mut self,
-        tab_id: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn apply_filter(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -658,32 +584,17 @@ impl KoyoApp {
         let Some(page) = table.page.as_ref() else {
             return;
         };
-        let Some(column) = table
-            .filter_column
-            .and_then(|index| page.columns.get(index))
-        else {
-            table.filter_error = "Choose a column to filter.".into();
-            cx.notify();
-            return;
+        let input = table.filter_input.read(cx).value().to_string();
+        let filters = match parse_filter_input(&page.columns, &input) {
+            Ok(filters) => filters,
+            Err(error) => {
+                table.filter_error = error;
+                cx.notify();
+                return;
+            }
         };
-        let value = table.filter_value.read(cx).value().to_string();
-        if filter_needs_value(table.filter_operator) && value.is_empty() {
-            table.filter_error = "Enter a filter value.".into();
-            cx.notify();
-            return;
-        }
-        let filter = TableFilter {
-            column: column.name.clone(),
-            operator: table.filter_operator,
-            value: filter_needs_value(table.filter_operator).then_some(value),
-        };
-        table.filters.retain(|item| item.column != filter.column);
-        table.filters.push(filter);
-        let filters = table.filters.clone();
+        table.filters = filters.clone();
         let sort = table.sort.clone();
-        table.filter_value.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
         self.load_page(tab_id, 0, filters, sort, cx);
     }
 
@@ -720,14 +631,20 @@ impl KoyoApp {
             return;
         }
         self.clear_filters_now(tab_id, cx);
-        if let Some(index) = self.tab_index(tab_id)
-            && let TabBody::Table(table) = &mut self.tabs[index].body
-        {
-            table.filter_value.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-            });
-        }
+        self.clear_filter_input(tab_id, window, cx);
         cx.notify();
+    }
+
+    fn clear_filter_input(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        table.filter_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
     }
 
     fn clear_filters_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
@@ -739,8 +656,6 @@ impl KoyoApp {
         };
         let had_filters = !table.filters.is_empty();
         table.filters.clear();
-        table.filter_column = None;
-        table.filter_operator = FilterOperator::Contains;
         table.filter_error.clear();
         let sort = table.sort.clone();
         if had_filters {
@@ -748,56 +663,6 @@ impl KoyoApp {
         } else {
             cx.notify();
         }
-    }
-
-    pub(crate) fn request_remove_filter(
-        &mut self,
-        tab_id: u64,
-        column: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.filter_error.clear();
-        if table.loading {
-            table.filter_error = "Wait for the current page load to finish.".into();
-            cx.notify();
-            return;
-        }
-        if !table.staged.is_empty() {
-            self.confirm(
-                window,
-                cx,
-                "Discard staged changes?",
-                "Removing this filter reloads the page and discards staged edits.",
-                move |this, cx| {
-                    this.discard_changes(tab_id, cx);
-                    this.remove_filter_now(tab_id, column.clone(), cx);
-                },
-            );
-            return;
-        }
-        self.remove_filter_now(tab_id, column, cx);
-    }
-
-    fn remove_filter_now(&mut self, tab_id: u64, column: String, cx: &mut Context<Self>) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.filters.retain(|filter| filter.column != column);
-        table.filter_error.clear();
-        let filters = table.filters.clone();
-        let sort = table.sort.clone();
-        self.load_page(tab_id, 0, filters, sort, cx);
     }
 
     pub(crate) fn refresh_current_table(

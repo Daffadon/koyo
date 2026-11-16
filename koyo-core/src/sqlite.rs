@@ -421,6 +421,18 @@ fn load_page_sync(
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta, filters, &mut params)?;
     let order = build_order_by(&meta, sort)?;
+    let mut count_sql = format!("SELECT count(*) FROM {}", quote_identifier(table));
+    if let Some(predicate) = &predicate {
+        count_sql.push_str(" WHERE ");
+        count_sql.push_str(predicate);
+    }
+    let total_rows = connection
+        .query_row(&count_sql, params_from_iter(params.iter()), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|error| error.to_string())?
+        .max(0) as u64;
+
     let mut sql = format!("SELECT {selected} FROM {}", quote_identifier(table));
     if let Some(predicate) = predicate {
         sql.push_str(" WHERE ");
@@ -469,6 +481,7 @@ fn load_page_sync(
         rows: page_rows,
         offset,
         limit,
+        total_rows,
         has_more,
         editable,
     })
@@ -1110,6 +1123,7 @@ mod tests {
         .await
         .expect("load filtered page");
         assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.total_rows, 2);
         assert_eq!(page.rows[0].values[1].as_deref(), Some("Alice"));
         assert_eq!(page.rows[1].values[1].as_deref(), Some("Charlie"));
 

@@ -19,10 +19,7 @@ impl Render for AiResizeDrag {
 
 impl Render for KoyoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.primary_tabs.is_empty() {
-            let tab = self.make_query_tab(None, window, cx);
-            self.add_tab(tab, Pane::Primary);
-        }
+        self.ensure_workspace_tab(window, cx);
         self.normalize_panes();
         query::prune_scroll_handles(self);
         table::prune_scroll_handles(self);

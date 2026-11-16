@@ -1,4 +1,3 @@
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
@@ -8,8 +7,8 @@ use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{GridRow, TablePage, TableSort};
 use std::rc::Rc;
 
-use super::super::widgets::{button_tooltip, value_text};
-use super::{ACTION_WIDTH, CELL_WIDTH, ROW_HEIGHT, ROW_RAIL_WIDTH, table_scroll_handle};
+use super::super::widgets::value_text;
+use super::{CELL_WIDTH, ROW_HEIGHT, ROW_RAIL_WIDTH, table_scroll_handle};
 use crate::app::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -24,9 +23,8 @@ pub(super) fn render_grid(
     palette: &Palette,
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
-    let action_width = if editable { ACTION_WIDTH } else { 0.0 };
     let column_widths = Rc::new(column_widths.to_vec());
-    let width = ROW_RAIL_WIDTH + column_widths.iter().sum::<f32>() + action_width;
+    let width = ROW_RAIL_WIDTH + column_widths.iter().sum::<f32>();
     // Header affordances must not dim while a sort/page load is in flight;
     // only staged edits and missing connections make a column unsortable.
     let header_locked = !staged.is_empty();
@@ -59,15 +57,6 @@ pub(super) fn render_grid(
                 .border_color(palette.border)
                 .child("Row"),
         )
-        .when(editable, |this| {
-            this.child(
-                div()
-                    .w(px(ACTION_WIDTH))
-                    .flex_shrink_0()
-                    .border_r_1()
-                    .border_color(palette.border),
-            )
-        })
         .children(
             page.columns
                 .iter()
@@ -252,11 +241,8 @@ pub(super) fn render_grid(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_scroll()
+                .restrict_scroll_to_axis()
                 .track_scroll(&scroll_handle)
-                .map(|mut this| {
-                    this.style().allow_concurrent_scroll = Some(true);
-                    this
-                })
                 .child(body),
         )
         .into_any_element()
@@ -299,16 +285,7 @@ fn render_virtual_row(
         })
         .nth(insert_index);
     match insert {
-        Some(insert) => render_insert_row(
-            tab_id,
-            page,
-            insert,
-            editable,
-            palette,
-            mono,
-            column_widths,
-            cx,
-        ),
+        Some(insert) => render_insert_row(tab_id, page, insert, palette, mono, column_widths, cx),
         None => div().h(px(ROW_HEIGHT)).into_any_element(),
     }
 }
@@ -326,18 +303,12 @@ fn render_data_row(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let key = &row.key;
-    let pending = staged.iter().find(|change| match change {
+    let update_values = staged.iter().find_map(|change| match change {
         StagedChange::Update {
-            key: staged_key, ..
-        }
-        | StagedChange::Delete {
-            key: staged_key, ..
-        } => staged_key == key,
-        StagedChange::Insert(_) => false,
-    });
-    let deleted = matches!(pending, Some(StagedChange::Delete { .. }));
-    let update_values = pending.and_then(|change| match change {
-        StagedChange::Update { values, .. } => Some(values),
+            key: staged_key,
+            values,
+            ..
+        } if staged_key == key => Some(values),
         _ => None,
     });
     let copy_row_text = Rc::new(
@@ -365,8 +336,7 @@ fn render_data_row(
         .border_color(palette.border)
         .font_family(mono.clone())
         .when(update_values.is_some(), |this| this.bg(palette.accent_soft))
-        .when(deleted, |this| this.opacity(0.45))
-        .when(update_values.is_none() && !deleted, |this| {
+        .when(update_values.is_none(), |this| {
             // Quiet row wash; the stronger cell hover still wins over it.
             this.hover(|style| style.bg(palette.panel))
         })
@@ -393,43 +363,11 @@ fn render_data_row(
                 .child((page.offset as usize + row_index + 1).to_string()),
         );
 
-    if editable {
-        row_view = row_view.child(
-            div()
-                .w(px(ACTION_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_r_1()
-                .border_color(palette.border)
-                .child(button_tooltip(
-                    ("tooltip-delete-row", row_index),
-                    Button::new(SharedString::from(format!("delete-row-{row_index}")))
-                        .ghost()
-                        .compact()
-                        .icon(if deleted {
-                            IconName::Undo2
-                        } else {
-                            IconName::Delete
-                        })
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.toggle_row_delete(tab_id, row_index, window, cx);
-                        })),
-                    if deleted {
-                        "Undo delete"
-                    } else {
-                        "Stage delete"
-                    },
-                )),
-        );
-    }
-
     for (column_index, column) in page.columns.iter().enumerate() {
         let value = update_values
             .and_then(|values| values.get(&column.name).cloned())
             .unwrap_or_else(|| row.values[column_index].clone());
-        let can_edit = editable && !deleted && !column.generated && !column.identity;
+        let can_edit = editable && !column.generated && !column.identity;
         let copy_value = value.clone().unwrap_or_default();
         let copy_row = Rc::clone(&copy_row_text);
         row_view = row_view.child(
@@ -479,7 +417,6 @@ fn render_insert_row(
     tab_id: u64,
     page: &TablePage,
     insert: &StagedInsert,
-    editable: bool,
     palette: Palette,
     mono: &SharedString,
     column_widths: &[f32],
@@ -509,30 +446,6 @@ fn render_insert_row(
                 .border_color(palette.border)
                 .child("new"),
         );
-
-    if editable {
-        row_view = row_view.child(
-            div()
-                .w(px(ACTION_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .border_r_1()
-                .border_color(palette.border)
-                .child(button_tooltip(
-                    ("tooltip-discard-insert", local_id),
-                    Button::new(SharedString::from(format!("discard-insert-{local_id}")))
-                        .ghost()
-                        .compact()
-                        .icon(IconName::Delete)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.discard_insert(tab_id, local_id, cx);
-                        })),
-                    "Discard new row",
-                )),
-        );
-    }
 
     for (column_index, column) in page.columns.iter().enumerate() {
         let generated = column.generated || column.identity;
