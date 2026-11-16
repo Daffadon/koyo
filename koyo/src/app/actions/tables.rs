@@ -189,6 +189,7 @@ impl KoyoApp {
             return;
         }
         table.loading = true;
+        table.filter_error.clear();
         table.load_sequence += 1;
         let sequence = table.load_sequence;
         let schema = table.schema.clone();
@@ -558,6 +559,7 @@ impl KoyoApp {
         };
         table.filter_column = Some(column);
         table.filter_operator = default_operator(info.filter_kind);
+        table.filter_error.clear();
         table.filter_value.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
@@ -577,6 +579,7 @@ impl KoyoApp {
             return;
         };
         table.filter_operator = operator;
+        table.filter_error.clear();
         cx.notify();
     }
 
@@ -593,11 +596,14 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
-            this_notice(
-                &mut self.tabs[index],
-                "Apply or discard staged edits to filter.",
-            );
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
+            return;
+        }
+        if !table.staged.is_empty() {
+            table.filter_error = "Apply or discard staged edits to change filters.".into();
             cx.notify();
             return;
         }
@@ -608,13 +614,13 @@ impl KoyoApp {
             .filter_column
             .and_then(|index| page.columns.get(index))
         else {
-            this_notice(&mut self.tabs[index], "Choose a column to filter.");
+            table.filter_error = "Choose a column to filter.".into();
             cx.notify();
             return;
         };
         let value = table.filter_value.read(cx).value().to_string();
         if filter_needs_value(table.filter_operator) && value.is_empty() {
-            this_notice(&mut self.tabs[index], "Enter a filter value.");
+            table.filter_error = "Enter a filter value.".into();
             cx.notify();
             return;
         }
@@ -633,7 +639,12 @@ impl KoyoApp {
         self.load_page(tab_id, 0, filters, sort, cx);
     }
 
-    pub(crate) fn clear_filters(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn request_clear_filters(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -641,15 +652,63 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
             return;
         }
-        table.filters.clear();
-        let sort = table.sort.clone();
-        self.load_page(tab_id, 0, Vec::new(), sort, cx);
+        if !table.filters.is_empty() && !table.staged.is_empty() {
+            self.confirm(
+                window,
+                cx,
+                "Discard staged changes?",
+                "Clearing filters reloads this page and discards staged edits.",
+                move |this, cx| {
+                    this.discard_changes(tab_id, cx);
+                    this.clear_filters_now(tab_id, cx);
+                },
+            );
+            return;
+        }
+        self.clear_filters_now(tab_id, cx);
+        if let Some(index) = self.tab_index(tab_id)
+            && let TabBody::Table(table) = &mut self.tabs[index].body
+        {
+            table.filter_value.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    pub(crate) fn remove_filter(&mut self, tab_id: u64, column: String, cx: &mut Context<Self>) {
+    fn clear_filters_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let had_filters = !table.filters.is_empty();
+        table.filters.clear();
+        table.filter_column = None;
+        table.filter_operator = FilterOperator::Contains;
+        table.filter_error.clear();
+        let sort = table.sort.clone();
+        if had_filters {
+            self.load_page(tab_id, 0, Vec::new(), sort, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn request_remove_filter(
+        &mut self,
+        tab_id: u64,
+        column: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -657,10 +716,37 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
             return;
         }
+        if !table.staged.is_empty() {
+            self.confirm(
+                window,
+                cx,
+                "Discard staged changes?",
+                "Removing this filter reloads the page and discards staged edits.",
+                move |this, cx| {
+                    this.discard_changes(tab_id, cx);
+                    this.remove_filter_now(tab_id, column.clone(), cx);
+                },
+            );
+            return;
+        }
+        self.remove_filter_now(tab_id, column, cx);
+    }
+
+    fn remove_filter_now(&mut self, tab_id: u64, column: String, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
         table.filters.retain(|filter| filter.column != column);
+        table.filter_error.clear();
         let filters = table.filters.clone();
         let sort = table.sort.clone();
         self.load_page(tab_id, 0, filters, sort, cx);

@@ -877,6 +877,7 @@ impl KoyoApp {
                 filter_column: None,
                 filter_operator: FilterOperator::Contains,
                 filter_value,
+                filter_error: String::new(),
                 column_widths: Vec::new(),
                 resize_pointer_x: None,
                 resize_column: None,

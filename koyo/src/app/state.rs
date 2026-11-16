@@ -124,6 +124,7 @@ pub(crate) struct TableTab {
     pub(crate) filter_column: Option<usize>,
     pub(crate) filter_operator: FilterOperator,
     pub(crate) filter_value: Entity<InputState>,
+    pub(crate) filter_error: String,
     pub(crate) column_widths: Vec<f32>,
     pub(crate) resize_pointer_x: Option<f32>,
     pub(crate) resize_column: Option<usize>,
