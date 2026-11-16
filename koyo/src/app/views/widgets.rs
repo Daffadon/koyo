@@ -1,7 +1,7 @@
 use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputGroup, InputState, Textarea};
 use gpui_kit::component::{Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -18,6 +18,20 @@ pub(super) fn button_tooltip(
 ) -> AnyElement {
     button
         .tooltip(label)
+        .tooltip_show_delay(std::time::Duration::from_millis(120))
+        .into_any_element()
+}
+
+/// Top-bar controls use an above placement so their tooltip does not cover
+/// the Run query button in the row below.
+pub(super) fn top_bar_tooltip(
+    _id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    button
+        .tooltip(label)
+        .tooltip_placement(gpui_kit::base::Placement::Top)
         .tooltip_show_delay(std::time::Duration::from_millis(120))
         .into_any_element()
 }
@@ -88,7 +102,7 @@ pub(super) fn render_cell_editor(
             v_flex()
                 .relative()
                 .occlude()
-                .w(px(520.0))
+                .w(px(720.0))
                 .rounded_lg()
                 .border_1()
                 .border_color(palette.border)
@@ -141,9 +155,11 @@ pub(super) fn render_cell_editor(
                         }),
                 )
                 .child(
-                    div()
+                    InputGroup::new("cell-value-group")
                         .w_full()
-                        .child(Input::new(&edit.input).w_full().disabled(!value_mode)),
+                        .min_h(px(120.0))
+                        .input(Textarea::new(&edit.input))
+                        .disabled(!value_mode),
                 )
                 .when(insert, |this| {
                     this.child(

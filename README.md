@@ -13,7 +13,7 @@
 
 </div>
 
-Koyo is a cross-platform desktop database client written in Rust and built with [GPUI Kit](https://gpui-kit.com). It renders natively, talks to databases directly from Rust, and keeps every workspace tab on its own database session. There is no WebView, no JavaScript runtime, and no frontend IPC bridge.
+Koyo is a cross-platform desktop database client written in Rust and built with [GPUI Kit](https://gpui-kit.com). It renders natively, talks to databases directly from Rust, and keeps each workspace pane on a stable database session and reuses it for new tabs. There is no WebView, no JavaScript runtime, and no frontend IPC bridge.
 
 Koyo is for everyday work: run SQL with completion and history, inspect schemas, page through tables, filter and sort server-side, and stage row edits before applying them in one transaction.
 
@@ -45,7 +45,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Six engines with an engine-first connection flow and per-engine profile forms.
 - Create, edit, and delete profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
-- Query and table tabs each own a dedicated session. Multiple databases can stay live side by side in one tab strip.
+- Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab that holds a session closes it.
+- Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - Split panes, tab drag between panes, resizable panes, and resizable table columns.
 - Theme, sidebar state, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.

@@ -7,7 +7,7 @@ use crate::{
         ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionInfo, ConnectionProfile, Engine,
         FilterKind, FilterOperator, ForeignKeyInfo, GridChange, GridRow, MetadataGroup,
         MetadataItem, QueryOutput, QueryResultSet, SchemaObject, SchemaObjectKind, TableFilter,
-        TablePage, TableSort, TableSummary,
+        TableIndexInfo, TablePage, TableSort, TableSummary,
     },
     mssql, mysql, oracle,
     sqlite::{self, SqliteSession},
@@ -444,6 +444,77 @@ pub async fn list_foreign_keys(
             oracle::list_foreign_keys(oracle_session, schema, table).await
         }
     }
+}
+
+pub async fn list_indexes(
+    manager: &SessionManager,
+    session_id: Uuid,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let entry = get_session(manager, session_id).await?;
+    let mut session_guard = entry.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "Session is no longer connected.".to_string())?;
+    match session {
+        DbSession::Postgres(client) => list_indexes_pg(client, schema, table).await,
+        DbSession::Sqlite(sqlite_session) => {
+            sqlite::list_indexes(sqlite_session, schema, table).await
+        }
+        DbSession::Mysql(mysql_session) => mysql::list_indexes(mysql_session, schema, table).await,
+        DbSession::Mssql(mssql_session) => mssql::list_indexes(mssql_session, schema, table).await,
+        DbSession::Oracle(oracle_session) => {
+            oracle::list_indexes(oracle_session, schema, table).await
+        }
+    }
+}
+
+async fn list_indexes_pg(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT ic.relname::text, a.attname::text,
+                    i.indisunique, i.indisprimary
+             FROM pg_catalog.pg_index i
+             JOIN pg_catalog.pg_class t ON t.oid = i.indrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+             JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS key(attnum, position)
+               ON key.position <= i.indnkeyatts::bigint
+             LEFT JOIN pg_catalog.pg_attribute a
+               ON a.attrelid = t.oid AND a.attnum = key.attnum
+             WHERE n.nspname = $1 AND t.relname = $2
+             ORDER BY ic.relname, key.position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut indexes: Vec<TableIndexInfo> = Vec::new();
+    for row in rows {
+        let name: String = row.try_get(0).map_err(|error| error.to_string())?;
+        let column: String = row
+            .try_get::<_, Option<String>>(1)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| "(expression)".into());
+        let unique = row.try_get(2).map_err(|error| error.to_string())?;
+        let primary = row.try_get(3).map_err(|error| error.to_string())?;
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+            index.columns.push(column);
+        } else {
+            indexes.push(TableIndexInfo {
+                name,
+                columns: vec![column],
+                unique,
+                primary,
+            });
+        }
+    }
+    Ok(indexes)
 }
 
 async fn list_columns_pg(client: &Client) -> Result<Vec<ColumnCatalogEntry>, String> {
@@ -1290,7 +1361,12 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
                         JOIN pg_catalog.pg_am am ON am.oid = oc.opcmethod
                         WHERE am.amname = 'btree'
                           AND oc.opcdefault
-                          AND oc.opcintype = COALESCE(base.oid, ty.oid)
+                          AND (
+                              oc.opcintype = COALESCE(base.oid, ty.oid)
+                              -- varchar/char share text's btree opclass.
+                              OR (ty.typcategory = 'S'
+                                  AND oc.opcintype = 'pg_catalog.text'::regtype)
+                          )
                     ),
                     NOT a.attnotnull, a.attgenerated <> '', a.attidentity <> '',
                     COALESCE(i.indisprimary AND a.attnum = ANY(i.indkey), false)

@@ -15,7 +15,17 @@ impl KoyoApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile) = self.active_tab().and_then(|tab| tab.profile.clone()) else {
+        let source = self.active_tab().map(|tab| {
+            (
+                tab.profile.clone(),
+                tab.connection.clone(),
+                tab.tables.clone(),
+                tab.schema_objects.clone(),
+                tab.metadata_groups.clone(),
+                tab.expanded.clone(),
+            )
+        });
+        let Some((Some(profile), shared, tables, objects, metadata, expanded)) = source else {
             self.status = "Open a connection before browsing tables.".into();
             cx.notify();
             return;
@@ -23,22 +33,23 @@ impl KoyoApp {
         if self.focus_existing_table(profile.id, &schema, &table, cx) {
             return;
         }
-        // Keep the explorer populated while the new table session connects.
-        let explorer = self.active_tab().map(|tab| {
-            (
-                tab.tables.clone(),
-                tab.schema_objects.clone(),
-                tab.metadata_groups.clone(),
-                tab.expanded.clone(),
-            )
-        });
         let mut tab =
             self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
-        if let Some((tables, objects, metadata, expanded)) = explorer {
-            tab.tables = tables;
-            tab.schema_objects = objects;
-            tab.metadata_groups = metadata;
-            tab.expanded = expanded;
+        tab.tables = tables;
+        tab.schema_objects = objects;
+        tab.metadata_groups = metadata;
+        tab.expanded = expanded;
+        if let Some(connection) = shared {
+            tab.connection = Some(connection);
+            tab.connecting = false;
+            if let TabBody::Table(table_tab) = &mut tab.body {
+                table_tab.loading = false;
+            }
+            let tab_id = self.add_tab(tab, self.focus);
+            self.persist_state(cx);
+            cx.notify();
+            self.load_page(tab_id, 0, Vec::new(), None, cx);
+            return;
         }
         let tab_id = self.add_tab(tab, self.focus);
         self.persist_state(cx);
@@ -239,16 +250,16 @@ impl KoyoApp {
             };
             table.mode = mode;
             mode == TableMode::Diagram
-                && table.foreign_keys.is_empty()
+                && !table.diagram_metadata_loaded
                 && !table.foreign_keys_loading
         };
         if should_load {
-            self.load_foreign_keys(tab_id, cx);
+            self.load_diagram_metadata(tab_id, cx);
         }
         cx.notify();
     }
 
-    fn load_foreign_keys(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    fn load_diagram_metadata(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -264,13 +275,24 @@ impl KoyoApp {
         let schema = table.schema.clone();
         let table_name = table.table.clone();
         table.foreign_keys_loading = true;
+        table.diagram_metadata_loaded = true;
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
             tab_id,
             async move {
-                database::list_foreign_keys(&manager, connection.session_id, &schema, &table_name)
-                    .await
+                let foreign_keys = database::list_foreign_keys(
+                    &manager,
+                    connection.session_id,
+                    &schema,
+                    &table_name,
+                )
+                .await?;
+                let indexes =
+                    database::list_indexes(&manager, connection.session_id, &schema, &table_name)
+                        .await
+                        .unwrap_or_default();
+                Ok::<_, String>((foreign_keys, indexes))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -279,8 +301,14 @@ impl KoyoApp {
                 if let TabBody::Table(table) = &mut this.tabs[index].body {
                     table.foreign_keys_loading = false;
                     match result {
-                        Ok(foreign_keys) => table.foreign_keys = foreign_keys,
-                        Err(error) => this.tabs[index].notice = error,
+                        Ok((foreign_keys, indexes)) => {
+                            table.foreign_keys = foreign_keys;
+                            table.indexes = indexes;
+                        }
+                        Err(error) => {
+                            table.diagram_metadata_loaded = false;
+                            this.tabs[index].notice = error;
+                        }
                     }
                 }
                 cx.notify();

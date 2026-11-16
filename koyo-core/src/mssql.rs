@@ -2,7 +2,8 @@ use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, Engine, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
-    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TablePage, TableSort, TableSummary,
+    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
+    TableSummary,
 };
 use chrono::{NaiveDate, TimeDelta};
 use std::collections::BTreeMap;
@@ -266,6 +267,52 @@ fn mssql_string(row: &tiberius::Row, index: usize) -> Result<String, String> {
     row.get::<&str, _>(index)
         .ok_or_else(|| "SQL Server returned a NULL metadata value.".to_string())
         .map(str::to_string)
+}
+
+pub async fn list_indexes(
+    session: &mut MssqlSession,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let mut query = Query::new(
+        "SELECT i.name, c.name, i.is_unique, i.is_primary_key
+         FROM sys.indexes i
+         JOIN sys.tables t ON t.object_id = i.object_id
+         JOIN sys.schemas s ON s.schema_id = t.schema_id
+         JOIN sys.index_columns ic
+           ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+         JOIN sys.columns c
+           ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+         WHERE s.name = @P1 AND t.name = @P2 AND ic.is_included_column = 0
+         ORDER BY i.name, ic.key_ordinal",
+    );
+    query.bind(schema);
+    query.bind(table);
+    let results = query
+        .query(&mut session.client)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_results()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut indexes: Vec<TableIndexInfo> = Vec::new();
+    for row in results.into_iter().next().unwrap_or_default() {
+        let name = mssql_string(&row, 0)?;
+        let column = mssql_string(&row, 1)?;
+        let unique = row.get::<bool, _>(2).unwrap_or(false);
+        let primary = row.get::<bool, _>(3).unwrap_or(false);
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+            index.columns.push(column);
+        } else {
+            indexes.push(TableIndexInfo {
+                name,
+                columns: vec![column],
+                unique,
+                primary,
+            });
+        }
+    }
+    Ok(indexes)
 }
 
 pub async fn list_database_metadata(

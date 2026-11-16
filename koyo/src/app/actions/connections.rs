@@ -298,6 +298,8 @@ impl KoyoApp {
                                 table.page = None;
                                 table.staged.clear();
                                 table.loading = false;
+                                table.indexes.clear();
+                                table.diagram_metadata_loaded = false;
                                 this.load_page(tab_id, offset, filters, sort, cx);
                             }
                         }

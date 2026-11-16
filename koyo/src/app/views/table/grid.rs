@@ -6,7 +6,6 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{GridRow, TablePage, TableSort};
-use std::ops::Range;
 use std::rc::Rc;
 
 use super::super::widgets::{button_tooltip, value_text};
@@ -36,8 +35,11 @@ pub(super) fn render_grid(
     // Monospace data is part of the read of the grid; take it once here so the
     // virtual row closure and the header share the same face.
     let mono = cx.theme().mono_font_family.clone();
+    let scroll_handle = table_scroll_handle(tab_id);
 
     let header = h_flex()
+        .w(px(width))
+        .min_w(px(width))
         .flex_shrink_0()
         .bg(palette.panel)
         .border_b_1()
@@ -158,12 +160,16 @@ pub(super) fn render_grid(
                                     MouseButton::Left,
                                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                         cx.stop_propagation();
-                                        this.begin_column_resize(
-                                            tab_id,
-                                            column_index,
-                                            f32::from(event.position.x),
-                                            cx,
-                                        );
+                                        if event.click_count >= 2 {
+                                            this.autosize_column(tab_id, column_index, cx);
+                                        } else {
+                                            this.begin_column_resize(
+                                                tab_id,
+                                                column_index,
+                                                f32::from(event.position.x),
+                                                cx,
+                                            );
+                                        }
                                     }),
                                 )
                                 .on_click(cx.listener(|_, _, _, cx| {
@@ -185,12 +191,12 @@ pub(super) fn render_grid(
         .count();
     let row_count = page.rows.len() + insert_count;
 
-    // Only the rows inside the viewport are built; the uniform list measures
-    // `ROW_HEIGHT` from the first row and computes the scroll range from it.
+    // A table page is capped at 200 rows, so one two-axis scroller can own the
+    // rows without a nested axis-locked list.
     let body: AnyElement = if row_count == 0 {
         v_flex()
-            .flex_1()
-            .min_h(px(0.0))
+            .w(px(width))
+            .min_w(px(width))
             .py_4()
             .pr_4()
             .pl(px(ROW_RAIL_WIDTH + 16.0))
@@ -199,37 +205,23 @@ pub(super) fn render_grid(
             .child("No rows in this table.")
             .into_any_element()
     } else {
-        let scroll_handle = table_scroll_handle(tab_id);
-        uniform_list(
-            ("table-rows", tab_id),
-            row_count,
-            cx.processor(
-                move |_app,
-                      range: Range<usize>,
-                      _window: &mut Window,
-                      cx: &mut Context<KoyoApp>| {
-                    range
-                        .map(|row_index| {
-                            render_virtual_row(
-                                tab_id,
-                                &page,
-                                &staged,
-                                row_index,
-                                editable,
-                                palette,
-                                &mono,
-                                column_widths.as_slice(),
-                                cx,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                },
-            ),
-        )
-        .flex_1()
-        .min_h(px(0.0))
-        .track_scroll(&scroll_handle)
-        .into_any_element()
+        v_flex()
+            .w(px(width))
+            .min_w(px(width))
+            .children((0..row_count).map(|row_index| {
+                render_virtual_row(
+                    tab_id,
+                    &page,
+                    &staged,
+                    row_index,
+                    editable,
+                    palette,
+                    &mono,
+                    column_widths.as_slice(),
+                    cx,
+                )
+            }))
+            .into_any_element()
     };
 
     div()
@@ -240,21 +232,32 @@ pub(super) fn render_grid(
         .overflow_hidden()
         .child(
             div()
-                .id(("table-hscroll", tab_id))
+                .id(("table-header-clip", tab_id))
+                .w_full()
+                .flex_shrink_0()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .relative()
+                        .left(scroll_handle.offset().x)
+                        .w(px(width))
+                        .child(header),
+                ),
+        )
+        .child(
+            div()
+                .id(("table-body", tab_id))
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h(px(0.0))
-                .overflow_x_scroll()
-                .child(
-                    v_flex()
-                        .w(px(width))
-                        .min_w(px(width))
-                        .flex_1()
-                        .min_h(px(0.0))
-                        .child(header)
-                        .child(body),
-                ),
+                .overflow_scroll()
+                .track_scroll(&scroll_handle)
+                .map(|mut this| {
+                    this.style().allow_concurrent_scroll = Some(true);
+                    this
+                })
+                .child(body),
         )
         .into_any_element()
 }

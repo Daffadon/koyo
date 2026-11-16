@@ -2,7 +2,8 @@ use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
-    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TablePage, TableSort, TableSummary,
+    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
+    TableSummary,
 };
 use oracledb::{Connection, OracleTimestamp, Row};
 use std::collections::BTreeMap;
@@ -230,6 +231,65 @@ pub async fn list_foreign_keys(
             });
         }
         Ok(keys)
+    })
+    .await
+}
+
+pub async fn list_indexes(
+    session: &OracleSession,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let connection = session.connection.clone();
+    let schema = schema.to_string();
+    let table = table.to_string();
+    blocking(move || {
+        let connection = lock(&connection)?;
+        let sql = "SELECT i.index_name, ic.column_name, i.uniqueness,
+                          CASE WHEN c.constraint_type = 'P' THEN 1 ELSE 0 END
+                   FROM all_indexes i
+                   JOIN all_ind_columns ic
+                     ON ic.index_owner = i.owner AND ic.index_name = i.index_name
+                   LEFT JOIN all_constraints c
+                     ON c.owner = i.table_owner
+                    AND c.table_name = i.table_name
+                    AND c.index_name = i.index_name
+                    AND c.constraint_type IN ('P', 'U')
+                   WHERE i.table_owner = :1 AND i.table_name = :2
+                   ORDER BY i.index_name, ic.column_position";
+        let params: Vec<Option<String>> = vec![Some(schema), Some(table)];
+        let params = params
+            .iter()
+            .map(|value| value as &dyn oracledb::ToDbValue)
+            .collect::<Vec<_>>();
+        let cursor = connection
+            .query(sql, params.as_slice())
+            .map_err(|error| error.to_string())?;
+        let mut indexes: Vec<TableIndexInfo> = Vec::new();
+        for row in cursor {
+            let row = row.map_err(|error| error.to_string())?;
+            let name = row.get::<String>(0).map_err(|error| error.to_string())?;
+            let column = row
+                .get::<Option<String>>(1)
+                .map_err(|error| error.to_string())?
+                .unwrap_or_else(|| "(expression)".into());
+            let unique = row
+                .get::<String>(2)
+                .map_err(|error| error.to_string())?
+                .eq_ignore_ascii_case("UNIQUE");
+            let primary = row.get::<i32>(3).map_err(|error| error.to_string())? != 0;
+            if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+                index.columns.push(column);
+            } else {
+                indexes.push(TableIndexInfo {
+                    name,
+                    columns: vec![column],
+                    unique,
+                    primary,
+                });
+            }
+        }
+        Ok(indexes)
     })
     .await
 }

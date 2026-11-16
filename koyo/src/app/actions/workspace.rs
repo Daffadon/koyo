@@ -466,6 +466,121 @@ impl KoyoApp {
         id
     }
 
+    fn duplicate_tab(
+        &mut self,
+        source_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Tab {
+        enum DuplicateBody {
+            Query {
+                sql: String,
+                starter: SharedString,
+                result_view: ResultView,
+            },
+            Table {
+                schema: String,
+                table: String,
+                mode: TableMode,
+                foreign_keys: Vec<koyo_core::models::ForeignKeyInfo>,
+                indexes: Vec<koyo_core::models::TableIndexInfo>,
+                diagram_metadata_loaded: bool,
+                page: Option<koyo_core::models::TablePage>,
+                filters: Vec<koyo_core::models::TableFilter>,
+                sort: Option<koyo_core::models::TableSort>,
+                column_widths: Vec<f32>,
+            },
+        }
+
+        let Some(index) = self.tab_index(source_id) else {
+            return self.make_query_tab(None, window, cx);
+        };
+        let source = &self.tabs[index];
+        let profile = source.profile.clone();
+        let connection = source.connection.clone();
+        let tables = source.tables.clone();
+        let schema_objects = source.schema_objects.clone();
+        let metadata_groups = source.metadata_groups.clone();
+        let expanded = source.expanded.clone();
+        let title = source.title.clone();
+        let body = match &source.body {
+            TabBody::Query(query) => DuplicateBody::Query {
+                sql: query.editor.read(cx).value().to_string(),
+                starter: query.starter.clone(),
+                result_view: query.result_view,
+            },
+            TabBody::Table(table) => DuplicateBody::Table {
+                schema: table.schema.clone(),
+                table: table.table.clone(),
+                mode: table.mode,
+                foreign_keys: table.foreign_keys.clone(),
+                indexes: table.indexes.clone(),
+                diagram_metadata_loaded: table.diagram_metadata_loaded,
+                page: table.page.clone(),
+                filters: table.filters.clone(),
+                sort: table.sort.clone(),
+                column_widths: table.column_widths.clone(),
+            },
+        };
+
+        let mut tab = match body {
+            DuplicateBody::Query {
+                sql,
+                starter,
+                result_view,
+            } => {
+                let mut tab = self.make_query_tab(profile, window, cx);
+                if let TabBody::Query(query) = &mut tab.body {
+                    query.editor.update(cx, |editor, cx| {
+                        editor.set_value(sql, window, cx);
+                    });
+                    query.starter = starter;
+                    query.result_view = result_view;
+                }
+                tab
+            }
+            DuplicateBody::Table {
+                schema,
+                table,
+                mode,
+                foreign_keys,
+                indexes,
+                diagram_metadata_loaded,
+                page,
+                filters,
+                sort,
+                column_widths,
+            } => {
+                let Some(profile) = profile else {
+                    return self.make_query_tab(None, window, cx);
+                };
+                let mut tab = self.make_table_tab(profile, schema, table, window, cx);
+                if let TabBody::Table(table) = &mut tab.body {
+                    table.mode = mode;
+                    table.foreign_keys = foreign_keys;
+                    table.foreign_keys_loading = false;
+                    table.indexes = indexes;
+                    table.diagram_metadata_loaded = diagram_metadata_loaded;
+                    table.page = page;
+                    table.filters = filters;
+                    table.sort = sort;
+                    table.column_widths = column_widths;
+                    table.loading = false;
+                }
+                tab
+            }
+        };
+        tab.title = title;
+        tab.connection = connection;
+        tab.tables = tables;
+        tab.schema_objects = schema_objects;
+        tab.metadata_groups = metadata_groups;
+        tab.expanded = expanded;
+        tab.connecting = false;
+        tab.notice.clear();
+        tab
+    }
+
     pub(crate) fn toggle_split(
         &mut self,
         axis: SplitAxis,
@@ -483,7 +598,13 @@ impl KoyoApp {
         }
         if self.split.is_none() {
             self.split = Some(axis);
-            let tab = self.make_query_tab(None, window, cx);
+            let source_id = self
+                .pane_active_id(self.focus)
+                .or_else(|| self.pane_active_id(Pane::Primary));
+            let tab = match source_id {
+                Some(tab_id) => self.duplicate_tab(tab_id, window, cx),
+                None => self.make_query_tab(None, window, cx),
+            };
             self.add_tab(tab, Pane::Secondary);
         } else {
             self.split = Some(axis);
@@ -652,6 +773,49 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn autosize_column(&mut self, tab_id: u64, column: usize, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let Some(page) = table.page.as_ref() else {
+            return;
+        };
+        let Some(info) = page.columns.get(column) else {
+            return;
+        };
+        let mut longest = info
+            .name
+            .chars()
+            .count()
+            .max(info.data_type.chars().count());
+        for row in &page.rows {
+            if let Some(Some(value)) = row.values.get(column) {
+                longest = longest.max(value.chars().count());
+            }
+        }
+        // Monospace text at text_sm is about 7.2 px per glyph; include the
+        // cell's horizontal padding and the sort affordance.
+        let width = if page.rows.is_empty() {
+            DEFAULT_COLUMN_WIDTH
+        } else {
+            (longest as f32 * 7.2 + 44.0).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH)
+        };
+        if table.column_widths.len() < page.columns.len() {
+            table
+                .column_widths
+                .resize(page.columns.len(), DEFAULT_COLUMN_WIDTH);
+        }
+        if let Some(current) = table.column_widths.get_mut(column) {
+            *current = width;
+        }
+        table.resize_pointer_x = None;
+        table.resize_column = None;
+        cx.notify();
+    }
+
     pub(crate) fn resize_active_column(
         &mut self,
         tab_id: u64,
@@ -700,6 +864,8 @@ impl KoyoApp {
                 mode: TableMode::Data,
                 foreign_keys: Vec::new(),
                 foreign_keys_loading: false,
+                indexes: Vec::new(),
+                diagram_metadata_loaded: false,
                 page: None,
                 filters: Vec::new(),
                 sort: None,
@@ -782,12 +948,30 @@ impl KoyoApp {
         });
     }
 
+    /// Split panes share one live session. Only the last tab holding a
+    /// session may tear it down.
+    fn session_in_use(&self, session_id: Uuid, except_tab: Option<u64>) -> bool {
+        self.tabs.iter().any(|tab| {
+            Some(tab.id) != except_tab
+                && tab
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.session_id == session_id)
+        })
+    }
+
+    fn disconnect_session_if_unused(&self, session_id: Uuid, except_tab: Option<u64>) {
+        if !self.session_in_use(session_id, except_tab) {
+            self.disconnect_session(session_id);
+        }
+    }
+
     pub(crate) fn disconnect_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
         if let Some(connection) = self.tabs[index].connection.take() {
-            self.disconnect_session(connection.session_id);
+            self.disconnect_session_if_unused(connection.session_id, Some(tab_id));
         }
         self.tabs[index].connecting = false;
         self.tabs[index].notice = "Disconnected. Reconnect when needed.".into();
@@ -833,11 +1017,31 @@ impl KoyoApp {
     }
 
     pub(crate) fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let profile = self.active_tab().and_then(|tab| tab.profile.clone());
-        let tab = self.make_query_tab(profile.clone(), window, cx);
+        let source = self.active_tab().map(|tab| {
+            (
+                tab.profile.clone(),
+                tab.connection.clone(),
+                tab.tables.clone(),
+                tab.schema_objects.clone(),
+                tab.metadata_groups.clone(),
+            )
+        });
+        let (profile, shared, tables, objects, metadata) = source.unwrap_or_default();
+        let mut tab = self.make_query_tab(profile.clone(), window, cx);
+        if let Some(connection) = shared {
+            tab.connection = Some(connection);
+            tab.connecting = false;
+            tab.tables = tables;
+            tab.schema_objects = objects;
+            tab.metadata_groups = metadata;
+        }
         let tab_id = self.add_tab(tab, self.focus);
-        if let Some(profile) = profile {
-            self.connect_profile(profile.id, Some(tab_id), false, window, cx);
+        if profile.is_some()
+            && self.tabs[self.tab_index(tab_id).unwrap()]
+                .connection
+                .is_none()
+        {
+            self.connect_profile(profile.unwrap().id, Some(tab_id), false, window, cx);
         }
         self.persist_state(cx);
         cx.notify();
@@ -869,7 +1073,7 @@ impl KoyoApp {
             return;
         };
         if let Some(connection) = self.tabs[index].connection.take() {
-            self.disconnect_session(connection.session_id);
+            self.disconnect_session_if_unused(connection.session_id, Some(tab_id));
         }
         if self
             .cell_edit

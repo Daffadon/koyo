@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
     ConnectionInfo, ConnectionProfile, Engine, FilterOperator, ForeignKeyInfo, MetadataGroup,
-    QueryOutput, SchemaObject, TableFilter, TablePage, TableSort, TableSummary,
+    QueryOutput, SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use koyo_core::{ProfileStore, SessionManager};
 
@@ -111,6 +111,8 @@ pub(crate) struct TableTab {
     pub(crate) mode: TableMode,
     pub(crate) foreign_keys: Vec<ForeignKeyInfo>,
     pub(crate) foreign_keys_loading: bool,
+    pub(crate) indexes: Vec<TableIndexInfo>,
+    pub(crate) diagram_metadata_loaded: bool,
     pub(crate) page: Option<TablePage>,
     pub(crate) filters: Vec<TableFilter>,
     pub(crate) sort: Option<TableSort>,
@@ -182,7 +184,7 @@ pub(crate) enum CellTarget {
 pub(crate) struct CellEdit {
     pub(crate) tab_id: u64,
     pub(crate) target: CellTarget,
-    pub(crate) input: Entity<InputState>,
+    pub(crate) input: Entity<TextareaState>,
     pub(crate) is_null: bool,
     pub(crate) insert_is_default: bool,
     pub(crate) title: SharedString,
