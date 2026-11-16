@@ -52,7 +52,7 @@ impl ConnectionDialog {
 }
 
 impl KoyoApp {
-    fn load_tables(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn load_tables(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -194,6 +194,7 @@ impl KoyoApp {
                     .as_ref()
                     .is_some_and(|current| current.id != profile.id)
         });
+        let adopt_sidebar = from_dialog && (target.is_none() || retarget_live_tab);
         let tab_id = if retarget_live_tab {
             let tab = self.make_query_tab(Some(profile.clone()), window, cx);
             self.add_tab(tab, self.focus)
@@ -285,6 +286,9 @@ impl KoyoApp {
                             this.tabs[index].pending_starter = Some(starter_sql(engine).into());
                         }
                         this.status = format!("Connected to {}.", info.profile.name);
+                        if adopt_sidebar {
+                            this.sidebar_tab = Some(tab_id);
+                        }
                         this.load_tables(tab_id, cx);
                         let mut run_pending = false;
                         match &mut this.tabs[index].body {

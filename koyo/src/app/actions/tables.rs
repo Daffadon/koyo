@@ -16,16 +16,19 @@ impl KoyoApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let source = self.active_tab().map(|tab| {
-            (
-                tab.profile.clone(),
-                tab.connection.clone(),
-                tab.tables.clone(),
-                tab.schema_objects.clone(),
-                tab.metadata_groups.clone(),
-                tab.expanded.clone(),
-            )
-        });
+        let source = self
+            .sidebar_index()
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| {
+                (
+                    tab.profile.clone(),
+                    tab.connection.clone(),
+                    tab.tables.clone(),
+                    tab.schema_objects.clone(),
+                    tab.metadata_groups.clone(),
+                    tab.expanded.clone(),
+                )
+            });
         let Some((Some(profile), shared, tables, objects, metadata, expanded)) = source else {
             self.status = "Open a connection before browsing tables.".into();
             cx.notify();

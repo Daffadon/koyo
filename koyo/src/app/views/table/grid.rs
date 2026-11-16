@@ -34,6 +34,9 @@ pub(super) fn render_grid(
     // virtual row closure and the header share the same face.
     let mono = cx.theme().mono_font_family.clone();
     let scroll_handle = table_scroll_handle(tab_id);
+    // Overscroll at the left edge may leave a positive offset. Clamp the
+    // header so it cannot drift away from the first column.
+    let header_left = px(f32::from(scroll_handle.offset().x).min(0.0));
 
     let header = h_flex()
         .w(px(width))
@@ -228,7 +231,7 @@ pub(super) fn render_grid(
                 .child(
                     div()
                         .relative()
-                        .left(scroll_handle.offset().x)
+                        .left(header_left)
                         .w(px(width))
                         .child(header),
                 ),

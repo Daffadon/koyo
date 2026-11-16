@@ -13,7 +13,16 @@ use std::sync::Arc;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
-actions!(koyo, [RunQuery, ToggleAi, ToggleSidebar]);
+actions!(
+    koyo,
+    [
+        AcceptCompletion,
+        CompletionEnter,
+        RunQuery,
+        ToggleAi,
+        ToggleSidebar
+    ]
+);
 
 fn ensure_config_directory(directory: &Path) -> Result<(), String> {
     match fs::symlink_metadata(directory) {
@@ -115,6 +124,8 @@ fn main() {
                 .install(cx);
             Theme::change(ThemeMode::Dark, None, cx);
             cx.bind_keys([
+                KeyBinding::new("tab", AcceptCompletion, Some("Input && mode == editor")),
+                KeyBinding::new("enter", CompletionEnter, Some("Input && mode == editor")),
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
                 KeyBinding::new("cmd-enter", RunQuery, Some("Input")),
                 KeyBinding::new("ctrl-enter", RunQuery, Some("Koyo")),

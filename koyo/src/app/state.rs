@@ -226,6 +226,9 @@ pub(crate) struct KoyoApp {
     pub(crate) sidebar_open: bool,
     pub(crate) sidebar_width: f32,
     pub(crate) sidebar_resizing: bool,
+    /// Tab whose connection owns the shared explorer. Switching tabs does not
+    /// replace it; only connecting or closing the source tab changes it.
+    pub(crate) sidebar_tab: Option<u64>,
     pub(crate) ai_open: bool,
     pub(crate) ai_width: f32,
     pub(crate) ai_resizing: bool,

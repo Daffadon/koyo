@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{InputState, TextareaState};
+use gpui_kit::component::input::{Enter, Escape, IndentInline, InputState, TextareaState};
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -90,6 +90,7 @@ impl KoyoApp {
                 .sidebar_width
                 .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
             sidebar_resizing: false,
+            sidebar_tab: None,
             ai_open: saved.ai_open,
             ai_width: saved.ai_width.clamp(MIN_AI_WIDTH, MAX_AI_WIDTH),
             ai_resizing: false,
@@ -157,6 +158,7 @@ impl KoyoApp {
             return;
         }
         let parked = self.parked_connections.pop();
+        let has_connection = parked.is_some();
         let mut tab = self.make_query_tab(
             parked.as_ref().map(|parked| parked.profile.clone()),
             window,
@@ -173,6 +175,10 @@ impl KoyoApp {
         self.tabs.push(tab);
         self.primary_tabs.push(id);
         self.primary_active = id;
+        self.sidebar_tab = Some(id);
+        if has_connection {
+            self.load_tables(id, cx);
+        }
     }
 
     fn restore_workspace(
@@ -260,6 +266,10 @@ impl KoyoApp {
             Pane::Primary
         };
         self.normalize_panes();
+        self.sidebar_tab = self
+            .pane_active_id(self.focus)
+            .or_else(|| self.primary_tabs.first().copied())
+            .or_else(|| self.secondary_tabs.first().copied());
     }
 
     pub(crate) fn persist_state(&mut self, cx: &App) {
@@ -430,8 +440,10 @@ impl KoyoApp {
             .or_else(|| self.pane_index(Pane::Primary))
     }
 
-    pub(crate) fn active_tab(&self) -> Option<&Tab> {
-        self.tabs.get(self.focused_index()?)
+    pub(crate) fn sidebar_index(&self) -> Option<usize> {
+        self.sidebar_tab
+            .and_then(|id| self.tab_index(id))
+            .or_else(|| self.focused_index())
     }
 
     pub(crate) fn focus_pane(&mut self, pane: Pane, cx: &mut Context<Self>) {
@@ -450,6 +462,69 @@ impl KoyoApp {
                 cx.notify();
             }
         }
+    }
+
+    pub(crate) fn accept_completion_or_indent(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.focused_index().and_then(|index| {
+            self.tabs.get(index).and_then(|tab| match &tab.body {
+                TabBody::Query(query) => Some(query.editor.clone()),
+                TabBody::Table(_) => None,
+            })
+        }) else {
+            return;
+        };
+        let (completion_open, handle) = {
+            let editor = editor.read(cx);
+            (
+                editor.completion_menu_state().open,
+                editor.focus_handle(cx).clone(),
+            )
+        };
+        if completion_open {
+            handle.dispatch_action(
+                &Enter {
+                    secondary: false,
+                    shift: false,
+                },
+                window,
+                cx,
+            );
+        } else {
+            handle.dispatch_action(&IndentInline, window, cx);
+        }
+    }
+
+    pub(crate) fn enter_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.focused_index().and_then(|index| {
+            self.tabs.get(index).and_then(|tab| match &tab.body {
+                TabBody::Query(query) => Some(query.editor.clone()),
+                TabBody::Table(_) => None,
+            })
+        }) else {
+            return;
+        };
+        let (completion_open, handle) = {
+            let editor = editor.read(cx);
+            (
+                editor.completion_menu_state().open,
+                editor.focus_handle(cx).clone(),
+            )
+        };
+        if completion_open {
+            handle.dispatch_action(&Escape, window, cx);
+        }
+        handle.dispatch_action(
+            &Enter {
+                secondary: false,
+                shift: false,
+            },
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
@@ -500,6 +575,13 @@ impl KoyoApp {
             }
         }
         self.reveal_active_tab(pane);
+        let source_live = self
+            .sidebar_tab
+            .and_then(|tab_id| self.tab_index(tab_id))
+            .is_some_and(|index| self.tabs[index].connection.is_some());
+        if !source_live {
+            self.sidebar_tab = Some(id);
+        }
         id
     }
 
@@ -648,7 +730,10 @@ impl KoyoApp {
                 Some(tab_id) => self.duplicate_tab(tab_id, window, cx),
                 None => self.make_query_tab(None, window, cx),
             };
-            self.add_tab(tab, Pane::Secondary);
+            let id = self.add_tab(tab, Pane::Secondary);
+            if self.tabs[self.tab_index(id).unwrap()].connection.is_some() {
+                self.load_tables(id, cx);
+            }
         } else {
             self.split = Some(axis);
         }
@@ -1120,16 +1205,20 @@ impl KoyoApp {
     }
 
     pub(crate) fn new_sql_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let source = self.active_tab().map(|tab| {
-            (
-                tab.profile.clone(),
-                tab.connection.clone(),
-                tab.tables.clone(),
-                tab.schema_objects.clone(),
-                tab.metadata_groups.clone(),
-            )
-        });
+        let source = self
+            .sidebar_index()
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| {
+                (
+                    tab.profile.clone(),
+                    tab.connection.clone(),
+                    tab.tables.clone(),
+                    tab.schema_objects.clone(),
+                    tab.metadata_groups.clone(),
+                )
+            });
         let (profile, shared, tables, objects, metadata) = source.unwrap_or_default();
+        let shared_connection = shared.is_some();
         let mut tab = self.make_query_tab(profile.clone(), window, cx);
         if let Some(connection) = shared {
             tab.connection = Some(connection);
@@ -1139,6 +1228,9 @@ impl KoyoApp {
             tab.metadata_groups = metadata;
         }
         let tab_id = self.add_tab(tab, self.focus);
+        if shared_connection {
+            self.load_tables(tab_id, cx);
+        }
         if profile.is_some()
             && self.tabs[self.tab_index(tab_id).unwrap()]
                 .connection
@@ -1231,6 +1323,11 @@ impl KoyoApp {
         }
         self.tabs.remove(index);
         self.normalize_panes();
+        if self.sidebar_tab == Some(tab_id) {
+            self.sidebar_tab = self
+                .pane_active_id(self.focus)
+                .or_else(|| self.tabs.first().map(|tab| tab.id));
+        }
         if let Some(pane) = pane {
             self.reveal_active_tab(pane);
         }

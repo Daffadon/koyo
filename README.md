@@ -21,7 +21,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 ### SQL workbench
 
-- SQL editor with keyword, schema, table, column, and alias completion. `u.` completion resolves through the table behind the alias.
+- SQL editor with keyword, schema, table, column, and alias completion. `u.` completion resolves through the table behind the alias. Press **Tab** to apply a completion; **Enter** inserts a newline.
 - Run with **Ctrl+Enter** or **Cmd+Enter**; cancel a running statement where the engine supports it.
 - Multiple result sets per execution, shown as a data grid or as JSON (one object per row).
 - Copy the active result set as CSV, copy individual cells, or copy rows as TSV.
@@ -47,6 +47,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
 - Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next workspace tab reuses it. Explicit disconnect, profile deletion, or app exit closes it.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
+- The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
 - Theme, sidebar state and width, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.

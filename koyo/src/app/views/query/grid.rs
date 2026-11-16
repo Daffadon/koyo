@@ -31,6 +31,7 @@ pub(super) fn result_grid(
     let width = RESULT_ROW_RAIL_WIDTH + widths.iter().sum::<f32>();
     let palette = *palette;
     let scroll_handle = result_grid_scroll_handle(tab_id, result_index);
+    let header_left = px(f32::from(scroll_handle.offset().x).min(0.0));
 
     let header = h_flex()
         .w(px(width))
@@ -190,7 +191,7 @@ pub(super) fn result_grid(
                 .child(
                     div()
                         .relative()
-                        .left(scroll_handle.offset().x)
+                        .left(header_left)
                         .w(px(width))
                         .child(header),
                 ),

@@ -436,8 +436,6 @@ pub(super) fn render(
         .h_full()
         .flex_shrink_0()
         .bg(palette.sidebar)
-        .border_l_1()
-        .border_color(palette.sidebar_border)
         .child(header)
         .when(app.ai_settings_open, |this| this.child(settings))
         .when(!app.ai_settings_open, |this| {

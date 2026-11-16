@@ -67,7 +67,7 @@ impl KoyoApp {
         palette: &Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let Some(tab) = self.focused_index().and_then(|index| self.tabs.get(index)) else {
+        let Some(tab) = self.sidebar_index().and_then(|index| self.tabs.get(index)) else {
             return div();
         };
         let tab_id = tab.id;
@@ -564,8 +564,6 @@ impl KoyoApp {
             .h_full()
             .flex_shrink_0()
             .bg(palette.sidebar)
-            .border_r_1()
-            .border_color(palette.sidebar_border)
             .child(
                 div()
                     .flex()
