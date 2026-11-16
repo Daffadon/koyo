@@ -210,6 +210,8 @@ pub(crate) struct KoyoApp {
     pub(crate) secondary_tabs: Vec<u64>,
     pub(crate) primary_active: u64,
     pub(crate) secondary_active: u64,
+    pub(crate) primary_tab_scroll: ScrollHandle,
+    pub(crate) secondary_tab_scroll: ScrollHandle,
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,

@@ -80,6 +80,8 @@ impl KoyoApp {
             TabBody::Query(_) => None,
         };
         let live = connection.is_some();
+        let has_explorer =
+            live || !tables.is_empty() || !objects.is_empty() || !tab.metadata_groups.is_empty();
         let history = &self.history;
         let reconnect_profile = if matches!(tab.body, TabBody::Table(_)) && !live {
             profile.as_ref().map(|profile| profile.id)
@@ -724,22 +726,51 @@ impl KoyoApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("EXPLORER"),
                     )
-                    .when(live, |this| {
-                        this.child(super::widgets::button_tooltip(
-                            ("tooltip-refresh-tables", tab_id),
-                            Button::new("refresh-tables")
-                                .ghost()
-                                .compact()
-                                .icon(IconName::RefreshCw)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.refresh_tables(tab_id, cx);
-                                })),
-                            "Refresh tables",
-                        ))
+                    .when(has_explorer, |this| {
+                        this.child(
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(super::widgets::button_tooltip(
+                                    ("tooltip-expand-all", tab_id),
+                                    Button::new("expand-all-tables")
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::ChevronsUpDown)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_all_expanded(tab_id, true, cx);
+                                        })),
+                                    "Expand all",
+                                ))
+                                .child(super::widgets::button_tooltip(
+                                    ("tooltip-collapse-all", tab_id),
+                                    Button::new("collapse-all-tables")
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::Minus)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_all_expanded(tab_id, false, cx);
+                                        })),
+                                    "Collapse all",
+                                ))
+                                .when(live, |this| {
+                                    this.child(super::widgets::button_tooltip(
+                                        ("tooltip-refresh-tables", tab_id),
+                                        Button::new("refresh-tables")
+                                            .ghost()
+                                            .compact()
+                                            .icon(IconName::RefreshCw)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.refresh_tables(tab_id, cx);
+                                            })),
+                                        "Refresh tables",
+                                    ))
+                                }),
+                        )
                     }),
             )
-            .when(live, |this| this.child(tree))
-            .when(!live, |this| {
+            .when(has_explorer, |this| this.child(tree))
+            .when(!has_explorer, |this| {
                 this.child(
                     v_flex()
                         .flex_1()

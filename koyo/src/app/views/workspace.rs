@@ -272,6 +272,7 @@ impl KoyoApp {
             Pane::Primary => "primary-tabs".into(),
             Pane::Secondary => "secondary-tabs".into(),
         };
+        let tab_scroll = self.tab_scroll(pane).clone();
 
         v_flex()
             .flex_1()
@@ -318,6 +319,8 @@ impl KoyoApp {
                         div().flex_1().min_w(px(0.0)).overflow_hidden().child(
                             TabBar::new(tab_bar_id)
                                 .underline()
+                                .menu(true)
+                                .track_scroll(&tab_scroll)
                                 .max_width(px(260.0))
                                 .selected_index(selected)
                                 .children(tabs)
@@ -335,18 +338,6 @@ impl KoyoApp {
                                 )),
                         ),
                     )
-                    .child(widgets::button_tooltip(
-                        ("top-tooltip-close", index),
-                        Button::new(format!("close-active-{pane:?}"))
-                            .flex_shrink_0()
-                            .ghost()
-                            .compact()
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_active_tab(pane, window, cx);
-                            })),
-                        "Close active tab",
-                    ))
                     .when(split.is_some(), |this| {
                         let target = match pane {
                             Pane::Primary => Pane::Secondary,
@@ -475,8 +466,9 @@ impl KoyoApp {
                     }),
                 };
                 let title = tab.title.clone();
+                let tab_id = tab.id;
                 let drag = TabDrag {
-                    tab_id: tab.id,
+                    tab_id,
                     title: title.clone(),
                 };
                 Some(
@@ -493,6 +485,18 @@ impl KoyoApp {
                                 .child(icon.with_size(Size::Small)),
                         )
                         .label(title)
+                        .suffix(widgets::button_tooltip(
+                            ("tooltip-tab-close", tab_id),
+                            Button::new(("tab-close", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(tab_id, window, cx);
+                                })),
+                            "Close tab",
+                        ))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.switch_tab(pane, order, cx);
                         })),

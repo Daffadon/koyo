@@ -74,6 +74,8 @@ impl KoyoApp {
             secondary_tabs: Vec::new(),
             primary_active: 0,
             secondary_active: 0,
+            primary_tab_scroll: ScrollHandle::new(),
+            secondary_tab_scroll: ScrollHandle::new(),
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
@@ -355,6 +357,18 @@ impl KoyoApp {
         }
     }
 
+    pub(crate) fn tab_scroll(&self, pane: Pane) -> &ScrollHandle {
+        match pane {
+            Pane::Primary => &self.primary_tab_scroll,
+            Pane::Secondary => &self.secondary_tab_scroll,
+        }
+    }
+
+    fn reveal_active_tab(&self, pane: Pane) {
+        self.tab_scroll(pane)
+            .scroll_to_item(self.pane_selected(pane));
+    }
+
     pub(crate) fn pane_selected(&self, pane: Pane) -> usize {
         let active = match pane {
             Pane::Primary => self.primary_active,
@@ -444,6 +458,7 @@ impl KoyoApp {
                 self.secondary_active = id;
             }
         }
+        self.reveal_active_tab(pane);
         id
     }
 
@@ -798,18 +813,6 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_active_tab(
-        &mut self,
-        pane: Pane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(tab_id) = self.pane_active_id(pane) else {
-            return;
-        };
-        self.close_tab(tab_id, window, cx);
-    }
-
     pub(crate) fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
@@ -868,6 +871,9 @@ impl KoyoApp {
         }
         self.tabs.remove(index);
         self.normalize_panes();
+        if let Some(pane) = pane {
+            self.reveal_active_tab(pane);
+        }
         self.persist_state(cx);
         cx.notify();
     }
@@ -959,6 +965,7 @@ impl KoyoApp {
         }
         self.focus = target;
         self.normalize_panes();
+        self.reveal_active_tab(target);
         self.persist_state(cx);
         cx.notify();
     }
@@ -972,6 +979,7 @@ impl KoyoApp {
             Pane::Secondary => self.secondary_active = id,
         }
         self.focus = pane;
+        self.reveal_active_tab(pane);
         self.normalize_panes();
         self.persist_state(cx);
         cx.notify();

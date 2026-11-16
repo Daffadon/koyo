@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -23,7 +23,23 @@ impl KoyoApp {
         if self.focus_existing_table(profile.id, &schema, &table, cx) {
             return;
         }
-        let tab = self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
+        // Keep the explorer populated while the new table session connects.
+        let explorer = self.active_tab().map(|tab| {
+            (
+                tab.tables.clone(),
+                tab.schema_objects.clone(),
+                tab.metadata_groups.clone(),
+                tab.expanded.clone(),
+            )
+        });
+        let mut tab =
+            self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
+        if let Some((tables, objects, metadata, expanded)) = explorer {
+            tab.tables = tables;
+            tab.schema_objects = objects;
+            tab.metadata_groups = metadata;
+            tab.expanded = expanded;
+        }
         let tab_id = self.add_tab(tab, self.focus);
         self.persist_state(cx);
         cx.notify();
@@ -77,15 +93,6 @@ impl KoyoApp {
                         this.tabs[index].connection = Some(info);
                         this.tabs[index].profile = Some(profile.clone());
                         this.tabs[index].connecting = false;
-                        let mut expanded = objects
-                            .iter()
-                            .map(|object| object.schema.clone())
-                            .collect::<BTreeSet<_>>();
-                        expanded.insert("Schemas".to_string());
-                        for schema in expanded.clone() {
-                            expanded.insert(format!("{schema}/Table"));
-                        }
-                        this.tabs[index].expanded = expanded;
                         this.tabs[index].tables = tables;
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
