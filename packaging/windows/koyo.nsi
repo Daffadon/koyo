@@ -3,20 +3,28 @@ Unicode true
 !include "MUI2.nsh"
 
 !ifndef VERSION
-  !define VERSION "0.2.3"
+  !define VERSION "0.2.4"
+!endif
+!ifndef ICON
+  !define ICON "../../koyo/assets/koyo.ico"
+!endif
+!ifndef EXE
+  !define EXE "../../target/x86_64-pc-windows-msvc/release/koyo.exe"
+!endif
+!ifndef OUTFILE
+  !define OUTFILE "../../koyo-windows-x64-setup.exe"
 !endif
 
 Name "Koyo"
-; MakeNSIS changes its working directory to this script's directory.
-OutFile "../../koyo-windows-x64-setup.exe"
+OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\Koyo"
 InstallDirRegKey HKCU "Software\Koyo" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "../../koyo/assets/koyo.ico"
-!define MUI_UNICON "../../koyo/assets/koyo.ico"
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -29,7 +37,7 @@ SetCompressor /SOLID lzma
 Section "Koyo" SecMain
   SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File "../../target/x86_64-pc-windows-msvc/release/koyo.exe"
+  File "${EXE}"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateShortCut "$SMPROGRAMS\Koyo.lnk" "$INSTDIR\koyo.exe" "" "$INSTDIR\koyo.exe" 0

@@ -162,11 +162,23 @@ jobs:
         run: |
           choco install nsis --version=3.13.0 --no-progress -y
           $version = (Select-String -Path koyo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $root = (Get-Location).Path
+          $icon = Join-Path $root "koyo\assets\koyo.ico"
+          $exe = Join-Path $root "target\${{ matrix.target }}\release\koyo.exe"
+          $out = Join-Path $root "koyo-windows-x64-setup.exe"
+          foreach ($path in @($icon, $exe)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing NSIS input: $path"
+            }
+          }
           $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
           if (-not $makensis) {
             $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           }
-          & $makensis "/DVERSION=$version" packaging/windows/koyo.nsi
+          & $makensis "/DVERSION=$version" "/DICON=$icon" "/DEXE=$exe" "/DOUTFILE=$out" packaging/windows/koyo.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw "makensis failed with exit code $LASTEXITCODE"
+          }
 
       - name: Upload release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
