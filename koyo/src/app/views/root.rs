@@ -1,7 +1,7 @@
 use gpui_kit::component::TitleBar;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::{CursorStyle, DragMoveEvent, InteractiveElement, StatefulInteractiveElement};
+use gpui_kit::{CursorStyle, InteractiveElement};
 
 use super::{connection, query, table, widgets};
 use crate::app::*;
@@ -9,14 +9,6 @@ use crate::{RunQuery, ToggleAi, ToggleSidebar};
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
 const SIDEBAR_DIVIDER_WIDTH: f32 = 6.0;
-
-struct AiResizeDrag;
-
-impl Render for AiResizeDrag {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
 
 impl Render for KoyoApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -54,10 +46,18 @@ impl Render for KoyoApp {
                 .items_center()
                 .justify_center()
                 .cursor(CursorStyle::ResizeLeftRight)
-                .on_drag(AiResizeDrag, |_, _, _, cx| {
-                    cx.stop_propagation();
-                    cx.new(|_| AiResizeDrag)
-                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.ai_resizing = true;
+                        let window_width = f32::from(window.viewport_size().width);
+                        this.set_ai_width(
+                            window_width - f32::from(event.position.x) - AI_DIVIDER_WIDTH / 2.0,
+                            cx,
+                        );
+                    }),
+                )
                 .child(div().w(px(1.0)).h_full().bg(palette.border))
                 .into_any_element();
             let panel = super::ai::render(self, &palette, self.ai_width, cx);
@@ -131,18 +131,16 @@ impl Render for KoyoApp {
                     .when_some(ai, |this, (divider, panel)| {
                         this.child(divider).child(panel)
                     })
-                    .on_drag_move::<AiResizeDrag>(cx.listener(
-                        |this, event: &DragMoveEvent<AiResizeDrag>, _, cx| {
-                            let width = f32::from(event.bounds.size.width)
-                                - f32::from(event.event.position.x - event.bounds.origin.x)
-                                - AI_DIVIDER_WIDTH / 2.0;
-                            this.set_ai_width(width, cx);
-                        },
-                    ))
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
                         if this.sidebar_resizing {
                             this.set_sidebar_width(
                                 f32::from(event.position.x) - SIDEBAR_DIVIDER_WIDTH / 2.0,
+                                cx,
+                            );
+                        } else if this.ai_resizing {
+                            let window_width = f32::from(window.viewport_size().width);
+                            this.set_ai_width(
+                                window_width - f32::from(event.position.x) - AI_DIVIDER_WIDTH / 2.0,
                                 cx,
                             );
                         }
