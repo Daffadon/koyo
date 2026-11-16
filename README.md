@@ -47,8 +47,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
 - Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next workspace tab reuses it. Explicit disconnect, profile deletion, or app exit closes it.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
-- Split panes, tab drag between panes, resizable panes, and resizable table columns.
-- Theme, sidebar state, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
+- Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
+- Theme, sidebar state and width, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.
 - Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
 
