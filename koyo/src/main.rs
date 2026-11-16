@@ -4,7 +4,7 @@ mod app;
 
 use app::KoyoApp;
 use fs2::FileExt;
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;
@@ -125,18 +125,16 @@ fn main() {
 
             let bounds = Bounds::centered(None, size(px(1440.0), px(960.0)), cx);
             let runtime = runtime.clone();
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Koyo".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                cx,
-                move |window, cx| cx.new(|cx| KoyoApp::new(window, cx, runtime)),
-            )
+            let mut options = TitleBar::window_options();
+            options.window_bounds = Some(WindowBounds::Windowed(bounds));
+            options.window_decorations = Some(WindowDecorations::Client);
+            options.app_id = Some("koyo".into());
+            let mut titlebar = TitleBar::title_bar_options();
+            titlebar.title = Some("Koyo".into());
+            options.titlebar = Some(titlebar);
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| KoyoApp::new(window, cx, runtime))
+            })
             .expect("open Koyo window");
         });
 }

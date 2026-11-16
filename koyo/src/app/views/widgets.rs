@@ -30,6 +30,22 @@ pub(super) fn button_tooltip(
         .into_any_element()
 }
 
+/// Theme-aware monogram used in the title bar and sidebar.
+pub(super) fn logo_mark(palette: &Palette, size: f32) -> impl IntoElement {
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .bg(palette.foreground)
+        .text_color(palette.background)
+        .text_sm()
+        .font_weight(FontWeight::BOLD)
+        .child("K")
+}
+
 pub(super) fn button_tooltip_if(
     enabled: bool,
     id: impl Into<ElementId>,

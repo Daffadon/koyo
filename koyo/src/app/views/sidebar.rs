@@ -530,19 +530,7 @@ impl KoyoApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .size(px(28.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(palette.accent)
-                                    .text_color(palette.background)
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("K"),
-                            )
+                            .child(super::widgets::logo_mark(&palette, 28.0))
                             .child(
                                 div()
                                     .text_sm()

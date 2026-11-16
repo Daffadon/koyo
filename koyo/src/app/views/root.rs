@@ -1,3 +1,4 @@
+use gpui_kit::component::TitleBar;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{CursorStyle, DragMoveEvent, InteractiveElement, StatefulInteractiveElement};
@@ -28,6 +29,8 @@ impl Render for KoyoApp {
         self.apply_pending_starters(window, cx);
 
         let palette = palette(cx);
+        let show_custom_titlebar = !cfg!(target_os = "linux")
+            || matches!(window.window_decorations(), Decorations::Client { .. });
         let dialog = if let Some(dialog) = self.dialog.as_ref() {
             Some(connection::render_dialog(self, dialog, &palette, cx))
         } else {
@@ -63,35 +66,67 @@ impl Render for KoyoApp {
             (divider, panel)
         });
 
+        let titlebar = TitleBar::new()
+            .bg(palette.sidebar)
+            .border_color(palette.sidebar_border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .h_full()
+                    .child(widgets::logo_mark(&palette, 20.0))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Koyo"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted)
+                            .child("Database client"),
+                    ),
+            );
+
         div()
             .flex()
+            .flex_col()
             .size_full()
             .key_context("Koyo")
             .bg(palette.background)
             .text_color(palette.foreground)
-            .when(self.sidebar_open, |this| {
-                this.child(self.render_sidebar(&palette, cx))
-            })
-            .child(self.render_workspace(window, &palette, cx))
-            .when_some(ai, |this, (divider, panel)| {
-                this.child(divider).child(panel)
-            })
-            .on_drag_move::<AiResizeDrag>(cx.listener(
-                |this, event: &DragMoveEvent<AiResizeDrag>, _, cx| {
-                    let width = f32::from(event.bounds.size.width)
-                        - f32::from(event.event.position.x - event.bounds.origin.x)
-                        - AI_DIVIDER_WIDTH / 2.0;
-                    this.set_ai_width(width, cx);
-                },
-            ))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    if this.ai_resizing {
-                        this.ai_resizing = false;
-                        this.persist_state(cx);
-                    }
-                }),
+            .when(show_custom_titlebar, |this| this.child(titlebar))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .when(self.sidebar_open, |this| {
+                        this.child(self.render_sidebar(&palette, cx))
+                    })
+                    .child(self.render_workspace(window, &palette, cx))
+                    .when_some(ai, |this, (divider, panel)| {
+                        this.child(divider).child(panel)
+                    })
+                    .on_drag_move::<AiResizeDrag>(cx.listener(
+                        |this, event: &DragMoveEvent<AiResizeDrag>, _, cx| {
+                            let width = f32::from(event.bounds.size.width)
+                                - f32::from(event.event.position.x - event.bounds.origin.x)
+                                - AI_DIVIDER_WIDTH / 2.0;
+                            this.set_ai_width(width, cx);
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            if this.ai_resizing {
+                                this.ai_resizing = false;
+                                this.persist_state(cx);
+                            }
+                        }),
+                    ),
             )
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
                 this.run_active_query(cx);
