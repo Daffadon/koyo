@@ -72,6 +72,19 @@ impl QueryBudget {
         Some(value)
     }
 
+    /// Table-page cells are retained for editing. When the page-wide budget
+    /// is exhausted, keep a visible marker instead of turning the cell into
+    /// NULL. Primary-key cells should bypass this method so edits stay valid.
+    pub fn page_cell(&mut self, value: Option<String>) -> Option<String> {
+        let Some(value) = value else {
+            return None;
+        };
+        self.cell(Some(value)).or_else(|| {
+            self.truncated = true;
+            Some("[truncated]".to_string())
+        })
+    }
+
     pub fn cell_str(&mut self, value: Option<&str>) -> Option<String> {
         let value = value?;
         if self.remaining == 0 {
@@ -318,6 +331,20 @@ mod tests {
         assert_eq!(budget.cell(Some("value".into())), None);
         assert_eq!(budget.column("name".into()), "");
         assert!(budget.truncated());
+    }
+
+    #[test]
+    fn query_budget_marks_table_cells_after_exhaustion() {
+        let mut budget = QueryBudget {
+            remaining: 2,
+            truncated: false,
+        };
+        assert_eq!(budget.page_cell(Some("ab".into())), Some("ab".into()));
+        assert_eq!(
+            budget.page_cell(Some("cd".into())),
+            Some("[truncated]".into())
+        );
+        assert_eq!(budget.page_cell(None), None);
     }
 
     #[test]

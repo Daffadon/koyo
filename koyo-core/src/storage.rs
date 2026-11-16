@@ -408,6 +408,7 @@ impl ProfileStore {
         }
 
         let mut profiles = self.load_profiles()?;
+        let old_profiles = profiles.clone();
         let is_new = profile.id.is_none();
         let id = profile.id.unwrap_or_else(Uuid::new_v4);
         let previous = profiles.iter().find(|item| item.id == id).cloned();
@@ -479,28 +480,44 @@ impl ProfileStore {
         if target_changed {
             if let Some(password) = password_to_save.as_deref() {
                 let entry = credential_entry(id)?;
+                let previous_secret = match entry.get_password() {
+                    Ok(value) => Some(value),
+                    Err(KeyringError::NoEntry) => None,
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not read the previous saved password: {error}"
+                        ));
+                    }
+                };
                 entry.set_password(password).map_err(|error| {
                     format!(
                         "Could not save password in the operating-system credential store: {error}"
                     )
                 })?;
                 if let Err(error) = self.write_profiles(&profiles) {
-                    let _ = entry.delete_credential();
+                    match previous_secret.as_deref() {
+                        Some(previous) => {
+                            let _ = entry.set_password(previous);
+                        }
+                        None => {
+                            let _ = entry.delete_credential();
+                        }
+                    }
                     return Err(error);
                 }
             } else {
-                if must_clear_credential {
-                    let entry = credential_entry(id)?;
-                    match entry.delete_credential() {
-                        Ok(()) | Err(KeyringError::NoEntry) => {}
-                        Err(error) => {
-                            return Err(format!(
-                                "Could not remove the saved password for the changed connection target: {error}"
-                            ));
-                        }
-                    }
-                }
+                let entry = must_clear_credential
+                    .then(|| credential_entry(id))
+                    .transpose()?;
                 self.write_profiles(&profiles)?;
+                if let Some(entry) = entry
+                    && let Err(error) = entry.delete_credential()
+                {
+                    let _ = self.write_profiles(&old_profiles);
+                    return Err(format!(
+                        "Could not remove the saved password for the changed connection target: {error}"
+                    ));
+                }
             }
         } else {
             let old_profiles = profiles.clone();
@@ -532,19 +549,22 @@ impl ProfileStore {
             .find(|profile| profile.id == id)
             .map(|profile| profile.engine)
             .ok_or_else(|| "Connection profile does not exist.".to_string())?;
+        let old_profiles = profiles.clone();
         profiles.retain(|profile| profile.id != id);
-        if !engine.is_sqlite() {
-            let entry = credential_entry(id)?;
-            match entry.delete_credential() {
-                Ok(()) | Err(KeyringError::NoEntry) => {}
-                Err(error) => {
-                    return Err(format!(
-                        "Could not remove password from the operating-system credential store: {error}"
-                    ));
-                }
+        if engine.is_sqlite() {
+            return self.write_profiles(&profiles);
+        }
+        let entry = credential_entry(id)?;
+        self.write_profiles(&profiles)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => {
+                let _ = self.write_profiles(&old_profiles);
+                Err(format!(
+                    "Could not remove password from the operating-system credential store: {error}"
+                ))
             }
         }
-        self.write_profiles(&profiles)
     }
 
     pub fn load_password(&self, id: Uuid) -> Result<String, String> {

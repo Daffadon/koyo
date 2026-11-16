@@ -13,7 +13,7 @@
 
 </div>
 
-Koyo is a cross-platform desktop database client written in Rust and built with [GPUI Kit](https://gpui-kit.com). It renders natively, talks to databases directly from Rust, and keeps every workspace tab on its own database session. There is no WebView, no JavaScript runtime, and no frontend IPC bridge.
+Koyo is a cross-platform desktop database client written in Rust and built with [GPUI Kit](https://gpui-kit.com). It renders natively, talks to databases directly from Rust, and keeps each workspace pane on a stable database session and reuses it for new tabs. There is no WebView, no JavaScript runtime, and no frontend IPC bridge.
 
 Koyo is for everyday work: run SQL with completion and history, inspect schemas, page through tables, filter and sort server-side, and stage row edits before applying them in one transaction.
 
@@ -45,7 +45,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Six engines with an engine-first connection flow and per-engine profile forms.
 - Create, edit, and delete profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
-- Query and table tabs each own a dedicated session. Multiple databases can stay live side by side in one tab strip.
+- Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab that holds a session closes it.
+- Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - Split panes, tab drag between panes, resizable panes, and resizable table columns.
 - Theme, sidebar state, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.
@@ -59,6 +60,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Responses stream into the transcript and render Markdown, including fenced code blocks. **Stop** cancels the active stream.
 - **Compact context** asks the provider to summarize the current thread and replaces it with a system summary, keeping the next request small. Long threads are split into chunks and merged.
 - Configure any OpenAI-compatible chat-completions provider from the panel settings using JSON: `base_url`, `api_key`, `model`, `system_prompt`, `temperature`, `max_tokens`, and optional `headers`.
+- Remote AI endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts such as `localhost` or `127.0.0.1`.
 - API keys, provider configuration, and chat threads are stored in encrypted application state, not in plaintext.
 - Press Enter to send and Shift+Enter for a newline. Requests run on the application runtime and do not block the UI.
 
@@ -98,6 +100,14 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 - On macOS, Xcode Command Line Tools.
 - On Windows, the MSVC Rust toolchain plus Visual Studio Build Tools with the Windows SDK.
+
+### Install a release
+
+- **Windows:** run `koyo-windows-x64-setup.exe`. It installs under `%LOCALAPPDATA%\Programs\Koyo`, adds a Start Menu shortcut, and registers an uninstall entry.
+- **macOS:** open `koyo-macos-arm64.dmg`, then drag **Koyo** to Applications.
+- **Linux:** extract `koyo-linux-x64.tar.gz` and run `./install.sh`. It installs the binary, desktop entry, and icon under `~/.local` so the app appears in the desktop application menu.
+
+Release installers are unsigned; Windows SmartScreen and macOS Gatekeeper may warn.
 
 ### Build and run
 
@@ -255,7 +265,7 @@ Run every hook manually with `prek run --all-files`.
 
 ### Releases
 
-The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon binaries on version tags, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon packages on version tags, uploads the Linux archive, Windows installer and portable zip, macOS app archive and DMG, then creates a draft GitHub release.
 
 Keep the workspace version in `koyo/Cargo.toml` and `koyo-core/Cargo.toml` equal, then push a matching tag:
 

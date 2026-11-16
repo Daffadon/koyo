@@ -3,11 +3,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::QueryResultSet;
-use std::ops::Range;
 use std::rc::Rc;
 
 use super::super::widgets::value_text;
-use super::{ROW_HEIGHT, result_scroll_handle};
+use super::{ROW_HEIGHT, result_grid_scroll_handle};
 use crate::app::*;
 
 pub(super) fn result_grid(
@@ -31,8 +30,11 @@ pub(super) fn result_grid(
     );
     let width = RESULT_ROW_RAIL_WIDTH + widths.iter().sum::<f32>();
     let palette = *palette;
+    let scroll_handle = result_grid_scroll_handle(tab_id, result_index);
 
     let header = h_flex()
+        .w(px(width))
+        .min_w(px(width))
         .flex_shrink_0()
         .bg(palette.panel)
         .border_b_1()
@@ -132,65 +134,47 @@ pub(super) fn result_grid(
 
     let row_count = result.rows.len();
 
-    // Only the rows inside the viewport are built; the uniform list measures
-    // `ROW_HEIGHT` from the first row and computes the scroll range from it.
+    // Result sets are capped at 1,000 rows. Render only a window around the
+    // current scroll offset so a wide result does not build tens of thousands
+    // of cell elements on every frame.
     let rows: AnyElement = if row_count == 0 {
         v_flex()
-            .flex_1()
-            .min_h(px(0.0))
+            .w(px(width))
+            .min_w(px(width))
             .p_4()
             .text_xs()
             .text_color(palette.muted)
             .child("No rows returned.")
             .into_any_element()
     } else {
-        let scroll_handle = result_scroll_handle(tab_id, result_index);
-        let widths_for_rows = Rc::clone(&widths);
-        uniform_list(
-            (
-                SharedString::from(format!("result-rows-{tab_id}")),
-                result_index,
-            ),
-            row_count,
-            cx.processor(
-                move |app: &mut KoyoApp,
-                      range: Range<usize>,
-                      _window: &mut Window,
-                      cx: &mut Context<KoyoApp>| {
-                    let Some(result) = app
-                        .tabs
-                        .iter()
-                        .find(|tab| tab.id == tab_id)
-                        .and_then(|tab| match &tab.body {
-                            TabBody::Query(query) => query.output.as_ref(),
-                            TabBody::Table(_) => None,
-                        })
-                        .and_then(|output| output.result_sets.get(result_index))
-                    else {
-                        return Vec::new();
-                    };
-                    range
-                        .map(|row_index| {
-                            render_result_row(
-                                tab_id,
-                                result_index,
-                                result,
-                                row_index,
-                                widths_for_rows.as_slice(),
-                                palette,
-                                cx,
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                },
-            ),
-        )
-        .flex_1()
-        .min_h(px(0.0))
-        .track_scroll(&scroll_handle)
-        .into_any_element()
+        let offset_y = f32::from(scroll_handle.offset().y);
+        let first = ((-offset_y / ROW_HEIGHT).floor() as usize)
+            .saturating_sub(8)
+            .min(row_count);
+        let last = (first + 160).min(row_count);
+        div()
+            .relative()
+            .w(px(width))
+            .min_w(px(width))
+            .h(px(row_count as f32 * ROW_HEIGHT))
+            .children((first..last).map(|row_index| {
+                div()
+                    .absolute()
+                    .top(px(row_index as f32 * ROW_HEIGHT))
+                    .left_0()
+                    .w_full()
+                    .child(render_result_row(
+                        tab_id,
+                        result_index,
+                        result,
+                        row_index,
+                        widths.as_slice(),
+                        palette,
+                        cx,
+                    ))
+            }))
+            .into_any_element()
     };
-
     div()
         .flex()
         .flex_col()
@@ -199,20 +183,32 @@ pub(super) fn result_grid(
         .overflow_hidden()
         .child(
             div()
-                .id(("result-hscroll", tab_id))
+                .id(("result-header-clip", tab_id))
+                .w_full()
+                .flex_shrink_0()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .relative()
+                        .left(scroll_handle.offset().x)
+                        .w(px(width))
+                        .child(header),
+                ),
+        )
+        .child(
+            div()
+                .id(("result-body", tab_id))
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_h(px(0.0))
-                .overflow_x_scroll()
-                .child(
-                    div()
-                        .w(px(width))
-                        .flex()
-                        .flex_col()
-                        .child(header)
-                        .child(rows),
-                ),
+                .overflow_scroll()
+                .track_scroll(&scroll_handle)
+                .map(|mut this| {
+                    this.style().allow_concurrent_scroll = Some(true);
+                    this
+                })
+                .child(rows),
         )
         .font_family(mono.clone())
         .into_any_element()

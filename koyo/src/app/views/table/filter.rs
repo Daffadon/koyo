@@ -97,12 +97,28 @@ pub(super) fn render_filter_bar(
                         .secondary()
                         .compact()
                         .label("Clear")
-                        .disabled(locked || table.filters.is_empty())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.clear_filters(tab_id, cx);
+                        .disabled(table.loading)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.request_clear_filters(tab_id, window, cx);
                         })),
                 ),
         );
+    }
+
+    let filter_hint = if !table.filter_error.is_empty() {
+        Some((table.filter_error.clone(), palette.danger))
+    } else if !table.staged.is_empty() {
+        Some((
+            "Apply or discard staged edits to change filters.".to_string(),
+            palette.warning,
+        ))
+    } else if table.loading {
+        Some(("Loading filtered rows...".to_string(), palette.muted))
+    } else {
+        None
+    };
+    if let Some((message, color)) = filter_hint {
+        bar = bar.child(div().text_xs().text_color(color).child(message));
     }
 
     if !table.filters.is_empty() {
@@ -127,10 +143,12 @@ pub(super) fn render_filter_bar(
                         .ghost()
                         .compact()
                         .icon(IconName::Close)
-                        .disabled(locked)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_filter(tab_id, column.clone(), cx);
-                        })),
+                        .disabled(table.loading)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.request_remove_filter(tab_id, column.clone(), window, cx);
+                            },
+                        )),
                         "Remove filter",
                     ))
             }),

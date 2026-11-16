@@ -8,6 +8,7 @@ use crate::app::*;
 
 fn column_row(
     column: &ColumnInfo,
+    foreign_key: bool,
     mono: &SharedString,
     palette: &Palette,
     last: bool,
@@ -55,6 +56,19 @@ fn column_row(
                     .child("PK"),
             )
         })
+        .when(foreign_key, |this| {
+            this.child(
+                div()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_sm()
+                    .bg(palette.warning.opacity(0.16))
+                    .text_xs()
+                    .font_family(mono.clone())
+                    .text_color(palette.warning)
+                    .child("FK"),
+            )
+        })
         .into_any_element()
 }
 
@@ -71,8 +85,12 @@ fn table_sheet(
 
     let mut body = v_flex();
     for (index, column) in visible_columns.iter().enumerate() {
+        let foreign_key = table.foreign_keys.iter().any(|fk| {
+            fk.schema == table.schema && fk.table == table.table && fk.column == column.name
+        });
         body = body.child(column_row(
             column,
+            foreign_key,
             mono,
             palette,
             index + 1 == visible_columns.len(),
@@ -330,6 +348,124 @@ fn relationships_panel(table: &TableTab, palette: &Palette, mono: &SharedString)
     panel.into_any_element()
 }
 
+fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> AnyElement {
+    let mut panel = v_flex()
+        .flex_1()
+        .min_w(px(340.0))
+        .rounded_md()
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.background)
+        .overflow_hidden()
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Indexes and constraints"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child(format!("{}", table.indexes.len())),
+                ),
+        );
+
+    if table.foreign_keys_loading {
+        panel = panel.child(
+            div()
+                .px_3()
+                .py_4()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Loading indexes..."),
+        );
+    } else if table.indexes.is_empty() {
+        panel = panel.child(
+            div()
+                .px_3()
+                .py_4()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("No indexes reported for this relation."),
+        );
+    } else {
+        for (index, item) in table.indexes.iter().enumerate() {
+            panel = panel.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .when(index > 0, |this| {
+                        this.border_t_1().border_color(palette.border)
+                    })
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .flex_1()
+                            .text_xs()
+                            .font_family(mono.clone())
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(item.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .max_w(px(240.0))
+                            .flex_shrink_0()
+                            .text_right()
+                            .text_xs()
+                            .font_family(mono.clone())
+                            .text_color(palette.muted)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(item.columns.join(", ")),
+                    )
+                    .when(item.primary, |this| {
+                        this.child(
+                            div()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(palette.accent_soft)
+                                .text_xs()
+                                .font_family(mono.clone())
+                                .text_color(palette.accent)
+                                .child("PK"),
+                        )
+                    })
+                    .when(item.unique && !item.primary, |this| {
+                        this.child(
+                            div()
+                                .px_2()
+                                .py_0p5()
+                                .rounded_sm()
+                                .bg(palette.success.opacity(0.14))
+                                .text_xs()
+                                .font_family(mono.clone())
+                                .text_color(palette.success)
+                                .child("UNIQUE"),
+                        )
+                    }),
+            );
+        }
+    }
+
+    panel.into_any_element()
+}
+
 pub(super) fn render_diagram(
     tab_id: u64,
     table: &TableTab,
@@ -350,7 +486,14 @@ pub(super) fn render_diagram(
                 .gap_4()
                 .flex_wrap()
                 .child(table_sheet(table, page, palette, mono))
-                .child(relationships_panel(table, palette, mono)),
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(340.0))
+                        .gap_4()
+                        .child(relationships_panel(table, palette, mono))
+                        .child(indexes_panel(table, palette, mono)),
+                ),
         )
         .child(
             div()

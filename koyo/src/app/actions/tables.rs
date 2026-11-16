@@ -4,6 +4,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
 use koyo_core::models::{FilterOperator, GridChange, TableFilter, TableSort};
+use uuid::Uuid;
 
 use crate::app::*;
 
@@ -15,7 +16,17 @@ impl KoyoApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(profile) = self.active_tab().and_then(|tab| tab.profile.clone()) else {
+        let source = self.active_tab().map(|tab| {
+            (
+                tab.profile.clone(),
+                tab.connection.clone(),
+                tab.tables.clone(),
+                tab.schema_objects.clone(),
+                tab.metadata_groups.clone(),
+                tab.expanded.clone(),
+            )
+        });
+        let Some((Some(profile), shared, tables, objects, metadata, expanded)) = source else {
             self.status = "Open a connection before browsing tables.".into();
             cx.notify();
             return;
@@ -23,24 +34,31 @@ impl KoyoApp {
         if self.focus_existing_table(profile.id, &schema, &table, cx) {
             return;
         }
-        // Keep the explorer populated while the new table session connects.
-        let explorer = self.active_tab().map(|tab| {
-            (
-                tab.tables.clone(),
-                tab.schema_objects.clone(),
-                tab.metadata_groups.clone(),
-                tab.expanded.clone(),
-            )
-        });
         let mut tab =
             self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
-        if let Some((tables, objects, metadata, expanded)) = explorer {
-            tab.tables = tables;
-            tab.schema_objects = objects;
-            tab.metadata_groups = metadata;
-            tab.expanded = expanded;
+        tab.tables = tables;
+        tab.schema_objects = objects;
+        tab.metadata_groups = metadata;
+        tab.expanded = expanded;
+        if let Some(connection) = shared {
+            tab.connection = Some(connection);
+            tab.connecting = false;
+            if let TabBody::Table(table_tab) = &mut tab.body {
+                table_tab.loading = false;
+            }
+            let tab_id = self.add_tab(tab, self.focus);
+            self.persist_state(cx);
+            cx.notify();
+            self.load_page(tab_id, 0, Vec::new(), None, cx);
+            return;
         }
         let tab_id = self.add_tab(tab, self.focus);
+        let operation_id = Uuid::new_v4();
+        if let Some(index) = self.tab_index(tab_id)
+            && let TabBody::Table(table_tab) = &mut self.tabs[index].body
+        {
+            table_tab.operation_id = Some(operation_id);
+        }
         self.persist_state(cx);
         cx.notify();
 
@@ -71,6 +89,7 @@ impl KoyoApp {
                 let page = database::load_table_page(
                     &manager,
                     info.session_id,
+                    operation_id,
                     schema_for_task,
                     table_for_task,
                     0,
@@ -90,6 +109,14 @@ impl KoyoApp {
                 };
                 match result {
                     Ok((info, tables, objects, metadata, page)) => {
+                        let operation_matches = this.tabs[index]
+                            .body
+                            .table()
+                            .is_some_and(|table| table.operation_id == Some(operation_id));
+                        if !operation_matches {
+                            this.disconnect_session(info.session_id);
+                            return;
+                        }
                         this.tabs[index].connection = Some(info);
                         this.tabs[index].profile = Some(profile.clone());
                         this.tabs[index].connecting = false;
@@ -97,6 +124,10 @@ impl KoyoApp {
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
+                            if table_tab.operation_id != Some(operation_id) {
+                                return;
+                            }
+                            table_tab.operation_id = None;
                             table_tab.loading = false;
                             match page {
                                 Ok(page) => table_tab.page = Some(page),
@@ -109,6 +140,9 @@ impl KoyoApp {
                         this.tabs[index].notice = error.clone();
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
                             table_tab.loading = false;
+                            if table_tab.operation_id == Some(operation_id) {
+                                table_tab.operation_id = None;
+                            }
                         }
                     }
                 }
@@ -178,8 +212,11 @@ impl KoyoApp {
             return;
         }
         table.loading = true;
+        table.filter_error.clear();
         table.load_sequence += 1;
         let sequence = table.load_sequence;
+        let operation_id = Uuid::new_v4();
+        table.operation_id = Some(operation_id);
         let schema = table.schema.clone();
         let name = table.table.clone();
         let filters_for_task = filters.clone();
@@ -194,6 +231,7 @@ impl KoyoApp {
                 database::load_table_page(
                     &manager,
                     connection.session_id,
+                    operation_id,
                     schema,
                     name,
                     offset,
@@ -210,9 +248,10 @@ impl KoyoApp {
                 let TabBody::Table(table) = &mut this.tabs[index].body else {
                     return;
                 };
-                if table.load_sequence != sequence {
+                if table.load_sequence != sequence || table.operation_id != Some(operation_id) {
                     return;
                 }
+                table.operation_id = None;
                 table.loading = false;
                 match result {
                     Ok(page) => {
@@ -239,16 +278,16 @@ impl KoyoApp {
             };
             table.mode = mode;
             mode == TableMode::Diagram
-                && table.foreign_keys.is_empty()
+                && !table.diagram_metadata_loaded
                 && !table.foreign_keys_loading
         };
         if should_load {
-            self.load_foreign_keys(tab_id, cx);
+            self.load_diagram_metadata(tab_id, cx);
         }
         cx.notify();
     }
 
-    fn load_foreign_keys(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    fn load_diagram_metadata(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -263,24 +302,48 @@ impl KoyoApp {
         }
         let schema = table.schema.clone();
         let table_name = table.table.clone();
+        let session_id = connection.session_id;
         table.foreign_keys_loading = true;
+        table.diagram_metadata_loaded = true;
+        table.diagram_generation = table.diagram_generation.wrapping_add(1);
+        let generation = table.diagram_generation;
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
             tab_id,
             async move {
-                database::list_foreign_keys(&manager, connection.session_id, &schema, &table_name)
-                    .await
+                let foreign_keys =
+                    database::list_foreign_keys(&manager, session_id, &schema, &table_name).await?;
+                let indexes =
+                    database::list_indexes(&manager, session_id, &schema, &table_name).await?;
+                Ok::<_, String>((foreign_keys, indexes))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
+                if this.tabs[index]
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.session_id)
+                    != Some(session_id)
+                {
+                    return;
+                }
                 if let TabBody::Table(table) = &mut this.tabs[index].body {
+                    if table.diagram_generation != generation {
+                        return;
+                    }
                     table.foreign_keys_loading = false;
                     match result {
-                        Ok(foreign_keys) => table.foreign_keys = foreign_keys,
-                        Err(error) => this.tabs[index].notice = error,
+                        Ok((foreign_keys, indexes)) => {
+                            table.foreign_keys = foreign_keys;
+                            table.indexes = indexes;
+                        }
+                        Err(error) => {
+                            table.diagram_metadata_loaded = false;
+                            this.tabs[index].notice = error;
+                        }
                     }
                 }
                 cx.notify();
@@ -336,6 +399,8 @@ impl KoyoApp {
             })
             .collect::<Vec<_>>();
         table.loading = true;
+        let operation_id = Uuid::new_v4();
+        table.operation_id = Some(operation_id);
         cx.notify();
 
         let manager = self.manager.clone();
@@ -344,7 +409,15 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                database::apply_grid_changes(&manager, session_id, schema, name, changes).await
+                database::apply_grid_changes(
+                    &manager,
+                    session_id,
+                    operation_id,
+                    schema,
+                    name,
+                    changes,
+                )
+                .await
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -353,6 +426,10 @@ impl KoyoApp {
                 let TabBody::Table(table) = &mut this.tabs[index].body else {
                     return;
                 };
+                if table.operation_id != Some(operation_id) {
+                    return;
+                }
+                table.operation_id = None;
                 table.loading = false;
                 match result {
                     Ok(summary) => {
@@ -530,6 +607,7 @@ impl KoyoApp {
         };
         table.filter_column = Some(column);
         table.filter_operator = default_operator(info.filter_kind);
+        table.filter_error.clear();
         table.filter_value.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
@@ -549,6 +627,7 @@ impl KoyoApp {
             return;
         };
         table.filter_operator = operator;
+        table.filter_error.clear();
         cx.notify();
     }
 
@@ -565,11 +644,14 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
-            this_notice(
-                &mut self.tabs[index],
-                "Apply or discard staged edits to filter.",
-            );
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
+            return;
+        }
+        if !table.staged.is_empty() {
+            table.filter_error = "Apply or discard staged edits to change filters.".into();
             cx.notify();
             return;
         }
@@ -580,13 +662,13 @@ impl KoyoApp {
             .filter_column
             .and_then(|index| page.columns.get(index))
         else {
-            this_notice(&mut self.tabs[index], "Choose a column to filter.");
+            table.filter_error = "Choose a column to filter.".into();
             cx.notify();
             return;
         };
         let value = table.filter_value.read(cx).value().to_string();
         if filter_needs_value(table.filter_operator) && value.is_empty() {
-            this_notice(&mut self.tabs[index], "Enter a filter value.");
+            table.filter_error = "Enter a filter value.".into();
             cx.notify();
             return;
         }
@@ -605,7 +687,12 @@ impl KoyoApp {
         self.load_page(tab_id, 0, filters, sort, cx);
     }
 
-    pub(crate) fn clear_filters(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn request_clear_filters(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -613,15 +700,63 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
             return;
         }
-        table.filters.clear();
-        let sort = table.sort.clone();
-        self.load_page(tab_id, 0, Vec::new(), sort, cx);
+        if !table.filters.is_empty() && !table.staged.is_empty() {
+            self.confirm(
+                window,
+                cx,
+                "Discard staged changes?",
+                "Clearing filters reloads this page and discards staged edits.",
+                move |this, cx| {
+                    this.discard_changes(tab_id, cx);
+                    this.clear_filters_now(tab_id, cx);
+                },
+            );
+            return;
+        }
+        self.clear_filters_now(tab_id, cx);
+        if let Some(index) = self.tab_index(tab_id)
+            && let TabBody::Table(table) = &mut self.tabs[index].body
+        {
+            table.filter_value.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+        cx.notify();
     }
 
-    pub(crate) fn remove_filter(&mut self, tab_id: u64, column: String, cx: &mut Context<Self>) {
+    fn clear_filters_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let had_filters = !table.filters.is_empty();
+        table.filters.clear();
+        table.filter_column = None;
+        table.filter_operator = FilterOperator::Contains;
+        table.filter_error.clear();
+        let sort = table.sort.clone();
+        if had_filters {
+            self.load_page(tab_id, 0, Vec::new(), sort, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn request_remove_filter(
+        &mut self,
+        tab_id: u64,
+        column: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -629,10 +764,37 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.loading || !table.staged.is_empty() {
+        table.filter_error.clear();
+        if table.loading {
+            table.filter_error = "Wait for the current page load to finish.".into();
+            cx.notify();
             return;
         }
+        if !table.staged.is_empty() {
+            self.confirm(
+                window,
+                cx,
+                "Discard staged changes?",
+                "Removing this filter reloads the page and discards staged edits.",
+                move |this, cx| {
+                    this.discard_changes(tab_id, cx);
+                    this.remove_filter_now(tab_id, column.clone(), cx);
+                },
+            );
+            return;
+        }
+        self.remove_filter_now(tab_id, column, cx);
+    }
+
+    fn remove_filter_now(&mut self, tab_id: u64, column: String, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
         table.filters.retain(|filter| filter.column != column);
+        table.filter_error.clear();
         let filters = table.filters.clone();
         let sort = table.sort.clone();
         self.load_page(tab_id, 0, filters, sort, cx);

@@ -324,7 +324,7 @@ impl KoyoApp {
                                 .max_width(px(260.0))
                                 .selected_index(selected)
                                 .children(tabs)
-                                .suffix(widgets::button_tooltip(
+                                .suffix(widgets::top_bar_tooltip(
                                     ("top-tooltip-new", index),
                                     Button::new(("pane-new-tab", index))
                                         .ghost()
@@ -347,7 +347,7 @@ impl KoyoApp {
                             Pane::Primary => IconName::ArrowRight,
                             Pane::Secondary => IconName::ArrowLeft,
                         };
-                        this.child(widgets::button_tooltip(
+                        this.child(widgets::top_bar_tooltip(
                             ("top-tooltip-move", index),
                             Button::new(format!("move-tab-{pane:?}"))
                                 .flex_shrink_0()
@@ -366,7 +366,7 @@ impl KoyoApp {
                                 .flex_shrink_0()
                                 .items_center()
                                 .gap_1()
-                                .child(widgets::button_tooltip(
+                                .child(widgets::top_bar_tooltip(
                                     "top-tooltip-ai",
                                     Button::new("toggle-ai")
                                         .when(ai_open, |this| this.secondary())
@@ -378,7 +378,7 @@ impl KoyoApp {
                                         })),
                                     if ai_open { "Hide AI" } else { "Show AI" },
                                 ))
-                                .child(widgets::button_tooltip(
+                                .child(widgets::top_bar_tooltip(
                                     "top-tooltip-split-vertical",
                                     Button::new("split-vertical")
                                         .when(split == Some(SplitAxis::Vertical), |this| {
@@ -398,7 +398,7 @@ impl KoyoApp {
                                         "Split vertically"
                                     },
                                 ))
-                                .child(widgets::button_tooltip(
+                                .child(widgets::top_bar_tooltip(
                                     "top-tooltip-split-horizontal",
                                     Button::new("split-horizontal")
                                         .when(split == Some(SplitAxis::Horizontal), |this| {

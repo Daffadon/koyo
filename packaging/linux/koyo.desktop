@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Koyo
+Comment=Native database client for PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle
+Exec=koyo
+Icon=koyo
+Terminal=false
+Categories=Development;Database;
+Keywords=database;sql;postgres;mysql;sqlite;oracle;sqlserver;
+StartupWMClass=koyo

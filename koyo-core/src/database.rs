@@ -7,14 +7,14 @@ use crate::{
         ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionInfo, ConnectionProfile, Engine,
         FilterKind, FilterOperator, ForeignKeyInfo, GridChange, GridRow, MetadataGroup,
         MetadataItem, QueryOutput, QueryResultSet, SchemaObject, SchemaObjectKind, TableFilter,
-        TablePage, TableSort, TableSummary,
+        TableIndexInfo, TablePage, TableSort, TableSummary,
     },
     mssql, mysql, oracle,
     sqlite::{self, SqliteSession},
 };
 use futures_util::TryStreamExt;
 use rustls_tokio_postgres::{MakeRustlsConnect, config_platform_verifier};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -33,6 +33,8 @@ struct SessionEntry {
     session: Mutex<Option<DbSession>>,
     cancel: Mutex<Option<CancelState>>,
     query_active: AtomicBool,
+    active_operation: std::sync::Mutex<Option<Uuid>>,
+    cancelled_operations: std::sync::Mutex<HashSet<Uuid>>,
 }
 
 #[derive(Clone)]
@@ -63,19 +65,50 @@ enum DbSession {
     Oracle(oracle::OracleSession),
 }
 
-struct QueryGuard<'a>(&'a AtomicBool);
+struct QueryGuard<'a> {
+    active: &'a AtomicBool,
+    operation: &'a std::sync::Mutex<Option<Uuid>>,
+    operation_id: Uuid,
+}
 
 impl<'a> QueryGuard<'a> {
-    fn begin(active: &'a AtomicBool) -> Self {
+    fn begin(
+        active: &'a AtomicBool,
+        operation: &'a std::sync::Mutex<Option<Uuid>>,
+        operation_id: Uuid,
+    ) -> Self {
         active.store(true, Ordering::SeqCst);
-        Self(active)
+        let mut slot = operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(operation_id);
+        Self {
+            active,
+            operation,
+            operation_id,
+        }
     }
 }
 
 impl Drop for QueryGuard<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        let mut slot = self
+            .operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *slot == Some(self.operation_id) {
+            *slot = None;
+        }
+        self.active.store(false, Ordering::SeqCst);
     }
+}
+
+fn operation_cancelled_before_start(entry: &SessionEntry, operation_id: Uuid) -> bool {
+    entry
+        .cancelled_operations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&operation_id)
 }
 
 async fn get_session(
@@ -111,6 +144,8 @@ pub async fn connect(
                     session: Mutex::new(Some(DbSession::Sqlite(session))),
                     cancel: Mutex::new(Some(cancel)),
                     query_active: AtomicBool::new(false),
+                    active_operation: std::sync::Mutex::new(None),
+                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -133,6 +168,8 @@ pub async fn connect(
                     session: Mutex::new(Some(DbSession::Mysql(session))),
                     cancel: Mutex::new(Some(cancel)),
                     query_active: AtomicBool::new(false),
+                    active_operation: std::sync::Mutex::new(None),
+                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -155,6 +192,8 @@ pub async fn connect(
                     session: Mutex::new(Some(DbSession::Mssql(session))),
                     cancel: Mutex::new(Some(cancel)),
                     query_active: AtomicBool::new(false),
+                    active_operation: std::sync::Mutex::new(None),
+                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -173,6 +212,8 @@ pub async fn connect(
                     session: Mutex::new(Some(DbSession::Oracle(session))),
                     cancel: Mutex::new(Some(CancelState::Oracle)),
                     query_active: AtomicBool::new(false),
+                    active_operation: std::sync::Mutex::new(None),
+                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -252,6 +293,8 @@ pub async fn connect(
             session: Mutex::new(Some(DbSession::Postgres(client))),
             cancel: Mutex::new(Some(cancel)),
             query_active: AtomicBool::new(false),
+            active_operation: std::sync::Mutex::new(None),
+            cancelled_operations: std::sync::Mutex::new(HashSet::new()),
         }),
     );
     Ok(ConnectionInfo {
@@ -278,6 +321,11 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
             // would keep the connection alive forever if the task never ends.
             *entry.cancel.lock().await = None;
             entry.query_active.store(false, Ordering::SeqCst);
+            entry
+                .cancelled_operations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
             manager.sessions.lock().await.remove(&session_id);
             return Err(
                 "A database operation is still running. Cancel it and try again.".to_string(),
@@ -287,14 +335,35 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
     *session = None;
     *entry.cancel.lock().await = None;
     entry.query_active.store(false, Ordering::SeqCst);
+    entry
+        .cancelled_operations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
     manager.sessions.lock().await.remove(&session_id);
     Ok(())
 }
 
-pub async fn cancel_query(manager: &SessionManager, session_id: Uuid) -> Result<(), String> {
+pub async fn cancel_query(
+    manager: &SessionManager,
+    session_id: Uuid,
+    operation_id: Uuid,
+) -> Result<bool, String> {
     let entry = get_session(manager, session_id).await?;
+    let active = *entry
+        .active_operation
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !entry.query_active.load(Ordering::SeqCst) {
-        return Err("No query is running.".into());
+        return Err("That operation is no longer running.".into());
+    }
+    if active != Some(operation_id) {
+        entry
+            .cancelled_operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(operation_id);
+        return Ok(false);
     }
     let cancel = entry
         .cancel
@@ -304,7 +373,8 @@ pub async fn cancel_query(manager: &SessionManager, session_id: Uuid) -> Result<
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel))
         .await
-        .map_err(|_| "Cancellation timed out.".to_string())?
+        .map_err(|_| "Cancellation timed out.".to_string())??;
+    Ok(true)
 }
 
 async fn send_cancel(cancel: &CancelState) -> Result<(), String> {
@@ -444,6 +514,77 @@ pub async fn list_foreign_keys(
             oracle::list_foreign_keys(oracle_session, schema, table).await
         }
     }
+}
+
+pub async fn list_indexes(
+    manager: &SessionManager,
+    session_id: Uuid,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let entry = get_session(manager, session_id).await?;
+    let mut session_guard = entry.session.lock().await;
+    let session = session_guard
+        .as_mut()
+        .ok_or_else(|| "Session is no longer connected.".to_string())?;
+    match session {
+        DbSession::Postgres(client) => list_indexes_pg(client, schema, table).await,
+        DbSession::Sqlite(sqlite_session) => {
+            sqlite::list_indexes(sqlite_session, schema, table).await
+        }
+        DbSession::Mysql(mysql_session) => mysql::list_indexes(mysql_session, schema, table).await,
+        DbSession::Mssql(mssql_session) => mssql::list_indexes(mssql_session, schema, table).await,
+        DbSession::Oracle(oracle_session) => {
+            oracle::list_indexes(oracle_session, schema, table).await
+        }
+    }
+}
+
+async fn list_indexes_pg(
+    client: &Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let rows = client
+        .query(
+            "SELECT ic.relname::text, a.attname::text,
+                    i.indisunique, i.indisprimary
+             FROM pg_catalog.pg_index i
+             JOIN pg_catalog.pg_class t ON t.oid = i.indrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace
+             JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+             JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS key(attnum, position)
+               ON key.position <= i.indnkeyatts::bigint
+             LEFT JOIN pg_catalog.pg_attribute a
+               ON a.attrelid = t.oid AND a.attnum = key.attnum
+             WHERE n.nspname = $1 AND t.relname = $2
+             ORDER BY ic.relname, key.position",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut indexes: Vec<TableIndexInfo> = Vec::new();
+    for row in rows {
+        let name: String = row.try_get(0).map_err(|error| error.to_string())?;
+        let column: String = row
+            .try_get::<_, Option<String>>(1)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| "(expression)".into());
+        let unique = row.try_get(2).map_err(|error| error.to_string())?;
+        let primary = row.try_get(3).map_err(|error| error.to_string())?;
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+            index.columns.push(column);
+        } else {
+            indexes.push(TableIndexInfo {
+                name,
+                columns: vec![column],
+                unique,
+                primary,
+            });
+        }
+    }
+    Ok(indexes)
 }
 
 async fn list_columns_pg(client: &Client) -> Result<Vec<ColumnCatalogEntry>, String> {
@@ -748,6 +889,7 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
 pub async fn load_table_page(
     manager: &SessionManager,
     session_id: Uuid,
+    operation_id: Uuid,
     schema: String,
     table: String,
     offset: u32,
@@ -757,13 +899,17 @@ pub async fn load_table_page(
 ) -> Result<TablePage, String> {
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
+    if operation_cancelled_before_start(&entry, operation_id) {
+        return Err("Operation was cancelled before it started.".into());
+    }
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::load_page(
                 sqlite_session,
                 &schema,
@@ -776,7 +922,8 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::load_page(
                 mysql_session,
                 &schema,
@@ -789,7 +936,8 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::load_page(
                 mssql_session,
                 &schema,
@@ -802,7 +950,8 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::load_page(
                 oracle_session,
                 &schema,
@@ -834,13 +983,14 @@ pub async fn load_table_page(
     )?;
 
     let rows = {
-        let _active = QueryGuard::begin(&entry.query_active);
+        let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
         client
             .query(&sql, &sql_params(&params))
             .await
             .map_err(|error| error.to_string())?
     };
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
+    let mut budget = QueryBudget::new();
     for row in rows {
         let version: String = if is_view {
             String::new()
@@ -850,10 +1000,16 @@ pub async fn load_table_page(
         let value_offset = if is_view { 0 } else { 1 };
         let values = (0..meta.columns.len())
             .map(|index| {
-                row.try_get::<_, Option<String>>(index + value_offset)
-                    .map_err(|error| error.to_string())
+                let value = row
+                    .try_get::<_, Option<String>>(index + value_offset)
+                    .map_err(|error| error.to_string())?;
+                Ok(if meta.columns[index].primary_key {
+                    value
+                } else {
+                    budget.page_cell(value)
+                })
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, String>>()?;
         let key = meta
             .columns
             .iter()
@@ -1036,6 +1192,7 @@ fn build_order_by(
 pub async fn apply_grid_changes(
     manager: &SessionManager,
     session_id: Uuid,
+    operation_id: Uuid,
     schema: String,
     table: String,
     changes: Vec<GridChange>,
@@ -1045,25 +1202,32 @@ pub async fn apply_grid_changes(
     }
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
+    if operation_cancelled_before_start(&entry, operation_id) {
+        return Err("Operation was cancelled before it started.".into());
+    }
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::apply_changes(sqlite_session, &schema, &table, changes).await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::apply_changes(mysql_session, &schema, &table, changes).await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::apply_changes(mssql_session, &schema, &table, changes).await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::apply_changes(oracle_session, &schema, &table, changes).await;
         }
     };
@@ -1071,8 +1235,14 @@ pub async fn apply_grid_changes(
     if !meta.editable() {
         return Err("Grid editing requires a table with a primary key.".into());
     }
+    let open_transaction = postgres_transaction_assigned(client).await?;
+    if open_transaction {
+        return Err(
+            "Commit or roll back the SQL tab's transaction before applying grid edits.".into(),
+        );
+    }
 
-    let _active = QueryGuard::begin(&entry.query_active);
+    let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
     let transaction = client
         .transaction()
         .await
@@ -1126,6 +1296,7 @@ pub async fn apply_grid_changes(
 pub async fn run_sql(
     manager: &SessionManager,
     session_id: Uuid,
+    operation_id: Uuid,
     sql: String,
 ) -> Result<QueryOutput, String> {
     if sql.trim().is_empty() {
@@ -1133,30 +1304,37 @@ pub async fn run_sql(
     }
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
+    if operation_cancelled_before_start(&entry, operation_id) {
+        return Err("Operation was cancelled before it started.".into());
+    }
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::run_sql(sqlite_session, &sql).await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::run_sql(mysql_session, &sql).await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::run_sql(mssql_session, &sql).await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active = QueryGuard::begin(&entry.query_active);
+            let _active =
+                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::run_sql(oracle_session, &sql).await;
         }
     };
     let cancel = entry.cancel.lock().await.clone();
-    let _active = QueryGuard::begin(&entry.query_active);
+    let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
     collect_query(client, &sql, cancel.as_ref()).await
 }
 
@@ -1249,6 +1427,15 @@ async fn collect_query(
 
 /// Postgres' top-level Display is only "db error"; the useful message,
 /// SQLSTATE, detail, hint, and position live on the nested `DbError`.
+async fn postgres_transaction_assigned(client: &Client) -> Result<bool, String> {
+    client
+        .query_one("SELECT txid_current_if_assigned() IS NOT NULL", &[])
+        .await
+        .map_err(|error| error.to_string())?
+        .try_get::<_, bool>(0)
+        .map_err(|error| error.to_string())
+}
+
 fn format_pg_error(error: &tokio_postgres::Error) -> String {
     let Some(db_error) = error.as_db_error() else {
         return error.to_string();
@@ -1290,7 +1477,12 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
                         JOIN pg_catalog.pg_am am ON am.oid = oc.opcmethod
                         WHERE am.amname = 'btree'
                           AND oc.opcdefault
-                          AND oc.opcintype = COALESCE(base.oid, ty.oid)
+                          AND (
+                              oc.opcintype = COALESCE(base.oid, ty.oid)
+                              -- varchar/char share text's btree opclass.
+                              OR (ty.typcategory = 'S'
+                                  AND oc.opcintype = 'pg_catalog.text'::regtype)
+                          )
                     ),
                     NOT a.attnotnull, a.attgenerated <> '', a.attidentity <> '',
                     COALESCE(i.indisprimary AND a.attnum = ANY(i.indkey), false)
@@ -1500,9 +1692,24 @@ fn quote_relation(schema: &str, table: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColumnInfo, FilterKind, FilterOperator, TableFilter, TableMeta, TableSort,
+        ColumnInfo, FilterKind, FilterOperator, QueryGuard, TableFilter, TableMeta, TableSort,
         build_table_page_query, quote_identifier, valid_type_name,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn query_guard_tracks_only_its_own_operation() {
+        let active = AtomicBool::new(false);
+        let operation = std::sync::Mutex::new(None);
+        let id = uuid::Uuid::new_v4();
+
+        let guard = QueryGuard::begin(&active, &operation, id);
+        assert!(active.load(Ordering::SeqCst));
+        assert_eq!(*operation.lock().expect("operation lock"), Some(id));
+        drop(guard);
+        assert!(!active.load(Ordering::SeqCst));
+        assert_eq!(*operation.lock().expect("operation lock"), None);
+    }
 
     fn column(
         name: &str,
@@ -1741,7 +1948,8 @@ mod tests {
     async fn applies_staged_grid_changes_and_rejects_stale_rows() {
         use super::{
             build_delete, build_insert, build_update, ensure_one_row, list_database_metadata_pg,
-            list_foreign_keys_pg, list_schema_objects_pg, load_table_meta, sql_params,
+            list_foreign_keys_pg, list_indexes_pg, list_schema_objects_pg, load_table_meta,
+            sql_params,
         };
         use crate::models::SchemaObjectKind;
         use std::collections::BTreeMap;
@@ -1802,6 +2010,10 @@ mod tests {
                 .iter()
                 .any(|key| key.table == child && key.referenced_table == table)
         );
+        let indexes = list_indexes_pg(&client, "public", &table)
+            .await
+            .expect("list indexes");
+        assert!(indexes.iter().any(|index| index.primary));
 
         let groups = list_database_metadata_pg(&client)
             .await
@@ -1867,6 +2079,32 @@ mod tests {
             .await
             .expect("execute over-length filter query");
         assert!(code_rows.is_empty());
+
+        client
+            .batch_execute("BEGIN")
+            .await
+            .expect("begin user transaction");
+        client
+            .execute(
+                &format!("UPDATE public.{table} SET note = note WHERE false"),
+                &[],
+            )
+            .await
+            .expect("assign transaction id");
+        assert!(
+            super::postgres_transaction_assigned(&client)
+                .await
+                .expect("read transaction state")
+        );
+        client
+            .batch_execute("ROLLBACK")
+            .await
+            .expect("roll back user transaction");
+        assert!(
+            !super::postgres_transaction_assigned(&client)
+                .await
+                .expect("read transaction state")
+        );
 
         let row = client
             .query_one(

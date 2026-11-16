@@ -129,6 +129,9 @@ fn main() {
             options.window_bounds = Some(WindowBounds::Windowed(bounds));
             options.window_decorations = Some(WindowDecorations::Client);
             options.app_id = Some("koyo".into());
+            options.icon = image::load_from_memory(include_bytes!("../assets/koyo.png"))
+                .ok()
+                .map(|icon| Arc::new(icon.to_rgba8()));
             let mut titlebar = TitleBar::title_bar_options();
             titlebar.title = Some("Koyo".into());
             options.titlebar = Some(titlebar);

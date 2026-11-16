@@ -2,7 +2,8 @@ use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, Engine, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
-    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TablePage, TableSort, TableSummary,
+    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
+    TableSummary,
 };
 use chrono::{NaiveDate, TimeDelta};
 use std::collections::BTreeMap;
@@ -268,6 +269,52 @@ fn mssql_string(row: &tiberius::Row, index: usize) -> Result<String, String> {
         .map(str::to_string)
 }
 
+pub async fn list_indexes(
+    session: &mut MssqlSession,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let mut query = Query::new(
+        "SELECT i.name, c.name, i.is_unique, i.is_primary_key
+         FROM sys.indexes i
+         JOIN sys.tables t ON t.object_id = i.object_id
+         JOIN sys.schemas s ON s.schema_id = t.schema_id
+         JOIN sys.index_columns ic
+           ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+         JOIN sys.columns c
+           ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+         WHERE s.name = @P1 AND t.name = @P2 AND ic.is_included_column = 0
+         ORDER BY i.name, ic.key_ordinal",
+    );
+    query.bind(schema);
+    query.bind(table);
+    let results = query
+        .query(&mut session.client)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_results()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut indexes: Vec<TableIndexInfo> = Vec::new();
+    for row in results.into_iter().next().unwrap_or_default() {
+        let name = mssql_string(&row, 0)?;
+        let column = mssql_string(&row, 1)?;
+        let unique = row.get::<bool, _>(2).unwrap_or(false);
+        let primary = row.get::<bool, _>(3).unwrap_or(false);
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+            index.columns.push(column);
+        } else {
+            indexes.push(TableIndexInfo {
+                name,
+                columns: vec![column],
+                unique,
+                primary,
+            });
+        }
+    }
+    Ok(indexes)
+}
+
 pub async fn list_database_metadata(
     session: &mut MssqlSession,
 ) -> Result<Vec<MetadataGroup>, String> {
@@ -437,10 +484,19 @@ pub async fn load_page(
         .await
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(results.first().map_or(0, Vec::len));
+    let mut budget = QueryBudget::new();
     for row in results.into_iter().next().unwrap_or_default() {
         let values = row
             .cells()
-            .map(|(_, value)| column_text(value))
+            .enumerate()
+            .map(|(index, (_, value))| {
+                let value = column_text(value);
+                if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                }
+            })
             .collect::<Vec<_>>();
         let key = meta
             .primary_indices
@@ -574,7 +630,10 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
                 let result = &mut result_sets[index];
                 if result.rows.len() >= QUERY_ROW_LIMIT || budget.exhausted() {
                     truncated = true;
-                    break;
+                    // Tiberius has no Drop-based cancellation. Keep reading
+                    // and discard rows so the TDS stream reaches DONE and the
+                    // connection stays usable for the next statement.
+                    continue;
                 }
                 let mut values = Vec::new();
                 for (_, value) in row.cells() {
@@ -1141,6 +1200,11 @@ mod tests {
             keys.iter()
                 .all(|key| key.schema == "dbo" && key.table == "users")
         );
+
+        let indexes = list_indexes(&mut session, "dbo", "users")
+            .await
+            .expect("list indexes");
+        assert!(indexes.iter().any(|index| index.primary));
 
         let groups = list_database_metadata(&mut session)
             .await

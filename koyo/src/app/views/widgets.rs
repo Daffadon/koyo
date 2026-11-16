@@ -1,7 +1,7 @@
 use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputGroup, InputState, Textarea};
 use gpui_kit::component::{Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -11,15 +11,38 @@ use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
 /// Per-button tooltip with a short delay. Anchored to the button itself so
 /// the popup follows the control when the toolbar reflows.
-pub(super) fn button_tooltip(
+fn tooltip_button(
     _id: impl Into<ElementId>,
     button: Button,
     label: impl Into<SharedString>,
+    placement: Option<gpui_kit::base::Placement>,
 ) -> AnyElement {
-    button
+    let button = button
         .tooltip(label)
-        .tooltip_show_delay(std::time::Duration::from_millis(120))
-        .into_any_element()
+        .tooltip_show_delay(std::time::Duration::from_millis(120));
+    match placement {
+        Some(placement) => button.tooltip_placement(placement),
+        None => button,
+    }
+    .into_any_element()
+}
+
+pub(super) fn button_tooltip(
+    id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    tooltip_button(id, button, label, None)
+}
+
+/// Top-bar controls use an above placement so their tooltip does not cover
+/// the Run query button in the row below.
+pub(super) fn top_bar_tooltip(
+    id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    tooltip_button(id, button, label, Some(gpui_kit::base::Placement::Top))
 }
 
 /// Theme-aware monogram used in the title bar and sidebar.
@@ -88,7 +111,7 @@ pub(super) fn render_cell_editor(
             v_flex()
                 .relative()
                 .occlude()
-                .w(px(520.0))
+                .w(px(720.0))
                 .rounded_lg()
                 .border_1()
                 .border_color(palette.border)
@@ -141,9 +164,11 @@ pub(super) fn render_cell_editor(
                         }),
                 )
                 .child(
-                    div()
+                    InputGroup::new("cell-value-group")
                         .w_full()
-                        .child(Input::new(&edit.input).w_full().disabled(!value_mode)),
+                        .min_h(px(120.0))
+                        .input(Textarea::new(&edit.input))
+                        .disabled(!value_mode),
                 )
                 .when(insert, |this| {
                     this.child(

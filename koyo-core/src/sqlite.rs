@@ -5,7 +5,7 @@ use crate::common::{
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, FilterKind, FilterOperator, ForeignKeyInfo,
     GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet, SchemaObject,
-    SchemaObjectKind, TableFilter, TablePage, TableSort, TableSummary,
+    SchemaObjectKind, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use rusqlite::{
     Connection, InterruptHandle, OptionalExtension, TransactionBehavior, params_from_iter,
@@ -145,6 +145,61 @@ pub async fn list_foreign_keys(
         list_foreign_keys_sync(&connection, &table)
     })
     .await
+}
+
+pub async fn list_indexes(
+    session: &SqliteSession,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    if schema != "main" {
+        return Err("SQLite only supports the main schema.".into());
+    }
+    let connection = session.connection.clone();
+    let table = table.to_string();
+    blocking(move || {
+        let connection = lock(&connection)?;
+        list_indexes_sync(&connection, &table)
+    })
+    .await
+}
+
+fn list_indexes_sync(connection: &Connection, table: &str) -> Result<Vec<TableIndexInfo>, String> {
+    let mut statement = connection
+        .prepare("SELECT name, \"unique\", origin FROM pragma_index_list(?1) ORDER BY name")
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([table], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)? != 0,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut indexes = Vec::new();
+    for (name, unique, origin) in rows {
+        let mut columns_statement = connection
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")
+            .map_err(|error| error.to_string())?;
+        let columns = columns_statement
+            .query_map([&name], |row| row.get::<_, Option<String>>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|column| column.unwrap_or_else(|| "(expression)".into()))
+            .collect();
+        indexes.push(TableIndexInfo {
+            name,
+            columns,
+            unique,
+            primary: origin == "pk",
+        });
+    }
+    Ok(indexes)
 }
 
 pub async fn list_database_metadata(session: &SqliteSession) -> Result<Vec<MetadataGroup>, String> {
@@ -382,10 +437,18 @@ fn load_page_sync(
         .query(params_from_iter(params.iter()))
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
+    let mut budget = QueryBudget::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
         let values = (0..meta.columns.len())
-            .map(|index| cell_text(row, index))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|index| {
+                let value = cell_text(row, index)?;
+                Ok(if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let key = meta
             .primary_indices
             .iter()
@@ -935,6 +998,7 @@ mod tests {
                      parent_id INTEGER REFERENCES parents(id),
                      manager_id INTEGER REFERENCES children(id)
                  );
+                 CREATE UNIQUE INDEX children_parent_idx ON children(parent_id);
                  CREATE VIEW parent_names AS SELECT id FROM parents;
                  CREATE TRIGGER parents_insert AFTER INSERT ON parents
                  BEGIN SELECT 1; END;",
@@ -977,6 +1041,17 @@ mod tests {
         assert!(keys.iter().any(|key| key.column == "manager_id"
             && key.referenced_table == "children"
             && key.referenced_column == "id"));
+
+        let indexes = list_indexes(&session, "main", "children")
+            .await
+            .expect("list indexes");
+        assert!(
+            indexes
+                .iter()
+                .any(|index| index.name == "children_parent_idx"
+                    && index.unique
+                    && index.columns == vec!["parent_id".to_string()])
+        );
 
         let groups = list_database_metadata(&session)
             .await

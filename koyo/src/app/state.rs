@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
     ConnectionInfo, ConnectionProfile, Engine, FilterOperator, ForeignKeyInfo, MetadataGroup,
-    QueryOutput, SchemaObject, TableFilter, TablePage, TableSort, TableSummary,
+    QueryOutput, SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use koyo_core::{ProfileStore, SessionManager};
 
@@ -92,6 +92,7 @@ pub(crate) struct QueryTab {
     pub(crate) error: String,
     pub(crate) running: bool,
     pub(crate) cancelling: bool,
+    pub(crate) operation_id: Option<Uuid>,
     pub(crate) duration_ms: Option<u128>,
     pub(crate) results_collapsed: bool,
     pub(crate) pending_run: bool,
@@ -111,17 +112,22 @@ pub(crate) struct TableTab {
     pub(crate) mode: TableMode,
     pub(crate) foreign_keys: Vec<ForeignKeyInfo>,
     pub(crate) foreign_keys_loading: bool,
+    pub(crate) indexes: Vec<TableIndexInfo>,
+    pub(crate) diagram_metadata_loaded: bool,
+    pub(crate) diagram_generation: u64,
     pub(crate) page: Option<TablePage>,
     pub(crate) filters: Vec<TableFilter>,
     pub(crate) sort: Option<TableSort>,
     pub(crate) staged: Vec<StagedChange>,
     pub(crate) loading: bool,
     pub(crate) cancelling: bool,
+    pub(crate) operation_id: Option<Uuid>,
     pub(crate) next_insert_id: u64,
     pub(crate) load_sequence: u64,
     pub(crate) filter_column: Option<usize>,
     pub(crate) filter_operator: FilterOperator,
     pub(crate) filter_value: Entity<InputState>,
+    pub(crate) filter_error: String,
     pub(crate) column_widths: Vec<f32>,
     pub(crate) resize_pointer_x: Option<f32>,
     pub(crate) resize_column: Option<usize>,
@@ -139,6 +145,7 @@ pub(crate) struct Tab {
     pub(crate) expanded: BTreeSet<String>,
     pub(crate) notice: String,
     pub(crate) connecting: bool,
+    pub(crate) catalog_generation: u64,
     pub(crate) pending_starter: Option<SharedString>,
     pub(crate) body: TabBody,
 }
@@ -182,7 +189,7 @@ pub(crate) enum CellTarget {
 pub(crate) struct CellEdit {
     pub(crate) tab_id: u64,
     pub(crate) target: CellTarget,
-    pub(crate) input: Entity<InputState>,
+    pub(crate) input: Entity<TextareaState>,
     pub(crate) is_null: bool,
     pub(crate) insert_is_default: bool,
     pub(crate) title: SharedString,

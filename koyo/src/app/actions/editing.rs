@@ -1,4 +1,4 @@
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::TextareaState;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
@@ -57,9 +57,10 @@ impl KoyoApp {
         let is_null = current.is_none();
         let text = current.unwrap_or_default();
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .placeholder("Value")
                 .default_value(text)
+                .auto_grow(6, 18)
         });
         let handle = input.read(cx).focus_handle(cx);
         let row_data = &page.rows[row];
@@ -122,9 +123,10 @@ impl KoyoApp {
             Some(Some(value)) => (false, false, value),
         };
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
+            TextareaState::new(window, cx)
                 .placeholder("Value")
                 .default_value(text)
+                .auto_grow(6, 18)
         });
         let handle = input.read(cx).focus_handle(cx);
         self.cell_edit = Some(CellEdit {

@@ -2,6 +2,13 @@
 
 - Status: Accepted
 - Date: 2026-11-08
+- Amended: 2026-11-16
+
+## Amendment: pane-shared sessions
+
+Split panes now duplicate the active tab onto the same live session. New SQL tabs and table tabs opened in a focused pane reuse that pane's live session instead of connecting again. Sessions are reference-counted by tabs; the last tab that holds a session closes it.
+
+This intentionally trades transaction isolation between tabs for continuity when splitting. A future transaction UI must account for shared session state.
 
 ## Context
 

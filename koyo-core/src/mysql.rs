@@ -2,7 +2,8 @@ use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
-    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TablePage, TableSort, TableSummary,
+    SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
+    TableSummary,
 };
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Params, Row as MysqlRow, SslOpts, TxOpts, Value};
@@ -199,6 +200,41 @@ pub async fn list_foreign_keys(
         .collect()
 }
 
+pub async fn list_indexes(
+    session: &mut MysqlSession,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<TableIndexInfo>, String> {
+    let rows: Vec<MysqlRow> = session
+        .conn
+        .exec(
+            "SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE
+             FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+             ORDER BY INDEX_NAME, SEQ_IN_INDEX",
+            Params::Positional(vec![Value::from(schema), Value::from(table)]),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut indexes: Vec<TableIndexInfo> = Vec::new();
+    for row in rows {
+        let name = row_string(&row, 0)?;
+        let column = row_string(&row, 1)?;
+        let unique = row_string(&row, 2)? != "1";
+        if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
+            index.columns.push(column);
+        } else {
+            indexes.push(TableIndexInfo {
+                primary: name == "PRIMARY",
+                name,
+                columns: vec![column],
+                unique,
+            });
+        }
+    }
+    Ok(indexes)
+}
+
 pub async fn list_database_metadata(
     session: &mut MysqlSession,
 ) -> Result<Vec<MetadataGroup>, String> {
@@ -334,9 +370,17 @@ pub async fn load_page(
         .await
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(rows.len());
+    let mut budget = QueryBudget::new();
     for row in rows {
         let values = (0..meta.columns.len())
-            .map(|index| row.as_ref(index).and_then(value_text))
+            .map(|index| {
+                let value = row.as_ref(index).and_then(value_text);
+                if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                }
+            })
             .collect::<Vec<_>>();
         let key = meta
             .primary_indices
@@ -944,6 +988,10 @@ mod tests {
             keys.iter()
                 .all(|key| key.schema == "koyo" && key.table == "users")
         );
+        let indexes = list_indexes(&mut session, "koyo", "users")
+            .await
+            .expect("list indexes");
+        assert!(indexes.iter().any(|index| index.primary));
 
         let groups = list_database_metadata(&mut session)
             .await

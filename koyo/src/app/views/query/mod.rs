@@ -18,31 +18,31 @@ mod json;
 
 const COLLAPSED_RESULTS_HEIGHT: f32 = 38.0;
 
-/// Fixed result row height so the virtual list's uniform scroll math is exact.
-/// Matches `table::ROW_HEIGHT`: `text_sm` line box (0.875rem x 1.618
-/// ~= 23px) + `py_1` (8px) + the 1px bottom border.
+/// Fixed result row height for the table view. Matches `table::ROW_HEIGHT`:
+/// `text_sm` line box (0.875rem x 1.618 ~= 23px) + `py_1` (8px) + the 1px
+/// bottom border.
 pub(super) const ROW_HEIGHT: f32 = 32.0;
 
 thread_local! {
-    /// Virtual list scroll handles keyed by (tab id, result set index) so the
-    /// scroll position survives the re-render GPUI runs every frame.
-    static RESULT_SCROLL_HANDLES: RefCell<HashMap<(u64, usize), UniformListScrollHandle>> =
+    /// Two-axis result-grid handles. The JSON view keeps its uniform list
+    /// handle above; the table view uses one scroller for both axes.
+    static RESULT_GRID_SCROLL_HANDLES: RefCell<HashMap<(u64, usize), ScrollHandle>> =
         RefCell::new(HashMap::new());
 }
 
-pub(super) fn result_scroll_handle(tab_id: u64, result_index: usize) -> UniformListScrollHandle {
-    RESULT_SCROLL_HANDLES.with(|handles| {
+pub(super) fn result_grid_scroll_handle(tab_id: u64, result_index: usize) -> ScrollHandle {
+    RESULT_GRID_SCROLL_HANDLES.with(|handles| {
         handles
             .borrow_mut()
             .entry((tab_id, result_index))
-            .or_insert_with(UniformListScrollHandle::new)
+            .or_insert_with(ScrollHandle::new)
             .clone()
     })
 }
 
 /// Drop handles for closed tabs and for result sets the query no longer has.
 pub(super) fn prune_scroll_handles(app: &KoyoApp) {
-    RESULT_SCROLL_HANDLES.with(|handles| {
+    RESULT_GRID_SCROLL_HANDLES.with(|handles| {
         let mut handles = handles.borrow_mut();
         handles.retain(|(tab_id, result_index), _| {
             app.tabs
@@ -104,6 +104,8 @@ pub(super) fn render(
         .icon(IconName::Play)
         .loading(running)
         .disabled(!connected || running)
+        .tooltip("Run query (Ctrl/⌘ + Enter)")
+        .tooltip_show_delay(std::time::Duration::from_millis(120))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.run_query(tab_id, cx);
         }));
