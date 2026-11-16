@@ -100,6 +100,14 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - On macOS, Xcode Command Line Tools.
 - On Windows, the MSVC Rust toolchain plus Visual Studio Build Tools with the Windows SDK.
 
+### Install a release
+
+- **Windows:** run `koyo-windows-x64-setup.exe`. It installs under `%LOCALAPPDATA%\Programs\Koyo`, adds a Start Menu shortcut, and registers an uninstall entry.
+- **macOS:** open `koyo-macos-arm64.dmg`, then drag **Koyo** to Applications.
+- **Linux:** extract `koyo-linux-x64.tar.gz` and run `./install.sh`. It installs the binary, desktop entry, and icon under `~/.local` so the app appears in the desktop application menu.
+
+Release installers are unsigned; Windows SmartScreen and macOS Gatekeeper may warn.
+
 ### Build and run
 
 ```sh
@@ -256,7 +264,7 @@ Run every hook manually with `prek run --all-files`.
 
 ### Releases
 
-The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon binaries on version tags, uploads workflow artifacts, and creates a draft GitHub release.
+The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon packages on version tags, uploads the Linux archive, Windows installer and portable zip, macOS app archive and DMG, then creates a draft GitHub release.
 
 Keep the workspace version in `koyo/Cargo.toml` and `koyo-core/Cargo.toml` equal, then push a matching tag:
 

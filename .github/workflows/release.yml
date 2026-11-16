@@ -80,12 +80,19 @@ jobs:
       - name: Build release binary
         run: cargo build --locked --release -p koyo --target ${{ matrix.target }}
 
-      - name: Package Linux binary
+      - name: Package Linux application
         if: matrix.platform == 'ubuntu-22.04'
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          tar -czf "$GITHUB_WORKSPACE/${{ matrix.archive }}" koyo
+          STAGE="$RUNNER_TEMP/koyo-linux"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.target }}/release/koyo" "$STAGE/koyo"
+          cp koyo/assets/koyo.png "$STAGE/koyo.png"
+          cp packaging/linux/koyo.desktop packaging/linux/install.sh "$STAGE/"
+          chmod +x "$STAGE/koyo" "$STAGE/install.sh"
+          tar -czf "$GITHUB_WORKSPACE/${{ matrix.archive }}" -C "$STAGE" \
+            koyo koyo.desktop koyo.png install.sh
 
       - name: Package macOS app
         if: matrix.platform == 'macos-15'
@@ -129,17 +136,54 @@ jobs:
           chmod +x "$APP/Contents/MacOS/koyo"
           tar -czf "$GITHUB_WORKSPACE/${{ matrix.archive }}" -C "$GITHUB_WORKSPACE" Koyo.app
 
+      - name: Package macOS disk image
+        if: matrix.platform == 'macos-15'
+        shell: bash
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          cp -R Koyo.app dist/Koyo.app
+          ln -s /Applications dist/Applications
+          hdiutil create -volname "Koyo" -srcfolder dist -ov -format UDZO \
+            "$GITHUB_WORKSPACE/koyo-macos-arm64.dmg"
+
       - name: Package Windows binary
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
           Compress-Archive -Path "target/${{ matrix.target }}/release/koyo.exe" -DestinationPath "${{ matrix.archive }}"
 
+      - name: Build Windows installer
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          $version = (Select-String -Path koyo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis) {
+            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          }
+          & $makensis "/DVERSION=$version" packaging/windows/koyo.nsi
+
       - name: Upload release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
+
+      - name: Upload Windows installer
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: koyo-windows-x64-setup.exe
+          path: koyo-windows-x64-setup.exe
+
+      - name: Upload macOS disk image
+        if: matrix.platform == 'macos-15'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: koyo-macos-arm64.dmg
+          path: koyo-macos-arm64.dmg
 
   publish:
     name: Publish draft release
