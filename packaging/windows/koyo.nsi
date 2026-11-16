@@ -7,15 +7,16 @@ Unicode true
 !endif
 
 Name "Koyo"
-OutFile "koyo-windows-x64-setup.exe"
+; MakeNSIS changes its working directory to this script's directory.
+OutFile "../../koyo-windows-x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Koyo"
 InstallDirRegKey HKCU "Software\Koyo" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 !define MUI_ABORTWARNING
-!define MUI_ICON "koyo/assets/koyo.ico"
-!define MUI_UNICON "koyo/assets/koyo.ico"
+!define MUI_ICON "../../koyo/assets/koyo.ico"
+!define MUI_UNICON "../../koyo/assets/koyo.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -28,7 +29,7 @@ SetCompressor /SOLID lzma
 Section "Koyo" SecMain
   SetShellVarContext current
   SetOutPath "$INSTDIR"
-  File "target/x86_64-pc-windows-msvc/release/koyo.exe"
+  File "../../target/x86_64-pc-windows-msvc/release/koyo.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateShortCut "$SMPROGRAMS\Koyo.lnk" "$INSTDIR\koyo.exe" "" "$INSTDIR\koyo.exe" 0
