@@ -21,7 +21,6 @@ pub(crate) const AI_THREAD_LIMIT: usize = 20;
 const MAX_AI_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_AI_ERROR_BYTES: usize = 16 * 1024;
 const MAX_AI_STREAM_BUFFER_BYTES: usize = 1024 * 1024;
-pub(crate) const AI_STATE_BYTES: usize = 1024 * 1024;
 pub(crate) const AI_COMPACT_CHUNK_BYTES: usize = 64 * 1024;
 pub(crate) const COMPACT_AI_PROMPT: &str = "You compact chat context for a database assistant. Summarize the conversation so far. Preserve the user's goals, database, schema and table names, constraints, decisions, SQL statements, errors, and unresolved next steps. Output only the compact summary.";
 const MERGE_AI_PROMPT: &str = "Merge the following context summaries into one compact summary. Keep database, schema, table, constraint, SQL, error, decision, and next-step details. Output only the merged summary.";
@@ -306,38 +305,6 @@ pub(crate) async fn compact(config: &AiConfig, messages: &[AiMessage]) -> Result
     Ok(summaries.join("\n\n"))
 }
 
-pub(crate) fn cap_thread_snapshots(threads: &mut [AiThread], active_id: u64, limit: usize) {
-    let mut total = threads
-        .iter()
-        .map(|thread| {
-            thread
-                .messages
-                .iter()
-                .map(|message| message.content.len())
-                .sum::<usize>()
-        })
-        .sum::<usize>();
-    while total > limit {
-        let Some(index) = threads
-            .iter()
-            .enumerate()
-            .filter(|(_, thread)| thread.id != active_id && !thread.messages.is_empty())
-            .max_by_key(|(_, thread)| {
-                thread
-                    .messages
-                    .iter()
-                    .map(|message| message.content.len())
-                    .sum::<usize>()
-            })
-            .map(|(index, _)| index)
-        else {
-            break;
-        };
-        let removed = threads[index].messages.remove(0);
-        total = total.saturating_sub(removed.content.len());
-    }
-}
-
 #[derive(Clone, Deserialize)]
 pub(crate) struct AiConfig {
     #[serde(alias = "baseUrl", alias = "endpoint")]
@@ -363,8 +330,17 @@ impl AiConfig {
         if base_url.is_empty() {
             return Err("AI configuration needs a non-empty base_url.".into());
         }
-        if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        let url = reqwest::Url::parse(base_url)
+            .map_err(|error| format!("AI base_url is invalid: {error}"))?;
+        let scheme = url.scheme();
+        if scheme != "https" && scheme != "http" {
             return Err("AI base_url must start with https:// or http://.".into());
+        }
+        if scheme == "http" {
+            let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+            if !loopback {
+                return Err("AI base_url must use https:// unless it points at localhost.".into());
+            }
         }
         if config.model.trim().is_empty() {
             return Err("AI configuration needs a non-empty model.".into());
@@ -518,7 +494,7 @@ async fn stream_inner(
     }
 
     let mut response = response;
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut done = false;
     let mut total_bytes = 0usize;
     while let Some(chunk) = response
@@ -530,16 +506,12 @@ async fn stream_inner(
         if total_bytes > MAX_AI_RESPONSE_BYTES {
             return Err("AI response exceeded the size limit.".into());
         }
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        buffer.extend_from_slice(&chunk);
         if buffer.len() > MAX_AI_STREAM_BUFFER_BYTES {
             return Err("AI stream line exceeded the size limit.".into());
         }
-        while let Some(index) = buffer.find('\n') {
-            let mut line = buffer[..index].to_string();
-            buffer.drain(..=index);
-            if line.ends_with('\r') {
-                line.pop();
-            }
+        while let Some(line) = take_sse_line(&mut buffer) {
+            let line = line?;
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
@@ -558,18 +530,38 @@ async fn stream_inner(
         }
     }
     if !done {
-        let line = buffer.trim();
+        let line = String::from_utf8(std::mem::take(&mut buffer))
+            .map_err(|error| format!("AI stream was not UTF-8: {error}"))?;
+        let line = line.trim();
         if let Some(data) = line.strip_prefix("data:") {
             let data = data.trim();
-            if data != "[DONE]" && !data.is_empty() {
+            if data == "[DONE]" {
+                done = true;
+            } else if !data.is_empty() {
                 handle_stream_data(data, sink).await?;
             }
         }
+    }
+    if !done {
+        return Err("AI stream ended before [DONE].".into());
     }
     sink.send(AiStreamEvent::Done)
         .await
         .map_err(|_| "AI stream receiver closed.".to_string())?;
     Ok(())
+}
+
+fn take_sse_line(buffer: &mut Vec<u8>) -> Option<Result<String, String>> {
+    let index = buffer.iter().position(|byte| *byte == b'\n')?;
+    let line_bytes: Vec<u8> = buffer.drain(..=index).collect();
+    let mut line = match String::from_utf8(line_bytes) {
+        Ok(line) => line,
+        Err(error) => return Some(Err(format!("AI stream was not UTF-8: {error}"))),
+    };
+    if line.ends_with('\r') {
+        line.pop();
+    }
+    Some(Ok(line))
 }
 
 async fn handle_stream_data(data: &str, sink: &Sender<AiStreamEvent>) -> Result<(), String> {
@@ -719,6 +711,8 @@ mod tests {
         assert!(AiConfig::parse(r#"{"model":"m"}"#).is_err());
         assert!(AiConfig::parse(r#"{"base_url":"https://example.test/v1","model":""}"#).is_err());
         assert!(AiConfig::parse(r#"{"base_url":"example.test","model":"m"}"#).is_err());
+        assert!(AiConfig::parse(r#"{"base_url":"http://example.test/v1","model":"m"}"#).is_err());
+        assert!(AiConfig::parse(r#"{"base_url":"http://127.0.0.1:11434/v1","model":"m"}"#).is_ok());
     }
 
     #[test]
@@ -806,30 +800,6 @@ mod tests {
             transcript_snapshot(&[AiMessage::user("x".repeat(AI_TRANSCRIPT_BYTES + 1))]).len(),
             1
         );
-    }
-
-    #[test]
-    fn thread_snapshot_cap_keeps_active_thread_and_trims_inactive_oldest() {
-        let mut threads = vec![
-            AiThread {
-                id: 1,
-                title: "old".into(),
-                messages: vec![
-                    AiMessage::user("aaaaaaaaaa"),
-                    AiMessage::assistant("bbbbbbbbbb"),
-                    AiMessage::user("cccccccccc"),
-                ],
-            },
-            AiThread {
-                id: 2,
-                title: "active".into(),
-                messages: vec![AiMessage::user("dddddddddd")],
-            },
-        ];
-        cap_thread_snapshots(&mut threads, 2, 25);
-        assert_eq!(threads[1].messages.len(), 1);
-        assert_eq!(threads[0].messages.len(), 1);
-        assert_eq!(threads[0].messages[0].content, "cccccccccc");
     }
 
     #[test]
@@ -965,6 +935,54 @@ mod tests {
             .expect("collect reply");
         server.join().expect("test server");
         assert_eq!(reply, "one two");
+    }
+
+    #[test]
+    fn sse_line_decoder_waits_for_complete_utf8() {
+        let mut buffer = vec![0xC3];
+        assert!(take_sse_line(&mut buffer).is_none());
+        buffer.extend_from_slice(&[0xA9, b'\n']);
+        let line = take_sse_line(&mut buffer)
+            .expect("complete line")
+            .expect("valid UTF-8");
+        assert_eq!(line.trim_end(), "é");
+    }
+
+    #[test]
+    fn stream_without_done_is_an_error() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = [0u8; 2048];
+            let _ = stream.read(&mut buffer);
+            let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write response");
+        });
+
+        let config = AiConfig::parse(&format!(
+            r#"{{"base_url":"http://{address}/v1","api_key":"secret","model":"test"}}"#
+        ))
+        .expect("test config");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let error = runtime
+            .block_on(complete(&config, &[AiMessage::user("hi")]))
+            .expect_err("missing DONE must fail");
+        server.join().expect("test server");
+        assert!(error.contains("before [DONE]"), "{error}");
     }
 
     #[test]

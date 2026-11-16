@@ -60,6 +60,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Responses stream into the transcript and render Markdown, including fenced code blocks. **Stop** cancels the active stream.
 - **Compact context** asks the provider to summarize the current thread and replaces it with a system summary, keeping the next request small. Long threads are split into chunks and merged.
 - Configure any OpenAI-compatible chat-completions provider from the panel settings using JSON: `base_url`, `api_key`, `model`, `system_prompt`, `temperature`, `max_tokens`, and optional `headers`.
+- Remote AI endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts such as `localhost` or `127.0.0.1`.
 - API keys, provider configuration, and chat threads are stored in encrypted application state, not in plaintext.
 - Press Enter to send and Shift+Enter for a newline. Requests run on the application runtime and do not block the UI.
 

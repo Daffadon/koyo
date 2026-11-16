@@ -59,29 +59,36 @@ impl KoyoApp {
         let Some(connection) = self.tabs[index].connection.clone() else {
             return;
         };
+        let session_id = connection.session_id;
+        self.tabs[index].catalog_generation = self.tabs[index].catalog_generation.wrapping_add(1);
+        let generation = self.tabs[index].catalog_generation;
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
             tab_id,
             async move {
-                let tables: Vec<TableSummary> =
-                    database::list_tables(&manager, connection.session_id).await?;
+                let tables: Vec<TableSummary> = database::list_tables(&manager, session_id).await?;
                 let objects: Vec<SchemaObject> =
-                    database::list_schema_objects(&manager, connection.session_id).await?;
+                    database::list_schema_objects(&manager, session_id).await?;
                 let metadata: Vec<MetadataGroup> =
-                    database::list_database_metadata(&manager, connection.session_id)
-                        .await
-                        .unwrap_or_default();
+                    database::list_database_metadata(&manager, session_id).await?;
                 let columns: Vec<ColumnCatalogEntry> =
-                    database::list_column_catalog(&manager, connection.session_id)
-                        .await
-                        .unwrap_or_default();
+                    database::list_column_catalog(&manager, session_id).await?;
                 Ok::<_, String>((tables, objects, metadata, columns))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
+                if this.tabs[index].catalog_generation != generation
+                    || this.tabs[index]
+                        .connection
+                        .as_ref()
+                        .map(|connection| connection.session_id)
+                        != Some(session_id)
+                {
+                    return;
+                }
                 match result {
                     Ok((tables, objects, metadata, columns)) => {
                         if let TabBody::Query(query) = &mut this.tabs[index].body {
@@ -247,10 +254,17 @@ impl KoyoApp {
                 };
                 match result {
                     Ok(info) => {
+                        if !this.tabs[index].connecting {
+                            this.disconnect_session(info.session_id);
+                            return;
+                        }
                         let previous_connection = this.tabs[index].connection.replace(info.clone());
                         if let Some(previous) = previous_connection {
                             if previous.session_id != info.session_id {
-                                this.disconnect_session(previous.session_id);
+                                this.disconnect_session_if_unused(
+                                    previous.session_id,
+                                    Some(tab_id),
+                                );
                             }
                         }
                         this.tabs[index].profile = Some(info.profile.clone());
@@ -282,6 +296,7 @@ impl KoyoApp {
                                 query.active_result = 0;
                                 query.running = false;
                                 query.cancelling = false;
+                                query.operation_id = None;
                                 if query.pending_run {
                                     query.pending_run = false;
                                     run_pending = true;
@@ -298,6 +313,9 @@ impl KoyoApp {
                                 table.page = None;
                                 table.staged.clear();
                                 table.loading = false;
+                                table.operation_id = None;
+                                table.foreign_keys.clear();
+                                table.foreign_keys_loading = false;
                                 table.indexes.clear();
                                 table.diagram_metadata_loaded = false;
                                 this.load_page(tab_id, offset, filters, sort, cx);

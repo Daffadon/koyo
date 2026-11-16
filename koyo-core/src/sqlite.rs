@@ -437,10 +437,18 @@ fn load_page_sync(
         .query(params_from_iter(params.iter()))
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
+    let mut budget = QueryBudget::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
         let values = (0..meta.columns.len())
-            .map(|index| cell_text(row, index))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|index| {
+                let value = cell_text(row, index)?;
+                Ok(if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let key = meta
             .primary_indices
             .iter()

@@ -4,6 +4,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{ClipboardItem, Window};
 use koyo_core::database;
 use koyo_core::models::{ConnectionProfile, Engine};
+use uuid::Uuid;
 
 use crate::app::*;
 
@@ -42,11 +43,13 @@ impl KoyoApp {
         }
         let history_sql = sql.clone();
         let history_profile = self.tabs[index].profile.clone();
+        let operation_id = Uuid::new_v4();
         let TabBody::Query(query) = &mut self.tabs[index].body else {
             return;
         };
         query.running = true;
         query.cancelling = false;
+        query.operation_id = Some(operation_id);
         query.error.clear();
         query.output = None;
         query.duration_ms = None;
@@ -60,7 +63,7 @@ impl KoyoApp {
         self.spawn_task(
             cx,
             tab_id,
-            async move { database::run_sql(&manager, session_id, sql).await },
+            async move { database::run_sql(&manager, session_id, operation_id, sql).await },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
@@ -68,6 +71,10 @@ impl KoyoApp {
                 let TabBody::Query(query) = &mut this.tabs[index].body else {
                     return;
                 };
+                if query.operation_id != Some(operation_id) {
+                    return;
+                }
+                query.operation_id = None;
                 query.running = false;
                 query.cancelling = false;
                 query.duration_ms = Some(started.elapsed().as_millis());
@@ -101,6 +108,15 @@ impl KoyoApp {
         if !running {
             return;
         }
+        let operation_id = match &self.tabs[index].body {
+            TabBody::Query(query) => query.operation_id,
+            TabBody::Table(table) => table.operation_id,
+        };
+        let Some(operation_id) = operation_id else {
+            self.tabs[index].notice = "This operation cannot be cancelled.".into();
+            cx.notify();
+            return;
+        };
         match &mut self.tabs[index].body {
             TabBody::Query(query) => query.cancelling = true,
             TabBody::Table(table) => table.cancelling = true,
@@ -115,7 +131,9 @@ impl KoyoApp {
         self.spawn_task(
             cx,
             tab_id,
-            async move { database::cancel_query(&manager, connection.session_id).await },
+            async move {
+                database::cancel_query(&manager, connection.session_id, operation_id).await
+            },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
@@ -125,12 +143,13 @@ impl KoyoApp {
                     TabBody::Table(table) => table.cancelling = false,
                 }
                 match result {
-                    Ok(()) => {
-                        if engine == Some(Engine::SqlServer) {
-                            this.disconnect_now(tab_id, cx);
-                            this.tabs[index].notice =
-                                "SQL Server cancelled the statement by closing its session. Reconnect to continue."
-                                    .into();
+                    Ok(sent) => {
+                        if sent && engine == Some(Engine::SqlServer) {
+                            this.disconnect_tabs_for_session(
+                                connection.session_id,
+                                "SQL Server cancelled the statement by closing its session. Reconnect to continue.",
+                                cx,
+                            );
                         } else {
                             this.tabs[index].notice = "Cancellation requested.".into();
                         }
@@ -200,10 +219,6 @@ impl KoyoApp {
                     .as_ref()
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| "No profile".into()),
-                engine: profile
-                    .as_ref()
-                    .map(|profile| profile.engine)
-                    .unwrap_or(Engine::Postgres),
                 success,
                 duration_ms: duration_ms.min(u64::MAX as u128) as u64,
                 at: unix_seconds(),

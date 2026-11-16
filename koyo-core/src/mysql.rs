@@ -370,9 +370,17 @@ pub async fn load_page(
         .await
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(rows.len());
+    let mut budget = QueryBudget::new();
     for row in rows {
         let values = (0..meta.columns.len())
-            .map(|index| row.as_ref(index).and_then(value_text))
+            .map(|index| {
+                let value = row.as_ref(index).and_then(value_text);
+                if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                }
+            })
             .collect::<Vec<_>>();
         let key = meta
             .primary_indices
@@ -980,6 +988,10 @@ mod tests {
             keys.iter()
                 .all(|key| key.schema == "koyo" && key.table == "users")
         );
+        let indexes = list_indexes(&mut session, "koyo", "users")
+            .await
+            .expect("list indexes");
+        assert!(indexes.iter().any(|index| index.primary));
 
         let groups = list_database_metadata(&mut session)
             .await

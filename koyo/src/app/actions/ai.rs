@@ -18,11 +18,11 @@ pub(crate) fn restore_ai_threads(saved: &PersistedState) -> (Vec<AiThread>, u64,
                 } else {
                     thread.title.clone()
                 },
-                messages: transcript_snapshot(&thread.messages),
+                messages: thread.messages.clone(),
             })
             .collect::<Vec<_>>()
     } else if !saved.ai_messages.is_empty() {
-        let messages = transcript_snapshot(&saved.ai_messages);
+        let messages = saved.ai_messages.clone();
         vec![AiThread {
             id: 1,
             title: thread_title_from_messages(&messages),
@@ -236,11 +236,9 @@ impl KoyoApp {
         self.ai_config_error.clear();
         cx.notify();
 
-        let messages = self
-            .ai_messages()
-            .iter()
+        let messages = transcript_snapshot(self.ai_messages())
+            .into_iter()
             .filter(|message| !message.content.trim().is_empty())
-            .cloned()
             .collect::<Vec<_>>();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let task = self.runtime.spawn(async move {
@@ -321,11 +319,9 @@ impl KoyoApp {
         self.persist_state(cx);
         cx.notify();
 
-        let messages = self
-            .ai_messages()
-            .iter()
+        let messages = transcript_snapshot(self.ai_messages())
+            .into_iter()
             .filter(|message| !message.content.trim().is_empty())
-            .cloned()
             .collect::<Vec<_>>();
         let (sender, mut receiver) = mpsc::channel(32);
         let task = self
@@ -456,19 +452,15 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn ai_threads_snapshot(&mut self) -> Vec<AiThread> {
-        let mut threads = self
-            .ai_threads
+    pub(crate) fn ai_threads_snapshot(&self) -> Vec<AiThread> {
+        self.ai_threads
             .iter()
             .map(|thread| AiThread {
                 id: thread.id,
                 title: thread.title.clone(),
-                messages: transcript_snapshot(&thread.messages),
+                messages: thread.messages.clone(),
             })
-            .collect::<Vec<_>>();
-        cap_thread_snapshots(&mut threads, self.ai_active_thread, AI_STATE_BYTES);
-        self.ai_threads = threads.clone();
-        threads
+            .collect()
     }
 
     fn load_ai_config_input(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -505,6 +497,21 @@ mod tests {
         assert_eq!(threads[0].messages.len(), 2);
         assert_eq!(active, 1);
         assert_eq!(next, 2);
+    }
+
+    #[test]
+    fn restore_keeps_full_thread_transcripts() {
+        let mut saved = PersistedState::default();
+        saved.ai_threads = vec![AiThread {
+            id: 1,
+            title: "Long".into(),
+            messages: (0..150)
+                .map(|index| AiMessage::user(format!("message {index}")))
+                .collect(),
+        }];
+
+        let (threads, _, _) = restore_ai_threads(&saved);
+        assert_eq!(threads[0].messages.len(), 150);
     }
 
     #[test]

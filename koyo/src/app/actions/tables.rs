@@ -4,6 +4,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
 use koyo_core::models::{FilterOperator, GridChange, TableFilter, TableSort};
+use uuid::Uuid;
 
 use crate::app::*;
 
@@ -52,6 +53,12 @@ impl KoyoApp {
             return;
         }
         let tab_id = self.add_tab(tab, self.focus);
+        let operation_id = Uuid::new_v4();
+        if let Some(index) = self.tab_index(tab_id)
+            && let TabBody::Table(table_tab) = &mut self.tabs[index].body
+        {
+            table_tab.operation_id = Some(operation_id);
+        }
         self.persist_state(cx);
         cx.notify();
 
@@ -82,6 +89,7 @@ impl KoyoApp {
                 let page = database::load_table_page(
                     &manager,
                     info.session_id,
+                    operation_id,
                     schema_for_task,
                     table_for_task,
                     0,
@@ -101,6 +109,14 @@ impl KoyoApp {
                 };
                 match result {
                     Ok((info, tables, objects, metadata, page)) => {
+                        let operation_matches = this.tabs[index]
+                            .body
+                            .table()
+                            .is_some_and(|table| table.operation_id == Some(operation_id));
+                        if !operation_matches {
+                            this.disconnect_session(info.session_id);
+                            return;
+                        }
                         this.tabs[index].connection = Some(info);
                         this.tabs[index].profile = Some(profile.clone());
                         this.tabs[index].connecting = false;
@@ -108,6 +124,10 @@ impl KoyoApp {
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
+                            if table_tab.operation_id != Some(operation_id) {
+                                return;
+                            }
+                            table_tab.operation_id = None;
                             table_tab.loading = false;
                             match page {
                                 Ok(page) => table_tab.page = Some(page),
@@ -120,6 +140,9 @@ impl KoyoApp {
                         this.tabs[index].notice = error.clone();
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
                             table_tab.loading = false;
+                            if table_tab.operation_id == Some(operation_id) {
+                                table_tab.operation_id = None;
+                            }
                         }
                     }
                 }
@@ -192,6 +215,8 @@ impl KoyoApp {
         table.filter_error.clear();
         table.load_sequence += 1;
         let sequence = table.load_sequence;
+        let operation_id = Uuid::new_v4();
+        table.operation_id = Some(operation_id);
         let schema = table.schema.clone();
         let name = table.table.clone();
         let filters_for_task = filters.clone();
@@ -206,6 +231,7 @@ impl KoyoApp {
                 database::load_table_page(
                     &manager,
                     connection.session_id,
+                    operation_id,
                     schema,
                     name,
                     offset,
@@ -222,9 +248,10 @@ impl KoyoApp {
                 let TabBody::Table(table) = &mut this.tabs[index].body else {
                     return;
                 };
-                if table.load_sequence != sequence {
+                if table.load_sequence != sequence || table.operation_id != Some(operation_id) {
                     return;
                 }
+                table.operation_id = None;
                 table.loading = false;
                 match result {
                     Ok(page) => {
@@ -275,31 +302,38 @@ impl KoyoApp {
         }
         let schema = table.schema.clone();
         let table_name = table.table.clone();
+        let session_id = connection.session_id;
         table.foreign_keys_loading = true;
         table.diagram_metadata_loaded = true;
+        table.diagram_generation = table.diagram_generation.wrapping_add(1);
+        let generation = table.diagram_generation;
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
             tab_id,
             async move {
-                let foreign_keys = database::list_foreign_keys(
-                    &manager,
-                    connection.session_id,
-                    &schema,
-                    &table_name,
-                )
-                .await?;
+                let foreign_keys =
+                    database::list_foreign_keys(&manager, session_id, &schema, &table_name).await?;
                 let indexes =
-                    database::list_indexes(&manager, connection.session_id, &schema, &table_name)
-                        .await
-                        .unwrap_or_default();
+                    database::list_indexes(&manager, session_id, &schema, &table_name).await?;
                 Ok::<_, String>((foreign_keys, indexes))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
+                if this.tabs[index]
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.session_id)
+                    != Some(session_id)
+                {
+                    return;
+                }
                 if let TabBody::Table(table) = &mut this.tabs[index].body {
+                    if table.diagram_generation != generation {
+                        return;
+                    }
                     table.foreign_keys_loading = false;
                     match result {
                         Ok((foreign_keys, indexes)) => {
@@ -365,6 +399,8 @@ impl KoyoApp {
             })
             .collect::<Vec<_>>();
         table.loading = true;
+        let operation_id = Uuid::new_v4();
+        table.operation_id = Some(operation_id);
         cx.notify();
 
         let manager = self.manager.clone();
@@ -373,7 +409,15 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                database::apply_grid_changes(&manager, session_id, schema, name, changes).await
+                database::apply_grid_changes(
+                    &manager,
+                    session_id,
+                    operation_id,
+                    schema,
+                    name,
+                    changes,
+                )
+                .await
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -382,6 +426,10 @@ impl KoyoApp {
                 let TabBody::Table(table) = &mut this.tabs[index].body else {
                     return;
                 };
+                if table.operation_id != Some(operation_id) {
+                    return;
+                }
+                table.operation_id = None;
                 table.loading = false;
                 match result {
                     Ok(summary) => {

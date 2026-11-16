@@ -484,10 +484,19 @@ pub async fn load_page(
         .await
         .map_err(|error| error.to_string())?;
     let mut page_rows = Vec::with_capacity(results.first().map_or(0, Vec::len));
+    let mut budget = QueryBudget::new();
     for row in results.into_iter().next().unwrap_or_default() {
         let values = row
             .cells()
-            .map(|(_, value)| column_text(value))
+            .enumerate()
+            .map(|(index, (_, value))| {
+                let value = column_text(value);
+                if meta.primary_indices.contains(&index) {
+                    value
+                } else {
+                    budget.page_cell(value)
+                }
+            })
             .collect::<Vec<_>>();
         let key = meta
             .primary_indices
@@ -621,7 +630,10 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
                 let result = &mut result_sets[index];
                 if result.rows.len() >= QUERY_ROW_LIMIT || budget.exhausted() {
                     truncated = true;
-                    break;
+                    // Tiberius has no Drop-based cancellation. Keep reading
+                    // and discard rows so the TDS stream reaches DONE and the
+                    // connection stays usable for the next statement.
+                    continue;
                 }
                 let mut values = Vec::new();
                 for (_, value) in row.cells() {
@@ -1188,6 +1200,11 @@ mod tests {
             keys.iter()
                 .all(|key| key.schema == "dbo" && key.table == "users")
         );
+
+        let indexes = list_indexes(&mut session, "dbo", "users")
+            .await
+            .expect("list indexes");
+        assert!(indexes.iter().any(|index| index.primary));
 
         let groups = list_database_metadata(&mut session)
             .await

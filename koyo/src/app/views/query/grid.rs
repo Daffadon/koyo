@@ -134,9 +134,9 @@ pub(super) fn result_grid(
 
     let row_count = result.rows.len();
 
-    // Result sets are capped at 1,000 rows. Rendering the rows in one two-axis
-    // scroller keeps horizontal and vertical trackpad deltas independent;
-    // GPUI's nested single-axis scrollers lock to one axis per gesture.
+    // Result sets are capped at 1,000 rows. Render only a window around the
+    // current scroll offset so a wide result does not build tens of thousands
+    // of cell elements on every frame.
     let rows: AnyElement = if row_count == 0 {
         v_flex()
             .w(px(width))
@@ -147,19 +147,31 @@ pub(super) fn result_grid(
             .child("No rows returned.")
             .into_any_element()
     } else {
-        v_flex()
+        let offset_y = f32::from(scroll_handle.offset().y);
+        let first = ((-offset_y / ROW_HEIGHT).floor() as usize)
+            .saturating_sub(8)
+            .min(row_count);
+        let last = (first + 160).min(row_count);
+        div()
+            .relative()
             .w(px(width))
             .min_w(px(width))
-            .children((0..row_count).map(|row_index| {
-                render_result_row(
-                    tab_id,
-                    result_index,
-                    result,
-                    row_index,
-                    widths.as_slice(),
-                    palette,
-                    cx,
-                )
+            .h(px(row_count as f32 * ROW_HEIGHT))
+            .children((first..last).map(|row_index| {
+                div()
+                    .absolute()
+                    .top(px(row_index as f32 * ROW_HEIGHT))
+                    .left_0()
+                    .w_full()
+                    .child(render_result_row(
+                        tab_id,
+                        result_index,
+                        result,
+                        row_index,
+                        widths.as_slice(),
+                        palette,
+                        cx,
+                    ))
             }))
             .into_any_element()
     };

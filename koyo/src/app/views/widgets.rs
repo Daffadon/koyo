@@ -11,29 +11,38 @@ use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
 /// Per-button tooltip with a short delay. Anchored to the button itself so
 /// the popup follows the control when the toolbar reflows.
-pub(super) fn button_tooltip(
+fn tooltip_button(
     _id: impl Into<ElementId>,
     button: Button,
     label: impl Into<SharedString>,
+    placement: Option<gpui_kit::base::Placement>,
 ) -> AnyElement {
-    button
+    let button = button
         .tooltip(label)
-        .tooltip_show_delay(std::time::Duration::from_millis(120))
-        .into_any_element()
+        .tooltip_show_delay(std::time::Duration::from_millis(120));
+    match placement {
+        Some(placement) => button.tooltip_placement(placement),
+        None => button,
+    }
+    .into_any_element()
+}
+
+pub(super) fn button_tooltip(
+    id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    tooltip_button(id, button, label, None)
 }
 
 /// Top-bar controls use an above placement so their tooltip does not cover
 /// the Run query button in the row below.
 pub(super) fn top_bar_tooltip(
-    _id: impl Into<ElementId>,
+    id: impl Into<ElementId>,
     button: Button,
     label: impl Into<SharedString>,
 ) -> AnyElement {
-    button
-        .tooltip(label)
-        .tooltip_placement(gpui_kit::base::Placement::Top)
-        .tooltip_show_delay(std::time::Duration::from_millis(120))
-        .into_any_element()
+    tooltip_button(id, button, label, Some(gpui_kit::base::Placement::Top))
 }
 
 /// Theme-aware monogram used in the title bar and sidebar.

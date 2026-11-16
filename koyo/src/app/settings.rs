@@ -2,7 +2,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
-use koyo_core::models::Engine;
 use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +60,6 @@ pub(crate) struct QueryHistoryEntry {
     pub(crate) sql: String,
     pub(crate) profile_id: Option<String>,
     pub(crate) profile_name: String,
-    pub(crate) engine: Engine,
     pub(crate) success: bool,
     pub(crate) duration_ms: u64,
     pub(crate) at: u64,
@@ -284,7 +282,6 @@ mod tests {
         AiMessage, AiThread, PersistedState, QueryHistoryEntry, SettingsStore, StateSaveQueue,
         TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker,
     };
-    use koyo_core::models::Engine;
     use std::sync::Arc;
 
     #[test]
@@ -309,7 +306,6 @@ mod tests {
                 sql: "select 1".into(),
                 profile_id: Some("profile".into()),
                 profile_name: "Local".into(),
-                engine: Engine::Sqlite,
                 success: true,
                 duration_ms: 3,
                 at: 42,
@@ -385,7 +381,6 @@ mod tests {
             sql: "select secret_value".into(),
             profile_id: None,
             profile_name: "No profile".into(),
-            engine: Engine::Postgres,
             success: true,
             duration_ms: 1,
             at: 1,
