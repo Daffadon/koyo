@@ -60,6 +60,7 @@ impl KoyoApp {
                 .default_value(ai_config_seed)
                 .auto_grow(6, 20)
         });
+        let explorer_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables"));
         let mut app = Self {
             store,
             save_queue,
@@ -76,6 +77,7 @@ impl KoyoApp {
             secondary_active: 0,
             primary_tab_scroll: ScrollHandle::new(),
             secondary_tab_scroll: ScrollHandle::new(),
+            explorer_filter,
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
@@ -141,6 +143,8 @@ impl KoyoApp {
             });
             allow
         });
+        cx.observe(&app.explorer_filter, |_, _, cx| cx.notify())
+            .detach();
         app
     }
 
@@ -589,6 +593,7 @@ impl KoyoApp {
         }
         if column < column_count {
             table.resize_pointer_x = Some(pointer_x);
+            table.resize_column = Some(column);
         }
         cx.notify();
     }
@@ -599,6 +604,7 @@ impl KoyoApp {
         };
         if let TabBody::Table(table) = &mut self.tabs[index].body {
             table.resize_pointer_x = None;
+            table.resize_column = None;
         }
         cx.notify();
     }
@@ -620,7 +626,6 @@ impl KoyoApp {
         tab_id: u64,
         column: usize,
         pointer_x: f32,
-        fallback_origin_x: f32,
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.tab_index(tab_id) else {
@@ -629,7 +634,12 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        let previous_x = table.resize_pointer_x.unwrap_or(fallback_origin_x);
+        if table.resize_column != Some(column) {
+            return;
+        }
+        let Some(previous_x) = table.resize_pointer_x else {
+            return;
+        };
         let Some(width) = table.column_widths.get_mut(column) else {
             return;
         };
@@ -640,6 +650,25 @@ impl KoyoApp {
         }
         table.resize_pointer_x = Some(pointer_x);
         cx.notify();
+    }
+
+    pub(crate) fn resize_active_column(
+        &mut self,
+        tab_id: u64,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let Some(column) = self.tabs[index]
+            .body
+            .table()
+            .and_then(|table| table.resize_column)
+        else {
+            return;
+        };
+        self.resize_column(tab_id, column, pointer_x, cx);
     }
 
     pub(crate) fn make_table_tab(
@@ -684,6 +713,7 @@ impl KoyoApp {
                 filter_value,
                 column_widths: Vec::new(),
                 resize_pointer_x: None,
+                resize_column: None,
                 column_resized: false,
             }),
         }

@@ -124,6 +124,7 @@ pub(crate) struct TableTab {
     pub(crate) filter_value: Entity<InputState>,
     pub(crate) column_widths: Vec<f32>,
     pub(crate) resize_pointer_x: Option<f32>,
+    pub(crate) resize_column: Option<usize>,
     pub(crate) column_resized: bool,
 }
 
@@ -212,6 +213,7 @@ pub(crate) struct KoyoApp {
     pub(crate) secondary_active: u64,
     pub(crate) primary_tab_scroll: ScrollHandle,
     pub(crate) secondary_tab_scroll: ScrollHandle,
+    pub(crate) explorer_filter: Entity<InputState>,
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,

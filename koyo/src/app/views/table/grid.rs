@@ -106,23 +106,6 @@ pub(super) fn render_grid(
                                 this.end_column_resize(tab_id, cx);
                             }),
                         )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                this.begin_column_resize(
-                                    tab_id,
-                                    column_index,
-                                    f32::from(event.position.x),
-                                    cx,
-                                );
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                            if event.dragging() {
-                                let pointer_x = f32::from(event.position.x);
-                                this.resize_column(tab_id, column_index, pointer_x, pointer_x, cx);
-                            }
-                        }))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -164,15 +147,13 @@ pub(super) fn render_grid(
                                 .id(SharedString::from(format!(
                                     "column-resize-{tab_id}-{column_index}"
                                 )))
-                                .self_stretch()
-                                .w(px(9.0))
-                                .flex_shrink_0()
-                                .border_l_1()
-                                .border_color(palette.muted.opacity(0.35))
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .w(px(6.0))
                                 .occlude()
                                 .cursor(CursorStyle::ResizeLeftRight)
-                                .hover(|style| style.bg(palette.accent_soft))
-                                .child(div().w(px(1.0)).self_stretch().bg(palette.border))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
