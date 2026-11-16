@@ -25,6 +25,9 @@ pub(crate) const RESULT_COLUMN_WIDTH: f32 = 180.0;
 pub(crate) const RESULT_ROW_RAIL_WIDTH: f32 = 56.0;
 pub(crate) const MIN_COLUMN_WIDTH: f32 = 72.0;
 pub(crate) const MAX_COLUMN_WIDTH: f32 = 640.0;
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
+pub(crate) const MIN_SIDEBAR_WIDTH: f32 = 220.0;
+pub(crate) const MAX_SIDEBAR_WIDTH: f32 = 520.0;
 
 #[derive(Clone)]
 pub(crate) struct StagedInsert {
@@ -221,6 +224,8 @@ pub(crate) struct KoyoApp {
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,
     pub(crate) sidebar_open: bool,
+    pub(crate) sidebar_width: f32,
+    pub(crate) sidebar_resizing: bool,
     pub(crate) ai_open: bool,
     pub(crate) ai_width: f32,
     pub(crate) ai_resizing: bool,

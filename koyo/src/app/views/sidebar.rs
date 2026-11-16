@@ -560,7 +560,7 @@ impl KoyoApp {
             );
 
         v_flex()
-            .w(px(300.0))
+            .w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
             .bg(palette.sidebar)

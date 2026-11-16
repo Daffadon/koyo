@@ -86,6 +86,10 @@ impl KoyoApp {
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
             sidebar_open: saved.sidebar_open,
+            sidebar_width: saved
+                .sidebar_width
+                .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
+            sidebar_resizing: false,
             ai_open: saved.ai_open,
             ai_width: saved.ai_width.clamp(MIN_AI_WIDTH, MAX_AI_WIDTH),
             ai_resizing: false,
@@ -285,6 +289,7 @@ impl KoyoApp {
             }
             .into(),
             sidebar_open: self.sidebar_open,
+            sidebar_width: self.sidebar_width,
             ai_open: self.ai_open,
             ai_width: self.ai_width,
             ai_config_json: self.ai_config_json.clone(),
@@ -444,6 +449,15 @@ impl KoyoApp {
                 self.split_ratio = ratio;
                 cx.notify();
             }
+        }
+    }
+
+    pub(crate) fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
+        let width = width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+        if (self.sidebar_width - width).abs() > 0.5 {
+            self.sidebar_width = width;
+            self.sidebar_resizing = true;
+            cx.notify();
         }
     }
 

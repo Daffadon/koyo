@@ -80,8 +80,6 @@ pub(super) fn render_filter_bar(
             "Apply or discard staged edits to change filters.".to_string(),
             palette.muted,
         ))
-    } else if table.loading {
-        Some(("Loading filtered rows...".to_string(), palette.muted))
     } else if !table.filters.is_empty() {
         Some((
             format!("{} condition(s) applied", table.filters.len()),

@@ -1,5 +1,6 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Disableable, IconName};
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -10,6 +11,17 @@ use std::rc::Rc;
 
 use super::widgets::{button_tooltip, empty_state};
 use crate::app::{KoyoApp, Palette, StagedChange, TabBody, TableMode};
+
+fn loading_state(palette: &Palette) -> AnyElement {
+    v_flex()
+        .flex_1()
+        .w_full()
+        .min_h(px(0.0))
+        .items_center()
+        .justify_center()
+        .child(Spinner::new().with_size(Size::Large).color(palette.muted))
+        .into_any_element()
+}
 
 mod diagram;
 mod filter;
@@ -283,7 +295,9 @@ pub(super) fn render(
         })
         .collect::<Vec<_>>();
 
-    let grid = if let Some(page) = &page {
+    let grid = if page.is_none() && loading {
+        loading_state(palette)
+    } else if let Some(page) = &page {
         grid::render_grid(
             tab_id,
             Rc::clone(page),
@@ -297,19 +311,34 @@ pub(super) fn render(
         )
     } else {
         empty_state(
-            if loading {
-                "Loading table"
-            } else {
-                "No table data"
-            },
-            if loading {
-                "Fetching the first page..."
-            } else {
-                "Choose a table from the explorer."
-            },
+            "No table data",
+            "Choose a table from the explorer.",
             palette,
         )
         .into_any_element()
+    };
+    let grid = if loading && page.is_some() {
+        div()
+            .relative()
+            .flex_1()
+            .w_full()
+            .min_h(px(0.0))
+            .child(grid)
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(palette.background)
+                    .child(Spinner::new().with_size(Size::Large).color(palette.muted)),
+            )
+            .into_any_element()
+    } else {
+        grid
     };
 
     let footer_mono = cx.theme().mono_font_family.clone();

@@ -8,6 +8,7 @@ use crate::app::*;
 use crate::{RunQuery, ToggleAi, ToggleSidebar};
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
+const SIDEBAR_DIVIDER_WIDTH: f32 = 6.0;
 
 struct AiResizeDrag;
 
@@ -101,7 +102,30 @@ impl Render for KoyoApp {
                     .flex_1()
                     .min_h(px(0.0))
                     .when(self.sidebar_open, |this| {
-                        this.child(self.render_sidebar(&palette, cx))
+                        this.child(self.render_sidebar(&palette, cx)).child(
+                            div()
+                                .id("sidebar-divider")
+                                .w(px(SIDEBAR_DIVIDER_WIDTH))
+                                .h_full()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor(CursorStyle::ResizeLeftRight)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.sidebar_resizing = true;
+                                        this.set_sidebar_width(
+                                            f32::from(event.position.x)
+                                                - SIDEBAR_DIVIDER_WIDTH / 2.0,
+                                            cx,
+                                        );
+                                    }),
+                                )
+                                .child(div().w(px(1.0)).h_full().bg(palette.border)),
+                        )
                     })
                     .child(self.render_workspace(window, &palette, cx))
                     .when_some(ai, |this, (divider, panel)| {
@@ -115,11 +139,20 @@ impl Render for KoyoApp {
                             this.set_ai_width(width, cx);
                         },
                     ))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        if this.sidebar_resizing {
+                            this.set_sidebar_width(
+                                f32::from(event.position.x) - SIDEBAR_DIVIDER_WIDTH / 2.0,
+                                cx,
+                            );
+                        }
+                    }))
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            if this.ai_resizing {
+                            if this.ai_resizing || this.sidebar_resizing {
                                 this.ai_resizing = false;
+                                this.sidebar_resizing = false;
                                 this.persist_state(cx);
                             }
                         }),

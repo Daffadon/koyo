@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
 
+use super::DEFAULT_SIDEBAR_WIDTH;
 use super::ai::{AiMessage, AiThread, DEFAULT_AI_CONFIG, DEFAULT_AI_WIDTH};
 
 const STATE_FILE: &str = "state.enc";
@@ -16,6 +17,8 @@ pub(crate) const HISTORY_LIMIT: usize = 100;
 pub(crate) struct PersistedState {
     pub(crate) theme: String,
     pub(crate) sidebar_open: bool,
+    #[serde(default = "default_sidebar_width")]
+    pub(crate) sidebar_width: f32,
     pub(crate) ai_open: bool,
     #[serde(default = "default_ai_width")]
     pub(crate) ai_width: f32,
@@ -40,6 +43,7 @@ impl Default for PersistedState {
         Self {
             theme: "dark".into(),
             sidebar_open: true,
+            sidebar_width: default_sidebar_width(),
             ai_open: false,
             ai_width: default_ai_width(),
             ai_config_json: default_ai_config(),
@@ -272,6 +276,10 @@ fn default_ai_width() -> f32 {
     DEFAULT_AI_WIDTH
 }
 
+fn default_sidebar_width() -> f32 {
+    DEFAULT_SIDEBAR_WIDTH
+}
+
 fn default_next_ai_thread_id() -> u64 {
     1
 }
@@ -289,6 +297,7 @@ mod tests {
         let state = PersistedState {
             theme: "light".into(),
             sidebar_open: false,
+            sidebar_width: 340.0,
             ai_open: true,
             ai_width: 520.0,
             ai_config_json: r#"{"base_url":"https://example.test/v1","model":"test"}"#.into(),
@@ -332,6 +341,7 @@ mod tests {
 
         assert_eq!(decoded.theme, "light");
         assert!(!decoded.sidebar_open);
+        assert_eq!(decoded.sidebar_width, 340.0);
         assert!(decoded.ai_open);
         assert_eq!(decoded.ai_width, 520.0);
         assert_eq!(
@@ -354,6 +364,7 @@ mod tests {
         let state: PersistedState = serde_json::from_slice(b"{}").expect("defaults");
         assert_eq!(state.theme, "dark");
         assert!(state.sidebar_open);
+        assert_eq!(state.sidebar_width, crate::app::DEFAULT_SIDEBAR_WIDTH);
         assert!(!state.ai_open);
         assert_eq!(state.ai_width, crate::app::DEFAULT_AI_WIDTH);
         assert_eq!(state.ai_config_json, crate::app::DEFAULT_AI_CONFIG);
