@@ -90,16 +90,8 @@ impl KoyoApp {
                                 .borrow_mut()
                                 .replace(&tables, &objects, &columns);
                         }
-                        let mut expanded = objects
-                            .iter()
-                            .map(|object| object.schema.clone())
-                            .collect::<BTreeSet<_>>();
-                        expanded.insert("Schemas".to_string());
-                        let schemas = expanded.iter().cloned().collect::<Vec<_>>();
-                        for schema in schemas {
-                            expanded.insert(format!("{schema}/Table"));
-                        }
-                        this.tabs[index].expanded = expanded;
+                        // The explorer starts closed; expand all is an explicit action.
+                        this.tabs[index].expanded.clear();
                         this.tabs[index].tables = tables;
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
@@ -134,6 +126,29 @@ impl KoyoApp {
         } else {
             self.tabs[index].expanded.remove(&schema);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn set_all_expanded(&mut self, tab_id: u64, expanded: bool, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        if !expanded {
+            self.tabs[index].expanded.clear();
+            cx.notify();
+            return;
+        }
+
+        let mut keys = BTreeSet::new();
+        keys.insert("Schemas".to_string());
+        for object in &self.tabs[index].schema_objects {
+            keys.insert(object.schema.clone());
+            keys.insert(format!("{}/{:?}", object.schema, object.kind));
+        }
+        for group in &self.tabs[index].metadata_groups {
+            keys.insert(format!("group:{}", group.name));
+        }
+        self.tabs[index].expanded = keys;
         cx.notify();
     }
 

@@ -9,7 +9,7 @@ use koyo_core::models::{GridRow, TablePage, TableSort};
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::super::widgets::value_text;
+use super::super::widgets::{button_tooltip, value_text};
 use super::{ACTION_WIDTH, CELL_WIDTH, ROW_HEIGHT, ROW_RAIL_WIDTH, table_scroll_handle};
 use crate::app::*;
 
@@ -106,23 +106,6 @@ pub(super) fn render_grid(
                                 this.end_column_resize(tab_id, cx);
                             }),
                         )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                this.begin_column_resize(
-                                    tab_id,
-                                    column_index,
-                                    f32::from(event.position.x),
-                                    cx,
-                                );
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                            if event.dragging() {
-                                let pointer_x = f32::from(event.position.x);
-                                this.resize_column(tab_id, column_index, pointer_x, pointer_x, cx);
-                            }
-                        }))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -164,15 +147,13 @@ pub(super) fn render_grid(
                                 .id(SharedString::from(format!(
                                     "column-resize-{tab_id}-{column_index}"
                                 )))
-                                .self_stretch()
-                                .w(px(9.0))
-                                .flex_shrink_0()
-                                .border_l_1()
-                                .border_color(palette.muted.opacity(0.35))
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .w(px(6.0))
                                 .occlude()
                                 .cursor(CursorStyle::ResizeLeftRight)
-                                .hover(|style| style.bg(palette.accent_soft))
-                                .child(div().w(px(1.0)).self_stretch().bg(palette.border))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -419,7 +400,8 @@ fn render_data_row(
                 .justify_center()
                 .border_r_1()
                 .border_color(palette.border)
-                .child(
+                .child(button_tooltip(
+                    ("tooltip-delete-row", row_index),
                     Button::new(SharedString::from(format!("delete-row-{row_index}")))
                         .ghost()
                         .compact()
@@ -428,15 +410,15 @@ fn render_data_row(
                         } else {
                             IconName::Delete
                         })
-                        .tooltip(if deleted {
-                            "Undo delete"
-                        } else {
-                            "Stage delete"
-                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.toggle_row_delete(tab_id, row_index, window, cx);
                         })),
-                ),
+                    if deleted {
+                        "Undo delete"
+                    } else {
+                        "Stage delete"
+                    },
+                )),
         );
     }
 
@@ -535,16 +517,17 @@ fn render_insert_row(
                 .justify_center()
                 .border_r_1()
                 .border_color(palette.border)
-                .child(
+                .child(button_tooltip(
+                    ("tooltip-discard-insert", local_id),
                     Button::new(SharedString::from(format!("discard-insert-{local_id}")))
                         .ghost()
                         .compact()
                         .icon(IconName::Delete)
-                        .tooltip("Discard new row")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.discard_insert(tab_id, local_id, cx);
                         })),
-                ),
+                    "Discard new row",
+                )),
         );
     }
 

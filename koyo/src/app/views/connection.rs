@@ -8,7 +8,7 @@ use gpui_kit::*;
 use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::Engine;
 
-use super::widgets::{field_label, input_field};
+use super::widgets::{button_tooltip, field_label, input_field};
 use crate::app::{ConnectionDialog, KoyoApp, Palette, engine_label};
 
 const ENGINES: [Engine; 6] = [
@@ -173,28 +173,30 @@ pub(super) fn render_dialog(
                                         .text_ellipsis()
                                         .child(profile.name.clone()),
                                 )
-                                .child(
+                                .child(button_tooltip(
+                                    ("tooltip-profile-edit", index),
                                     Button::new(("profile-edit", index))
                                         .ghost()
                                         .compact()
                                         .icon(IconName::Settings2)
-                                        .tooltip("Edit connection")
                                         .disabled(busy)
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.edit_profile_in_dialog(edit_id, window, cx);
                                         })),
-                                )
-                                .child(
+                                    "Edit connection",
+                                ))
+                                .child(button_tooltip(
+                                    ("tooltip-profile-delete", index),
                                     Button::new(("profile-delete", index))
                                         .ghost()
                                         .compact()
                                         .icon(IconName::Delete)
-                                        .tooltip("Remove connection")
                                         .disabled(busy)
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.delete_profile(delete_id, window, cx);
                                         })),
-                                ),
+                                    "Remove connection",
+                                )),
                         )
                         .child(
                             div()

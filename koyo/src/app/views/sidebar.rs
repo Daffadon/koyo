@@ -4,6 +4,7 @@ use gpui_kit::InteractiveElement;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::{Disableable, Icon, IconName, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -80,6 +81,10 @@ impl KoyoApp {
             TabBody::Query(_) => None,
         };
         let live = connection.is_some();
+        let has_explorer =
+            live || !tables.is_empty() || !objects.is_empty() || !tab.metadata_groups.is_empty();
+        let search = self.explorer_filter.read(cx).value().trim().to_lowercase();
+        let searching = !search.is_empty();
         let history = &self.history;
         let reconnect_profile = if matches!(tab.body, TabBody::Table(_)) && !live {
             profile.as_ref().map(|profile| profile.id)
@@ -98,6 +103,12 @@ impl KoyoApp {
 
         let mut by_schema: BTreeMap<String, Vec<koyo_core::models::SchemaObject>> = BTreeMap::new();
         for object in &objects {
+            if searching
+                && !object.name.to_lowercase().contains(&search)
+                && !object.schema.to_lowercase().contains(&search)
+            {
+                continue;
+            }
             by_schema
                 .entry(object.schema.clone())
                 .or_default()
@@ -106,7 +117,7 @@ impl KoyoApp {
 
         let mut schema_nodes = v_flex().gap_1();
         for (schema, schema_objects) in &by_schema {
-            let is_expanded = expanded.contains(schema);
+            let is_expanded = searching || expanded.contains(schema);
             let schema_for_toggle = schema.clone();
             let toggle_id = SharedString::from(format!("schema-{schema}"));
             schema_nodes = schema_nodes.child(
@@ -159,7 +170,7 @@ impl KoyoApp {
                     continue;
                 }
                 let category_key = format!("{schema}/{kind:?}");
-                let category_expanded = expanded.contains(&category_key);
+                let category_expanded = searching || expanded.contains(&category_key);
                 let category_for_toggle = category_key.clone();
                 schema_nodes = schema_nodes.child(
                     div()
@@ -267,7 +278,7 @@ impl KoyoApp {
             }
         }
 
-        let schemas_expanded = expanded.contains("Schemas");
+        let schemas_expanded = searching || expanded.contains("Schemas");
         let mut tree = v_flex()
             .id("schema-tree")
             .flex_1()
@@ -275,45 +286,63 @@ impl KoyoApp {
             .p_2()
             .gap_1();
 
-        let schemas_key = "Schemas".to_string();
-        tree = tree.child(
-            div()
-                .id("schema-group-schemas")
-                .flex()
-                .items_center()
-                .gap_2()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.panel))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_expanded(tab_id, schemas_key.clone(), !schemas_expanded, cx);
-                }))
-                .child(
-                    Icon::new(if schemas_expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .with_size(Size::Small),
-                )
-                .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
-                .child(div().flex_1().text_sm().child("Schemas"))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(palette.muted)
-                        .child(format!("{}", by_schema.len())),
-                ),
-        );
-        if schemas_expanded {
-            tree = tree.child(div().ml_3().child(schema_nodes));
+        if !searching || !by_schema.is_empty() {
+            let schemas_key = "Schemas".to_string();
+            tree = tree.child(
+                div()
+                    .id("schema-group-schemas")
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.panel))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_expanded(tab_id, schemas_key.clone(), !schemas_expanded, cx);
+                    }))
+                    .child(
+                        Icon::new(if schemas_expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .with_size(Size::Small),
+                    )
+                    .child(Icon::new(IconName::FolderOpen).with_size(Size::Small))
+                    .child(div().flex_1().text_sm().child("Schemas"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(palette.muted)
+                            .child(format!("{}", by_schema.len())),
+                    ),
+            );
+            if schemas_expanded {
+                tree = tree.child(div().ml_3().child(schema_nodes));
+            }
         }
 
+        let mut visible_groups = 0;
         for group in &tab.metadata_groups {
+            let group_name_matches = group.name.to_lowercase().contains(&search);
+            let group_items = group
+                .items
+                .iter()
+                .filter(|item| {
+                    !searching
+                        || group_name_matches
+                        || item.name.to_lowercase().contains(&search)
+                        || item.detail.to_lowercase().contains(&search)
+                })
+                .collect::<Vec<_>>();
+            if searching && group_items.is_empty() {
+                continue;
+            }
+            visible_groups += 1;
             let key = format!("group:{}", group.name);
-            let is_expanded = expanded.contains(&key);
+            let is_expanded = searching || expanded.contains(&key);
             let key_for_toggle = key.clone();
             tree = tree.child(
                 div()
@@ -343,11 +372,11 @@ impl KoyoApp {
                         div()
                             .text_xs()
                             .text_color(palette.muted)
-                            .child(format!("{}", group.items.len())),
+                            .child(format!("{}", group_items.len())),
                     ),
             );
             if is_expanded {
-                for item in &group.items {
+                for item in group_items {
                     tree = tree.child(
                         div()
                             .flex()
@@ -378,6 +407,17 @@ impl KoyoApp {
                     );
                 }
             }
+        }
+
+        if searching && by_schema.is_empty() && visible_groups == 0 {
+            tree = tree.child(
+                div()
+                    .px_2()
+                    .py_4()
+                    .text_xs()
+                    .text_color(palette.muted)
+                    .child(format!("No tables match \"{search}\".")),
+            );
         }
 
         if objects.is_empty() && tab.metadata_groups.is_empty() {
@@ -417,16 +457,17 @@ impl KoyoApp {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("HISTORY ({})", history.len())),
                             )
-                            .child(
+                            .child(super::widgets::button_tooltip(
+                                "tooltip-clear-history",
                                 Button::new("clear-history")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::Delete)
-                                    .tooltip("Clear query history")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.request_clear_history(window, cx);
                                     })),
-                            ),
+                                "Clear query history",
+                            )),
                     )
                     .child(
                         v_flex()
@@ -491,21 +532,32 @@ impl KoyoApp {
                                                     .child(detail),
                                             ),
                                     )
-                                    .child(
+                                    .child(super::widgets::button_tooltip(
+                                        ("tooltip-history-run", index),
                                         Button::new(("history-run", index))
                                             .ghost()
                                             .compact()
                                             .icon(IconName::Play)
-                                            .tooltip("Re-run query")
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 cx.stop_propagation();
                                                 this.rerun_history(index, window, cx);
                                             })),
-                                    )
+                                        "Re-run query",
+                                    ))
                             })),
                     ),
             )
         };
+
+        let search_field = Input::new(&self.explorer_filter)
+            .w_full()
+            .cleanable(true)
+            .with_size(Size::Small)
+            .prefix(
+                Icon::new(IconName::Search)
+                    .with_size(Size::Small)
+                    .text_color(palette.muted),
+            );
 
         v_flex()
             .w(px(300.0))
@@ -528,19 +580,7 @@ impl KoyoApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .size(px(28.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded_md()
-                                    .bg(palette.accent)
-                                    .text_color(palette.background)
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("K"),
-                            )
+                            .child(super::widgets::logo_mark(&palette, 28.0))
                             .child(
                                 div()
                                     .text_sm()
@@ -552,17 +592,19 @@ impl KoyoApp {
                         h_flex()
                             .items_center()
                             .gap_1()
-                            .child(
+                            .child(super::widgets::button_tooltip(
+                                "top-tooltip-manage",
                                 Button::new("manage-connections")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::Plus)
-                                    .tooltip("Manage connections")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_connection_dialog(None, window, cx);
                                     })),
-                            )
-                            .child(
+                                "Manage connections",
+                            ))
+                            .child(super::widgets::button_tooltip(
+                                "top-tooltip-theme",
                                 Button::new("theme-toggle")
                                     .ghost()
                                     .compact()
@@ -571,25 +613,26 @@ impl KoyoApp {
                                     } else {
                                         IconName::Moon
                                     })
-                                    .tooltip(if cx.theme().is_dark() {
-                                        "Light theme"
-                                    } else {
-                                        "Dark theme"
-                                    })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_theme(cx);
                                     })),
-                            )
-                            .child(
+                                if cx.theme().is_dark() {
+                                    "Light theme"
+                                } else {
+                                    "Dark theme"
+                                },
+                            ))
+                            .child(super::widgets::button_tooltip(
+                                "top-tooltip-collapse-sidebar",
                                 Button::new("collapse-sidebar")
                                     .ghost()
                                     .compact()
                                     .icon(IconName::PanelLeftClose)
-                                    .tooltip("Hide sidebar")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.toggle_sidebar(cx);
                                     })),
-                            ),
+                                "Hide sidebar",
+                            )),
                     ),
             )
             .child(
@@ -731,21 +774,54 @@ impl KoyoApp {
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("EXPLORER"),
                     )
-                    .when(live, |this| {
+                    .when(has_explorer, |this| {
                         this.child(
-                            Button::new("refresh-tables")
-                                .ghost()
-                                .compact()
-                                .icon(IconName::RefreshCw)
-                                .tooltip("Refresh tables")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.refresh_tables(tab_id, cx);
-                                })),
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .child(super::widgets::button_tooltip(
+                                    ("tooltip-expand-all", tab_id),
+                                    Button::new("expand-all-tables")
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::ChevronsUpDown)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_all_expanded(tab_id, true, cx);
+                                        })),
+                                    "Expand all",
+                                ))
+                                .child(super::widgets::button_tooltip(
+                                    ("tooltip-collapse-all", tab_id),
+                                    Button::new("collapse-all-tables")
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::Minus)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.set_all_expanded(tab_id, false, cx);
+                                        })),
+                                    "Collapse all",
+                                ))
+                                .when(live, |this| {
+                                    this.child(super::widgets::button_tooltip(
+                                        ("tooltip-refresh-tables", tab_id),
+                                        Button::new("refresh-tables")
+                                            .ghost()
+                                            .compact()
+                                            .icon(IconName::RefreshCw)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.refresh_tables(tab_id, cx);
+                                            })),
+                                        "Refresh tables",
+                                    ))
+                                }),
                         )
                     }),
             )
-            .when(live, |this| this.child(tree))
-            .when(!live, |this| {
+            .when(has_explorer, |this| {
+                this.child(div().px_3().pb_2().child(search_field))
+            })
+            .when(has_explorer, |this| this.child(tree))
+            .when(!has_explorer, |this| {
                 this.child(
                     v_flex()
                         .flex_1()

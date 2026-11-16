@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::widgets::empty_state;
+use super::widgets::{button_tooltip, empty_state};
 use crate::app::{KoyoApp, Palette, StagedChange, TabBody, TableMode};
 
 mod diagram;
@@ -108,10 +108,134 @@ pub(super) fn render(
     let has_more = page_ref.is_some_and(|page| page.has_more);
     let page_number = offset / limit.max(1) + 1;
 
+    let mode_switch = h_flex()
+        .items_center()
+        .gap_1()
+        .p_1()
+        .rounded_md()
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.panel)
+        .child(
+            Button::new("table-mode-data")
+                .when(mode == TableMode::Data, |this| this.primary())
+                .when(mode != TableMode::Data, |this| this.ghost())
+                .compact()
+                .icon(IconName::LayoutDashboard)
+                .label("Data")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_table_mode(tab_id, TableMode::Data, cx);
+                })),
+        )
+        .child(
+            Button::new("table-mode-diagram")
+                .when(mode == TableMode::Diagram, |this| this.primary())
+                .when(mode != TableMode::Diagram, |this| this.ghost())
+                .compact()
+                .icon(IconName::Frame)
+                .label("Diagram")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_table_mode(tab_id, TableMode::Diagram, cx);
+                })),
+        );
+
+    let mut actions = h_flex().flex_wrap().items_center().gap_2().child(
+        div()
+            .w(px(88.0))
+            .flex()
+            .justify_end()
+            .when(has_staged, |this| {
+                this.child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .bg(palette.panel_alt)
+                        .text_xs()
+                        .text_color(palette.warning)
+                        .whitespace_nowrap()
+                        .child(format!("{} pending", staged.len())),
+                )
+            }),
+    );
+
+    // Keep Cancel mounted when idle. Loading is often shorter than one
+    // animation frame; toggling the button in and out is what flickers.
+    let cancel_disabled = !loading || cancelling || !cancel_supported;
+    actions = actions
+        .child(
+            Button::new("cancel-table")
+                .secondary()
+                .compact()
+                .icon(IconName::Square)
+                .label("Cancel")
+                .disabled(cancel_disabled)
+                .when(cancel_disabled, |this| this.text_color(palette.foreground))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.cancel_task(tab_id, true, cx);
+                })),
+        )
+        .child(
+            Button::new("discard-changes")
+                .secondary()
+                .compact()
+                .icon(IconName::Close)
+                .label("Discard")
+                .disabled(!has_staged || loading || !connected)
+                .when(!has_staged || loading || !connected, |this| {
+                    this.text_color(palette.foreground)
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.discard_changes(tab_id, cx);
+                })),
+        )
+        .child(
+            Button::new("apply-changes")
+                .primary()
+                .compact()
+                .icon(IconName::Check)
+                .label("Apply changes")
+                .disabled(!has_staged || loading || !connected)
+                .when(!has_staged || loading || !connected, |this| {
+                    this.text_color(palette.foreground)
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.apply_changes(tab_id, cx);
+                })),
+        )
+        .child(button_tooltip(
+            "tooltip-refresh-table",
+            Button::new("refresh-table")
+                .ghost()
+                .compact()
+                .icon(IconName::RefreshCw)
+                .disabled(loading || !connected)
+                .when(loading || !connected, |this| {
+                    this.text_color(palette.foreground)
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.refresh_current_table(tab_id, window, cx);
+                })),
+            "Refresh table",
+        ))
+        .when(editable, |this| {
+            this.child(
+                Button::new("add-row")
+                    .secondary()
+                    .compact()
+                    .icon(IconName::Plus)
+                    .label("Add row")
+                    .disabled(loading)
+                    .when(loading, |this| this.text_color(palette.foreground))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.add_row(tab_id, cx);
+                    })),
+            )
+        });
+
     let toolbar = h_flex()
         .flex_wrap()
         .items_center()
-        .justify_between()
         .gap_4()
         .px_5()
         .py_3()
@@ -119,8 +243,8 @@ pub(super) fn render(
         .border_color(palette.border)
         .child(
             v_flex()
-                .flex_1()
                 .min_w(px(180.0))
+                .max_w(px(420.0))
                 .child(
                     div()
                         .text_lg()
@@ -129,125 +253,20 @@ pub(super) fn render(
                 )
                 .child(div().text_xs().text_color(palette.muted).child(subtitle)),
         )
-        .child(
-            h_flex()
-                .flex_wrap()
-                .items_center()
-                .gap_2()
-                .child(
-                    Button::new("table-mode-data")
-                        .when(mode == TableMode::Data, |this| this.primary())
-                        .when(mode != TableMode::Data, |this| this.ghost())
-                        .compact()
-                        .icon(IconName::LayoutDashboard)
-                        .label("Data")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_table_mode(tab_id, TableMode::Data, cx);
-                        })),
-                )
-                .child(
-                    Button::new("table-mode-diagram")
-                        .when(mode == TableMode::Diagram, |this| this.primary())
-                        .when(mode != TableMode::Diagram, |this| this.ghost())
-                        .compact()
-                        .icon(IconName::Frame)
-                        .label("Diagram")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_table_mode(tab_id, TableMode::Diagram, cx);
-                        })),
-                )
-                .child(
-                    // Reserved slot: mounting the pending badge on the first
-                    // edit would reflow every button after it.
-                    div()
-                        .w(px(88.0))
-                        .flex()
-                        .justify_end()
-                        .when(has_staged, |this| {
-                            this.child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_sm()
-                                    .bg(palette.panel_alt)
-                                    .text_xs()
-                                    .text_color(palette.warning)
-                                    .whitespace_nowrap()
-                                    .child(format!("{} pending", staged.len())),
-                            )
-                        }),
-                )
-                .child(
-                    // Keep the cancel control mounted while idle. Table sorts
-                    // and page loads toggle `loading`; inserting/removing this
-                    // button made the toolbar visibly jump on every header
-                    // click. `invisible` preserves its slot and button geometry.
-                    Button::new("cancel-table")
-                        .secondary()
-                        .compact()
-                        .icon(IconName::Square)
-                        .label("Cancel")
-                        .disabled(cancelling)
-                        .when(!loading || !cancel_supported, |this| this.invisible())
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.cancel_task(tab_id, true, cx);
-                        })),
-                )
-                .child(
-                    Button::new("discard-changes")
-                        .secondary()
-                        .compact()
-                        .icon(IconName::Close)
-                        .label("Discard")
-                        .disabled(!has_staged || loading || !connected)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.discard_changes(tab_id, cx);
-                        })),
-                )
-                .child(
-                    Button::new("apply-changes")
-                        .primary()
-                        .compact()
-                        .icon(IconName::Check)
-                        .label("Apply changes")
-                        .disabled(!has_staged || loading || !connected)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.apply_changes(tab_id, cx);
-                        })),
-                )
-                .child(
-                    Button::new("refresh-table")
-                        .ghost()
-                        .compact()
-                        .icon(IconName::RefreshCw)
-                        .tooltip("Refresh table")
-                        .disabled(loading || !connected)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.refresh_current_table(tab_id, window, cx);
-                        })),
-                )
-                .when(editable, |this| {
-                    this.child(
-                        Button::new("add-row")
-                            .secondary()
-                            .compact()
-                            .icon(IconName::Plus)
-                            .label("Add row")
-                            .disabled(loading)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.add_row(tab_id, cx);
-                            })),
-                    )
-                }),
-        );
+        .child(mode_switch)
+        .child(div().flex_1().min_w(px(0.0)))
+        .child(actions);
 
     if mode == TableMode::Diagram {
+        let mono = cx.theme().mono_font_family.clone();
         return v_flex()
             .size_full()
             .w_full()
             .min_h(px(0.0))
             .child(toolbar)
-            .child(diagram::render_diagram(tab_id, table, page_ref, palette))
+            .child(diagram::render_diagram(
+                tab_id, table, page_ref, palette, &mono,
+            ))
             .into_any_element();
     }
 
@@ -335,6 +354,9 @@ pub(super) fn render(
                                 .compact()
                                 .icon(IconName::ChevronLeft)
                                 .disabled(loading || !connected || offset == 0)
+                                .when(loading || !connected || offset == 0, |this| {
+                                    this.text_color(palette.foreground)
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.request_page(
                                         tab_id,
@@ -350,11 +372,25 @@ pub(super) fn render(
                                 .compact()
                                 .icon(IconName::ChevronRight)
                                 .disabled(loading || !connected || !has_more)
+                                .when(loading || !connected || !has_more, |this| {
+                                    this.text_color(palette.foreground)
+                                })
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.request_page(tab_id, offset + limit, window, cx);
                                 })),
                         ),
                 ),
+        )
+        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+            if event.dragging() {
+                this.resize_active_column(tab_id, f32::from(event.position.x), cx);
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.end_column_resize(tab_id, cx);
+            }),
         )
         .into_any_element()
 }

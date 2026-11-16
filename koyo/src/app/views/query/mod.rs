@@ -10,7 +10,7 @@ use koyo_core::models::Engine;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::widgets::empty_state;
+use super::widgets::{button_tooltip, empty_state};
 use crate::app::{KoyoApp, Palette, ResultView, TabBody};
 
 mod grid;
@@ -309,20 +309,21 @@ pub(super) fn render(
                 .when(
                     output.is_some_and(|output| !output.result_sets.is_empty()),
                     |this| {
-                        this.child(
+                        this.child(button_tooltip(
+                            ("tooltip-copy-csv", tab_id),
                             Button::new(("copy-result-csv", tab_id))
                                 .ghost()
                                 .compact()
                                 .icon(IconName::Copy)
-                                .tooltip("Copy active result as CSV")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.copy_active_result(tab_id, cx);
                                 })),
-                        )
+                            "Copy active result as CSV",
+                        ))
                     },
                 )
                 .when(output.is_some_and(|output| output.truncated), |this| {
-                    this.child("Each result capped at 1,000 rows")
+                    this.child("Results truncated to protect memory")
                 }),
         );
 

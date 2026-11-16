@@ -1,4 +1,4 @@
-use crate::common::{self, QUERY_ROW_LIMIT, TABLE_PAGE_LIMIT};
+use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
@@ -540,29 +540,30 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
     let cursor = connection
         .query(sql, &[])
         .map_err(|error| error.to_string())?;
+    let mut budget = QueryBudget::new();
     let columns = cursor
         .columns()
         .iter()
-        .map(|column| column.name().to_string())
+        .map(|column| budget.column(column.name().to_string()))
         .collect::<Vec<_>>();
     let mut rows = Vec::new();
     let mut truncated = false;
     for row in cursor {
         let row = row.map_err(|error| error.to_string())?;
-        if rows.len() >= QUERY_ROW_LIMIT {
+        if rows.len() >= QUERY_ROW_LIMIT || budget.exhausted() {
             truncated = true;
             break;
         }
-        rows.push(
-            (0..columns.len())
-                .map(|index| cell_text(&row, index))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let mut values = Vec::with_capacity(columns.len());
+        for index in 0..columns.len() {
+            values.push(budget.cell(cell_text(&row, index)?));
+        }
+        rows.push(values);
     }
     Ok(QueryOutput {
         result_sets: vec![QueryResultSet { columns, rows }],
         affected_rows: Vec::new(),
-        truncated,
+        truncated: truncated || budget.truncated(),
     })
 }
 

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{EditorState, InputState};
+use gpui_kit::component::input::{EditorState, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
@@ -12,9 +12,11 @@ use koyo_core::models::{
 };
 use koyo_core::{ProfileStore, SessionManager};
 
+use super::ai::AiThread;
 use super::completion::CompletionCatalog;
-use super::settings::{QueryHistoryEntry, SettingsStore};
+use super::settings::{QueryHistoryEntry, StateSaveQueue};
 use tokio::runtime::Runtime;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub(crate) const PAGE_LIMIT: u32 = 100;
@@ -122,6 +124,7 @@ pub(crate) struct TableTab {
     pub(crate) filter_value: Entity<InputState>,
     pub(crate) column_widths: Vec<f32>,
     pub(crate) resize_pointer_x: Option<f32>,
+    pub(crate) resize_column: Option<usize>,
     pub(crate) column_resized: bool,
 }
 
@@ -196,7 +199,7 @@ pub(crate) struct ConfirmState {
 
 pub(crate) struct KoyoApp {
     pub(crate) store: ProfileStore,
-    pub(crate) settings: SettingsStore,
+    pub(crate) save_queue: Arc<StateSaveQueue>,
     pub(crate) history: Vec<QueryHistoryEntry>,
     pub(crate) allow_close: bool,
     pub(crate) persistence_disabled: bool,
@@ -208,10 +211,31 @@ pub(crate) struct KoyoApp {
     pub(crate) secondary_tabs: Vec<u64>,
     pub(crate) primary_active: u64,
     pub(crate) secondary_active: u64,
+    pub(crate) primary_tab_scroll: ScrollHandle,
+    pub(crate) secondary_tab_scroll: ScrollHandle,
+    pub(crate) explorer_filter: Entity<InputState>,
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,
     pub(crate) sidebar_open: bool,
+    pub(crate) ai_open: bool,
+    pub(crate) ai_width: f32,
+    pub(crate) ai_resizing: bool,
+    pub(crate) ai_settings_open: bool,
+    pub(crate) ai_config_json: String,
+    pub(crate) ai_model: String,
+    pub(crate) ai_config_error: String,
+    pub(crate) ai_threads: Vec<AiThread>,
+    pub(crate) ai_active_thread: u64,
+    pub(crate) next_ai_thread_id: u64,
+    pub(crate) ai_task: Option<JoinHandle<()>>,
+    pub(crate) ai_generation: u64,
+    pub(crate) ai_compacting: bool,
+    pub(crate) ai_input: Entity<TextareaState>,
+    pub(crate) ai_config_input: Entity<TextareaState>,
+    pub(crate) ai_pending: bool,
+    pub(crate) ai_error: String,
+    pub(crate) ai_scroll: ScrollHandle,
     pub(crate) status: String,
     pub(crate) dialog: Option<ConnectionDialog>,
     pub(crate) cell_edit: Option<CellEdit>,

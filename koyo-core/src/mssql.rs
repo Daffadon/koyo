@@ -1,4 +1,4 @@
-use crate::common::{self, QUERY_ROW_LIMIT, TABLE_PAGE_LIMIT};
+use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, Engine, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
@@ -535,6 +535,7 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
         .await
         .map_err(|error| error.to_string())?;
     let mut result_sets: Vec<QueryResultSet> = Vec::new();
+    let mut budget = QueryBudget::new();
     let mut truncated = false;
     while let Some(item) = futures_util::TryStreamExt::try_next(&mut stream)
         .await
@@ -553,7 +554,7 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
                     columns: metadata
                         .columns()
                         .iter()
-                        .map(|column| column.name().to_string())
+                        .map(|column| budget.column(column.name().to_string()))
                         .collect(),
                     rows: Vec::new(),
                 };
@@ -565,19 +566,21 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
                         columns: row
                             .columns()
                             .iter()
-                            .map(|column| column.name().to_string())
+                            .map(|column| budget.column(column.name().to_string()))
                             .collect(),
                         rows: Vec::new(),
                     });
                 }
                 let result = &mut result_sets[index];
-                if result.rows.len() >= QUERY_ROW_LIMIT {
+                if result.rows.len() >= QUERY_ROW_LIMIT || budget.exhausted() {
                     truncated = true;
                     break;
                 }
-                result
-                    .rows
-                    .push(row.cells().map(|(_, value)| column_text(value)).collect());
+                let mut values = Vec::new();
+                for (_, value) in row.cells() {
+                    values.push(budget.cell(column_text(value)));
+                }
+                result.rows.push(values);
             }
         }
     }
@@ -599,7 +602,7 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
     Ok(QueryOutput {
         result_sets,
         affected_rows,
-        truncated,
+        truncated: truncated || budget.truncated(),
     })
 }
 
@@ -1344,6 +1347,17 @@ mod tests {
         run_sql(&mut session, &format!("DROP TABLE dbo.{binary_table}"))
             .await
             .expect("drop binary fixture");
+
+        let output = run_sql(
+            &mut session,
+            "SELECT REPLICATE(CONVERT(varchar(max), 'x'), 1000000) AS value",
+        )
+        .await
+        .expect("large select");
+        assert!(output.truncated);
+        let cell = output.result_sets[0].rows[0][0].as_deref().expect("cell");
+        assert!(cell.ends_with(" [truncated]"));
+        assert!(cell.len() <= common::MAX_CELL_CHARS + " [truncated]".len());
 
         run_sql(&mut session, "BEGIN TRANSACTION")
             .await

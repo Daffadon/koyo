@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::{InputState, TextareaState};
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -13,6 +13,7 @@ use koyo_core::{ProfileStore, SessionManager};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
+use super::ai::restore_ai_threads;
 use crate::app::completion::{CompletionCatalog, SqlCompletionProvider};
 use crate::app::*;
 
@@ -38,9 +39,31 @@ impl KoyoApp {
         if let Some(warning) = state_warning {
             status = warning;
         }
+        let ai_config_json = saved.ai_config_json.clone();
+        let ai_config_error = AiConfig::parse(&ai_config_json).err().unwrap_or_default();
+        let ai_model = AiConfig::parse(&ai_config_json)
+            .map(|config| config.model)
+            .unwrap_or_else(|_| "Not configured".into());
+        let (ai_threads, ai_active_thread, next_ai_thread_id) = restore_ai_threads(&saved);
+        let save_queue = Arc::new(StateSaveQueue::default());
+        let (save_error_tx, mut save_error_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_state_save_worker(save_queue.clone(), settings.clone(), save_error_tx);
+        let ai_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("Ask about your database...")
+                .submit_on_enter(true)
+                .auto_grow(1, 6)
+        });
+        let ai_config_seed = ai_config_json.clone();
+        let ai_config_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .default_value(ai_config_seed)
+                .auto_grow(6, 20)
+        });
+        let explorer_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables"));
         let mut app = Self {
             store,
-            settings,
+            save_queue,
             history: saved.history.clone(),
             allow_close: false,
             persistence_disabled: persistence_error.is_some(),
@@ -52,16 +75,46 @@ impl KoyoApp {
             secondary_tabs: Vec::new(),
             primary_active: 0,
             secondary_active: 0,
+            primary_tab_scroll: ScrollHandle::new(),
+            secondary_tab_scroll: ScrollHandle::new(),
+            explorer_filter,
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
             sidebar_open: saved.sidebar_open,
+            ai_open: saved.ai_open,
+            ai_width: saved.ai_width.clamp(MIN_AI_WIDTH, MAX_AI_WIDTH),
+            ai_resizing: false,
+            ai_settings_open: false,
+            ai_config_json,
+            ai_model,
+            ai_config_error,
+            ai_threads,
+            ai_active_thread,
+            next_ai_thread_id,
+            ai_task: None,
+            ai_generation: 0,
+            ai_compacting: false,
+            ai_input,
+            ai_config_input,
+            ai_pending: false,
+            ai_error: String::new(),
+            ai_scroll: ScrollHandle::new(),
             status,
             dialog: None,
             cell_edit: None,
             confirm: None,
             next_tab_id: 1,
         };
+        cx.spawn(async move |this, cx| {
+            while let Some(error) = save_error_rx.recv().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.status = error;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         if saved.theme == "light" {
             Theme::change(ThemeMode::Light, None, cx);
             apply_calm_light_theme(cx);
@@ -82,7 +135,7 @@ impl KoyoApp {
                 if app.allow_close {
                     return;
                 }
-                app.persist_state(cx);
+                app.persist_state_sync(cx);
                 if app.has_unsaved_work(cx) {
                     allow = false;
                     app.confirm_close(cx);
@@ -90,6 +143,8 @@ impl KoyoApp {
             });
             allow
         });
+        cx.observe(&app.explorer_filter, |_, _, cx| cx.notify())
+            .detach();
         app
     }
 
@@ -184,7 +239,22 @@ impl KoyoApp {
         if self.persistence_disabled {
             return;
         }
-        let state = PersistedState {
+        let state = self.persisted_state(cx);
+        self.save_queue.submit(state);
+    }
+
+    pub(crate) fn persist_state_sync(&mut self, cx: &App) {
+        if self.persistence_disabled {
+            return;
+        }
+        let state = self.persisted_state(cx);
+        if let Err(error) = self.save_queue.flush(state) {
+            self.status = error;
+        }
+    }
+
+    fn persisted_state(&mut self, cx: &App) -> PersistedState {
+        PersistedState {
             theme: if cx.theme().is_dark() {
                 "dark"
             } else {
@@ -192,6 +262,13 @@ impl KoyoApp {
             }
             .into(),
             sidebar_open: self.sidebar_open,
+            ai_open: self.ai_open,
+            ai_width: self.ai_width,
+            ai_config_json: self.ai_config_json.clone(),
+            ai_messages: Vec::new(),
+            ai_threads: self.ai_threads_snapshot(),
+            ai_active_thread: self.ai_active_thread,
+            next_ai_thread_id: self.next_ai_thread_id,
             split: self.split.map(|axis| {
                 match axis {
                     SplitAxis::Vertical => "vertical",
@@ -202,12 +279,6 @@ impl KoyoApp {
             split_ratio: self.split_ratio,
             history: self.history.clone(),
             workspace: self.workspace_snapshot(cx),
-        };
-        if let Err(error) = self.settings.save(&state) {
-            // A locked or temporarily unavailable keyring must not disable
-            // persistence for the rest of the session. Keep retrying on the
-            // next state change, but show the current failure.
-            self.status = error;
         }
     }
 
@@ -288,6 +359,18 @@ impl KoyoApp {
             Pane::Primary => &self.primary_tabs,
             Pane::Secondary => &self.secondary_tabs,
         }
+    }
+
+    pub(crate) fn tab_scroll(&self, pane: Pane) -> &ScrollHandle {
+        match pane {
+            Pane::Primary => &self.primary_tab_scroll,
+            Pane::Secondary => &self.secondary_tab_scroll,
+        }
+    }
+
+    fn reveal_active_tab(&self, pane: Pane) {
+        self.tab_scroll(pane)
+            .scroll_to_item(self.pane_selected(pane));
     }
 
     pub(crate) fn pane_selected(&self, pane: Pane) -> usize {
@@ -379,6 +462,7 @@ impl KoyoApp {
                 self.secondary_active = id;
             }
         }
+        self.reveal_active_tab(pane);
         id
     }
 
@@ -509,6 +593,7 @@ impl KoyoApp {
         }
         if column < column_count {
             table.resize_pointer_x = Some(pointer_x);
+            table.resize_column = Some(column);
         }
         cx.notify();
     }
@@ -519,6 +604,7 @@ impl KoyoApp {
         };
         if let TabBody::Table(table) = &mut self.tabs[index].body {
             table.resize_pointer_x = None;
+            table.resize_column = None;
         }
         cx.notify();
     }
@@ -540,7 +626,6 @@ impl KoyoApp {
         tab_id: u64,
         column: usize,
         pointer_x: f32,
-        fallback_origin_x: f32,
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.tab_index(tab_id) else {
@@ -549,7 +634,12 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        let previous_x = table.resize_pointer_x.unwrap_or(fallback_origin_x);
+        if table.resize_column != Some(column) {
+            return;
+        }
+        let Some(previous_x) = table.resize_pointer_x else {
+            return;
+        };
         let Some(width) = table.column_widths.get_mut(column) else {
             return;
         };
@@ -560,6 +650,25 @@ impl KoyoApp {
         }
         table.resize_pointer_x = Some(pointer_x);
         cx.notify();
+    }
+
+    pub(crate) fn resize_active_column(
+        &mut self,
+        tab_id: u64,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let Some(column) = self.tabs[index]
+            .body
+            .table()
+            .and_then(|table| table.resize_column)
+        else {
+            return;
+        };
+        self.resize_column(tab_id, column, pointer_x, cx);
     }
 
     pub(crate) fn make_table_tab(
@@ -604,6 +713,7 @@ impl KoyoApp {
                 filter_value,
                 column_widths: Vec::new(),
                 resize_pointer_x: None,
+                resize_column: None,
                 column_resized: false,
             }),
         }
@@ -733,18 +843,6 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_active_tab(
-        &mut self,
-        pane: Pane,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(tab_id) = self.pane_active_id(pane) else {
-            return;
-        };
-        self.close_tab(tab_id, window, cx);
-    }
-
     pub(crate) fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
@@ -803,6 +901,9 @@ impl KoyoApp {
         }
         self.tabs.remove(index);
         self.normalize_panes();
+        if let Some(pane) = pane {
+            self.reveal_active_tab(pane);
+        }
         self.persist_state(cx);
         cx.notify();
     }
@@ -835,7 +936,7 @@ impl KoyoApp {
         };
         if pending.close_window {
             if confirmed {
-                self.persist_state(cx);
+                self.persist_state_sync(cx);
                 self.allow_close = true;
                 window.remove_window();
             } else {
@@ -894,6 +995,7 @@ impl KoyoApp {
         }
         self.focus = target;
         self.normalize_panes();
+        self.reveal_active_tab(target);
         self.persist_state(cx);
         cx.notify();
     }
@@ -907,6 +1009,7 @@ impl KoyoApp {
             Pane::Secondary => self.secondary_active = id,
         }
         self.focus = pane;
+        self.reveal_active_tab(pane);
         self.normalize_panes();
         self.persist_state(cx);
         cx.notify();

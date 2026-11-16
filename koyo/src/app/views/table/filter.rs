@@ -6,6 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, TableFilter};
 
+use super::super::widgets::button_tooltip;
 use crate::app::*;
 
 pub(super) fn render_filter_bar(
@@ -117,7 +118,8 @@ pub(super) fn render_filter_bar(
                     .bg(palette.panel)
                     .text_xs()
                     .child(filter_label(filter))
-                    .child(
+                    .child(button_tooltip(
+                        format!("tooltip-remove-filter-{}", filter.column),
                         Button::new(SharedString::from(format!(
                             "remove-filter-{}",
                             filter.column
@@ -125,12 +127,12 @@ pub(super) fn render_filter_bar(
                         .ghost()
                         .compact()
                         .icon(IconName::Close)
-                        .tooltip("Remove filter")
                         .disabled(locked)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.remove_filter(tab_id, column.clone(), cx);
                         })),
-                    )
+                        "Remove filter",
+                    ))
             }),
         ));
     }

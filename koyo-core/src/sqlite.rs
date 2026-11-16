@@ -1,6 +1,6 @@
 use crate::common::{
-    self, QUERY_ROW_LIMIT, TABLE_PAGE_LIMIT, TableMeta, ensure_filter_operator, ensure_writable,
-    find_column, quote_identifier,
+    self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT, TableMeta, ensure_filter_operator,
+    ensure_writable, find_column, quote_identifier,
 };
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, FilterKind, FilterOperator, ForeignKeyInfo,
@@ -474,24 +474,28 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
     let readonly = statement.readonly();
     let mut result_sets = Vec::new();
     let mut affected_rows = Vec::new();
+    let mut budget = QueryBudget::new();
     let mut truncated = false;
 
     if column_count > 0 {
         let mut rows = statement.query([]).map_err(|error| error.to_string())?;
         let mut result_rows = Vec::new();
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-            if result_rows.len() == QUERY_ROW_LIMIT {
+            if result_rows.len() == QUERY_ROW_LIMIT || budget.exhausted() {
                 truncated = true;
                 break;
             }
-            result_rows.push(
-                (0..column_count)
-                    .map(|index| cell_text(row, index))
-                    .collect::<Result<Vec<_>, _>>()?,
-            );
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
+                values.push(budget.cell(cell_text(row, index)?));
+            }
+            result_rows.push(values);
         }
         result_sets.push(QueryResultSet {
-            columns,
+            columns: columns
+                .into_iter()
+                .map(|column| budget.column(column))
+                .collect(),
             rows: result_rows,
         });
     } else {
@@ -508,7 +512,7 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
     Ok(QueryOutput {
         result_sets,
         affected_rows,
-        truncated,
+        truncated: truncated || budget.truncated(),
     })
 }
 
@@ -1177,5 +1181,17 @@ mod tests {
             .expect("run insert");
         assert_eq!(output.affected_rows, vec![1]);
         assert!(run_sql(&session, "SELECT 1; SELECT 2").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn caps_oversized_query_cells() {
+        let session = memory_session();
+        let output = run_sql(&session, "SELECT zeroblob(100000)")
+            .await
+            .expect("run large select");
+        assert!(output.truncated);
+        let cell = output.result_sets[0].rows[0][0].as_deref().expect("cell");
+        assert!(cell.ends_with(" [truncated]"));
+        assert!(cell.len() <= crate::common::MAX_CELL_CHARS + " [truncated]".len());
     }
 }

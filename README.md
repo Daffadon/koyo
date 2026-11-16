@@ -51,6 +51,17 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Dark theme and a warm, low-contrast light theme.
 - Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
 
+### AI assistant
+
+- Collapsible chat panel on the right side. Drag its divider to resize; the width, active thread, and thread transcripts restore on launch.
+- Toggle the left sidebar with **Ctrl+B** or **Cmd+B**; toggle the AI panel with **Ctrl+Alt+B** or **Cmd+Alt+B**.
+- Multiple chat threads with previous, next, new, and delete actions. Thread titles come from the first message.
+- Responses stream into the transcript and render Markdown, including fenced code blocks. **Stop** cancels the active stream.
+- **Compact context** asks the provider to summarize the current thread and replaces it with a system summary, keeping the next request small. Long threads are split into chunks and merged.
+- Configure any OpenAI-compatible chat-completions provider from the panel settings using JSON: `base_url`, `api_key`, `model`, `system_prompt`, `temperature`, `max_tokens`, and optional `headers`.
+- API keys, provider configuration, and chat threads are stored in encrypted application state, not in plaintext.
+- Press Enter to send and Shift+Enter for a newline. Requests run on the application runtime and do not block the UI.
+
 ## Supported engines
 
 | Engine | Driver | Default port | Notes |
@@ -137,9 +148,10 @@ koyo/src/
   main.rs                  application startup, window, shortcuts
   app.rs                   module wiring and shared re-exports
   app/state.rs             tabs, panes, dialogs, staged edits, app state
-  app/settings.rs          persisted theme, workspace, and query history
+  app/settings.rs          persisted theme, AI config, workspace, and history
   app/theme.rs             palette and light-theme adjustment
   app/helpers.rs           labels, starter SQL, filters, form defaults, CSV
+  app/ai.rs                OpenAI-compatible chat-completions client and config
   app/completion.rs        SQL completion catalog and alias parser
   app/actions/             state transitions and async work
     workspace.rs           panes, tabs, splits, persistence, confirmations
@@ -147,9 +159,11 @@ koyo/src/
     queries.rs             run, cancel, history, result selection and resize
     tables.rs              paging, filtering, sorting, refresh, apply/discard
     editing.rs             cell editing, inserts, deletes, staged changes
+    ai.rs                  AI threads, provider settings, streaming, compacting
   app/views/               GPUI rendering only
     root.rs                root frame and overlays
     sidebar.rs             explorer, connection summary, query history
+    ai.rs                  AI chat threads, markdown, stop, compact, provider settings
     workspace.rs           tab bars, panes, status bar
     connection.rs          engine picker and connection dialog
     query/                 editor and result rendering
@@ -170,8 +184,9 @@ Koyo stores application data in the platform config directory:
 | Windows | `%APPDATA%\com.koyo.db` |
 
 - `profiles.enc` contains encrypted connection profiles without passwords.
-- `state.enc` contains the theme, workspace snapshot, and query history, encrypted with XChaCha20-Poly1305.
+- `state.enc` contains the theme, sidebar and AI panel state, AI provider configuration and chat threads, workspace snapshot, and query history, encrypted with XChaCha20-Poly1305.
 - The data encryption key and server passwords live in the operating-system credential store.
+- AI provider API keys are saved in `state.enc`; the panel settings never write a plaintext provider file.
 - Legacy plaintext `state.json` and `profiles.json` files are encrypted and removed on first successful migration.
 - If the credential store is unavailable, Koyo reports an error and disables state persistence instead of writing plaintext.
 - Password fields are masked and cannot copy or cut their values. Saved passwords are never loaded back into the dialog.

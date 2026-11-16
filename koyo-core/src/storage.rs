@@ -351,11 +351,16 @@ impl ProfileStore {
         if self.legacy_path.exists() {
             let contents = fs::read(&self.legacy_path)
                 .map_err(|error| format!("Could not read saved connection profiles: {error}"))?;
-            let profiles = decode_profiles(
+            let mut profiles = decode_profiles(
                 contents
                     .strip_prefix(&[0xEF, 0xBB, 0xBF])
                     .unwrap_or(&contents),
             )?;
+            // Legacy files did not bind IDs to targets. Give every imported
+            // profile a fresh ID so planted UUIDs cannot reuse keyring entries.
+            for profile in &mut profiles {
+                profile.id = Uuid::new_v4();
+            }
             let encoded = serde_json::to_vec_pretty(&profiles)
                 .map_err(|error| format!("Could not encode connection profiles: {error}"))?;
             self.encrypted.save(&encoded).map_err(|error| {
@@ -451,7 +456,6 @@ impl ProfileStore {
                 || (saved.engine.is_sqlite() && previous.sqlite_path != saved.sqlite_path)
         });
 
-        let old_profiles = profiles.clone();
         if let Some(index) = profiles.iter().position(|item| item.id == id) {
             profiles[index] = saved.clone();
         } else if is_new {
@@ -470,34 +474,51 @@ impl ProfileStore {
                 || previous
                     .as_ref()
                     .is_some_and(|previous| previous.engine.needs_password()));
-        // Commit the profile first. If credential cleanup fails, roll the
-        // profile back so the old target and its saved password stay paired.
-        self.write_profiles(&profiles)?;
-        if password_to_save.is_none() && must_clear_credential {
-            let entry = credential_entry(id)?;
-            match entry.delete_credential() {
-                Ok(()) | Err(KeyringError::NoEntry) => {}
-                Err(error) => {
-                    let _ = self.write_profiles(&old_profiles);
-                    return Err(format!(
-                        "Could not remove the saved password for the changed connection target: {error}"
-                    ));
-                }
-            }
-        }
-        if let Some(password) = password_to_save {
-            let entry = match credential_entry(id) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    let _ = self.write_profiles(&old_profiles);
+        // Mutate the credential before a target change. A crash can then
+        // leave a wrong or missing secret, never an old secret on a new host.
+        if target_changed {
+            if let Some(password) = password_to_save.as_deref() {
+                let entry = credential_entry(id)?;
+                entry.set_password(password).map_err(|error| {
+                    format!(
+                        "Could not save password in the operating-system credential store: {error}"
+                    )
+                })?;
+                if let Err(error) = self.write_profiles(&profiles) {
+                    let _ = entry.delete_credential();
                     return Err(error);
                 }
-            };
-            if let Err(error) = entry.set_password(&password) {
-                let _ = self.write_profiles(&old_profiles);
-                return Err(format!(
-                    "Could not save password in the operating-system credential store: {error}"
-                ));
+            } else {
+                if must_clear_credential {
+                    let entry = credential_entry(id)?;
+                    match entry.delete_credential() {
+                        Ok(()) | Err(KeyringError::NoEntry) => {}
+                        Err(error) => {
+                            return Err(format!(
+                                "Could not remove the saved password for the changed connection target: {error}"
+                            ));
+                        }
+                    }
+                }
+                self.write_profiles(&profiles)?;
+            }
+        } else {
+            let old_profiles = profiles.clone();
+            self.write_profiles(&profiles)?;
+            if let Some(password) = password_to_save {
+                let entry = match credential_entry(id) {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        let _ = self.write_profiles(&old_profiles);
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = entry.set_password(&password) {
+                    let _ = self.write_profiles(&old_profiles);
+                    return Err(format!(
+                        "Could not save password in the operating-system credential store: {error}"
+                    ));
+                }
             }
         }
 
@@ -511,29 +532,19 @@ impl ProfileStore {
             .find(|profile| profile.id == id)
             .map(|profile| profile.engine)
             .ok_or_else(|| "Connection profile does not exist.".to_string())?;
-        let old_profiles = profiles.clone();
         profiles.retain(|profile| profile.id != id);
-        self.write_profiles(&profiles)?;
-        if engine.is_sqlite() {
-            return Ok(());
-        }
-
-        let entry = match credential_entry(id) {
-            Ok(entry) => entry,
-            Err(error) => {
-                let _ = self.write_profiles(&old_profiles);
-                return Err(error);
-            }
-        };
-        match entry.delete_credential() {
-            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
-            Err(error) => {
-                let _ = self.write_profiles(&old_profiles);
-                Err(format!(
-                    "Could not remove password from the operating-system credential store: {error}"
-                ))
+        if !engine.is_sqlite() {
+            let entry = credential_entry(id)?;
+            match entry.delete_credential() {
+                Ok(()) | Err(KeyringError::NoEntry) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not remove password from the operating-system credential store: {error}"
+                    ));
+                }
             }
         }
+        self.write_profiles(&profiles)
     }
 
     pub fn load_password(&self, id: Uuid) -> Result<String, String> {
@@ -588,6 +599,7 @@ mod tests {
         let loaded = store.load_profiles().expect("migrate profiles");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].username, "app_user");
+        assert_ne!(loaded[0].id, profile.id, "legacy IDs must be regenerated");
         assert!(!directory.join(LEGACY_PROFILE_FILE).exists());
         let encrypted = fs::read(directory.join(PROFILE_FILE)).expect("read encrypted profiles");
         assert!(

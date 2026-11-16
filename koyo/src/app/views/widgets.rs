@@ -1,3 +1,4 @@
+use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
@@ -7,6 +8,48 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+
+/// Per-button tooltip with a short delay. Anchored to the button itself so
+/// the popup follows the control when the toolbar reflows.
+pub(super) fn button_tooltip(
+    _id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    button
+        .tooltip(label)
+        .tooltip_show_delay(std::time::Duration::from_millis(120))
+        .into_any_element()
+}
+
+/// Theme-aware monogram used in the title bar and sidebar.
+pub(super) fn logo_mark(palette: &Palette, size: f32) -> impl IntoElement {
+    div()
+        .size(px(size))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .bg(palette.foreground)
+        .text_color(palette.background)
+        .text_sm()
+        .font_weight(FontWeight::BOLD)
+        .child("K")
+}
+
+pub(super) fn button_tooltip_if(
+    enabled: bool,
+    id: impl Into<ElementId>,
+    button: Button,
+    label: impl Into<SharedString>,
+) -> AnyElement {
+    if enabled {
+        button_tooltip(id, button, label)
+    } else {
+        button.into_any_element()
+    }
+}
 
 pub(super) fn render_cell_editor(
     edit: &CellEdit,
