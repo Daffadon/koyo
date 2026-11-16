@@ -2,7 +2,6 @@ use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -10,23 +9,16 @@ use gpui_kit::*;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
 
-/// Top-bar tooltip sized to its label. Each button owns its tooltip, so moving
-/// to another button closes this one before the next is shown.
+/// Per-button tooltip with a short delay. Anchored to the button itself so
+/// the popup follows the control when the toolbar reflows.
 pub(super) fn button_tooltip(
-    id: impl Into<ElementId>,
-    element: impl IntoElement,
+    _id: impl Into<ElementId>,
+    button: Button,
     label: impl Into<SharedString>,
 ) -> AnyElement {
-    let label = label.into();
-    div()
-        .id(id)
-        .child(element)
+    button
+        .tooltip(label)
         .tooltip_show_delay(std::time::Duration::from_millis(120))
-        .tooltip(move |window, cx| {
-            let label = label.clone();
-            Tooltip::element(move |_, _| div().child(label.clone()).into_any_element())
-                .build(window, cx)
-        })
         .into_any_element()
 }
 
@@ -49,13 +41,13 @@ pub(super) fn logo_mark(palette: &Palette, size: f32) -> impl IntoElement {
 pub(super) fn button_tooltip_if(
     enabled: bool,
     id: impl Into<ElementId>,
-    element: impl IntoElement,
+    button: Button,
     label: impl Into<SharedString>,
 ) -> AnyElement {
     if enabled {
-        button_tooltip(id, element, label)
+        button_tooltip(id, button, label)
     } else {
-        div().child(element).into_any_element()
+        button.into_any_element()
     }
 }
 
