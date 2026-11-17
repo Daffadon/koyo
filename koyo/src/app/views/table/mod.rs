@@ -288,6 +288,7 @@ pub(super) fn render(
             h_flex()
                 .w_full()
                 .items_start()
+                .justify_between()
                 .gap_3()
                 .child(
                     v_flex()
