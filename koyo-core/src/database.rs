@@ -896,6 +896,7 @@ pub async fn load_table_page(
     limit: u32,
     filters: Vec<TableFilter>,
     sort: Option<TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
@@ -918,6 +919,7 @@ pub async fn load_table_page(
                 limit,
                 &filters,
                 sort.as_ref(),
+                count_total,
             )
             .await;
         }
@@ -932,6 +934,7 @@ pub async fn load_table_page(
                 limit,
                 &filters,
                 sort.as_ref(),
+                count_total,
             )
             .await;
         }
@@ -946,6 +949,7 @@ pub async fn load_table_page(
                 limit,
                 &filters,
                 sort.as_ref(),
+                count_total,
             )
             .await;
         }
@@ -960,6 +964,7 @@ pub async fn load_table_page(
                 limit,
                 &filters,
                 sort.as_ref(),
+                count_total,
             )
             .await;
         }
@@ -982,16 +987,20 @@ pub async fn load_table_page(
         sort.as_ref(),
     )?;
 
-    let (count_sql, count_params) = build_table_count_query(&schema, &table, &meta, &filters)?;
-    let total_rows = {
+    let total_rows = if count_total {
+        let (count_sql, count_params) = build_table_count_query(&schema, &table, &meta, &filters)?;
         let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
         let row = client
             .query_one(&count_sql, &sql_params(&count_params))
             .await
             .map_err(|error| error.to_string())?;
-        row.try_get::<_, i64>(0)
-            .map_err(|error| error.to_string())?
-            .max(0) as u64
+        Some(
+            row.try_get::<_, i64>(0)
+                .map_err(|error| error.to_string())?
+                .max(0) as u64,
+        )
+    } else {
+        None
     };
     let rows = {
         let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
@@ -1009,18 +1018,21 @@ pub async fn load_table_page(
             row.try_get(0).map_err(|error| error.to_string())?
         };
         let value_offset = if is_view { 0 } else { 1 };
-        let values = (0..meta.columns.len())
-            .map(|index| {
-                let value = row
-                    .try_get::<_, Option<String>>(index + value_offset)
-                    .map_err(|error| error.to_string())?;
-                Ok(if meta.columns[index].primary_key {
-                    value
-                } else {
-                    budget.page_cell(value)
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut values = Vec::with_capacity(meta.columns.len());
+        let mut truncated = Vec::with_capacity(meta.columns.len());
+        for index in 0..meta.columns.len() {
+            let value = row
+                .try_get::<_, Option<String>>(index + value_offset)
+                .map_err(|error| error.to_string())?;
+            if meta.columns[index].primary_key {
+                values.push(value);
+                truncated.push(false);
+            } else {
+                let (value, clipped) = budget.page_cell_flagged(value);
+                values.push(value);
+                truncated.push(clipped);
+            }
+        }
         let key = meta
             .columns
             .iter()
@@ -1032,6 +1044,7 @@ pub async fn load_table_page(
             version,
             key,
             values,
+            truncated,
         });
     }
 

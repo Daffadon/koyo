@@ -394,6 +394,7 @@ pub async fn load_page(
     limit: u32,
     filters: &[TableFilter],
     sort: Option<&TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     let connection = session.connection.clone();
     let schema = schema.to_string();
@@ -410,6 +411,7 @@ pub async fn load_page(
             limit,
             &filters,
             sort.as_ref(),
+            count_total,
         )
     })
     .await
@@ -476,6 +478,7 @@ fn load_page_sync(
     limit: u32,
     filters: &[TableFilter],
     sort: Option<&TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     let meta = load_meta(connection, schema, table)?;
     let limit = limit.clamp(1, TABLE_PAGE_LIMIT);
@@ -499,21 +502,27 @@ fn load_page_sync(
         count_sql.push_str(" WHERE ");
         count_sql.push_str(predicate);
     }
-    let count_params = params
-        .iter()
-        .map(|value| value as &dyn oracledb::ToDbValue)
-        .collect::<Vec<_>>();
-    let mut count_cursor = connection
-        .query(&count_sql, count_params.as_slice())
-        .map_err(|error| error.to_string())?;
-    let count_row = count_cursor
-        .next()
-        .ok_or_else(|| "Oracle returned no row count.".to_string())?
-        .map_err(|error| error.to_string())?;
-    let total_rows = count_row
-        .get::<i64>(0)
-        .map_err(|error| error.to_string())?
-        .max(0) as u64;
+    let total_rows = if count_total {
+        let count_params = params
+            .iter()
+            .map(|value| value as &dyn oracledb::ToDbValue)
+            .collect::<Vec<_>>();
+        let mut count_cursor = connection
+            .query(&count_sql, count_params.as_slice())
+            .map_err(|error| error.to_string())?;
+        let count_row = count_cursor
+            .next()
+            .ok_or_else(|| "Oracle returned no row count.".to_string())?
+            .map_err(|error| error.to_string())?;
+        Some(
+            count_row
+                .get::<i64>(0)
+                .map_err(|error| error.to_string())?
+                .max(0) as u64,
+        )
+    } else {
+        None
+    };
 
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = predicate {
@@ -535,16 +544,19 @@ fn load_page_sync(
     let mut budget = QueryBudget::new();
     for row in cursor {
         let row = row.map_err(|error| error.to_string())?;
-        let values = (0..meta.columns.len())
-            .map(|index| {
-                let value = cell_text(&row, index)?;
-                Ok(if meta.primary_indices.contains(&index) {
-                    value
-                } else {
-                    budget.page_cell(value)
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut values = Vec::with_capacity(meta.columns.len());
+        let mut truncated = Vec::with_capacity(meta.columns.len());
+        for index in 0..meta.columns.len() {
+            let value = cell_text(&row, index)?;
+            if meta.primary_indices.contains(&index) {
+                values.push(value);
+                truncated.push(false);
+            } else {
+                let (value, clipped) = budget.page_cell_flagged(value);
+                values.push(value);
+                truncated.push(clipped);
+            }
+        }
         let key = meta
             .primary_indices
             .iter()
@@ -554,6 +566,7 @@ fn load_page_sync(
             version: String::new(),
             key,
             values,
+            truncated,
         });
     }
     let has_more = page_rows.len() > limit as usize;
@@ -589,11 +602,18 @@ fn apply_changes_sync(
         let result = match change {
             GridChange::Insert { values } => build_insert(connection, schema, table, &meta, values),
             GridChange::Update {
-                values, original, ..
-            } => build_update(connection, schema, table, &meta, values, original),
-            GridChange::Delete { original, .. } => {
-                build_delete(connection, schema, table, &meta, original)
-            }
+                values,
+                original,
+                truncated,
+                ..
+            } => build_update(
+                connection, schema, table, &meta, values, original, &truncated,
+            ),
+            GridChange::Delete {
+                original,
+                truncated,
+                ..
+            } => build_delete(connection, schema, table, &meta, original, &truncated),
         };
         match result {
             Ok(count) => {
@@ -915,6 +935,7 @@ fn build_update(
     meta: &OracleMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<u64, String> {
     if values.is_empty() {
         return Err("No changes were staged for this row.".into());
@@ -935,7 +956,7 @@ fn build_update(
         ));
         params.push(value);
     }
-    let predicate = original_predicate(&meta.columns, &original, &mut params);
+    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
     let params = params
         .iter()
         .map(|value| value as &dyn oracledb::ToDbValue)
@@ -957,12 +978,13 @@ fn build_delete(
     table: &str,
     meta: &OracleMeta,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<u64, String> {
     if original.len() != meta.columns.len() {
         return Err("The table shape changed. Reload before retrying.".into());
     }
     let mut params = Vec::with_capacity(original.len());
-    let predicate = original_predicate(&meta.columns, &original, &mut params);
+    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
     let params = params
         .iter()
         .map(|value| value as &dyn oracledb::ToDbValue)
@@ -1006,13 +1028,17 @@ fn bind_expression(column: &ColumnInfo, placeholder: &str) -> String {
 fn original_predicate(
     columns: &[ColumnInfo],
     original: &[Option<String>],
+    truncated: &[bool],
     params: &mut Vec<Option<String>>,
 ) -> String {
     columns
         .iter()
         .zip(original)
-        .filter(|(column, value)| is_comparable(column) && !common::is_truncated_cell(value))
-        .map(|(column, value)| {
+        .enumerate()
+        .filter(|(index, (column, _))| {
+            is_comparable(column) && !truncated.get(*index).copied().unwrap_or(false)
+        })
+        .map(|(_, (column, value))| {
             params.push(value.clone());
             let placeholder = format!(":{}", params.len());
             let identifier = quote_identifier(&column.name);
@@ -1201,7 +1227,7 @@ mod tests {
         .await
         .expect("cleanup");
         run_sql(&session, "COMMIT").await.expect("commit cleanup");
-        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None)
+        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None, true)
             .await
             .expect("page");
         assert!(page.editable);
@@ -1222,6 +1248,7 @@ mod tests {
                 column: "NAME".into(),
                 descending: false,
             }),
+            true,
         )
         .await
         .expect("filtered page");
@@ -1243,6 +1270,7 @@ mod tests {
                 value: Some("1".into()),
             }],
             None,
+            true,
         )
         .await
         .expect("numeric filter");
@@ -1260,6 +1288,7 @@ mod tests {
                 value: Some("2000-01-01T00:00:00.000000000".into()),
             }],
             None,
+            true,
         )
         .await
         .expect("temporal filter");
@@ -1280,7 +1309,7 @@ mod tests {
         .await
         .expect("insert");
 
-        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None)
+        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None, true)
             .await
             .expect("page after insert");
         assert_eq!(page.rows.len(), initial_rows + 1);
@@ -1306,12 +1335,13 @@ mod tests {
                     ),
                 ]),
                 original: new_row.values.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await
         .expect("update");
 
-        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None)
+        let page = load_page(&session, "KOYO", "USERS", 0, 100, &[], None, true)
             .await
             .expect("page after update");
         let new_row = page
@@ -1332,6 +1362,7 @@ mod tests {
                 key: new_row.key,
                 version: String::new(),
                 original: new_row.values,
+                truncated: Vec::new(),
             }],
         )
         .await
@@ -1359,5 +1390,37 @@ mod tests {
         );
         run_sql(&session, "ROLLBACK").await.expect("rollback");
         assert!(!has_open_transaction(&session).await.expect("status"));
+    }
+}
+
+#[cfg(test)]
+mod truncation_predicate_tests {
+    use super::*;
+    use crate::models::FilterKind;
+
+    fn column(name: &str, primary_key: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            filter_type: "VARCHAR2".into(),
+            filter_kind: FilterKind::Text,
+            sortable: true,
+            nullable: true,
+            primary_key,
+            generated: false,
+            identity: false,
+        }
+    }
+
+    #[test]
+    fn predicates_skip_truncated_columns() {
+        let columns = vec![column("ID", true), column("SECRET", false)];
+        let original = vec![Some("1".into()), Some("partial [truncated]".into())];
+        let mut params = Vec::new();
+        let predicate = original_predicate(&columns, &original, &[false, true], &mut params);
+
+        assert!(!predicate.contains("\"SECRET\""));
+        assert!(predicate.contains("\"ID\""));
+        assert_eq!(params.len(), 1);
     }
 }

@@ -253,6 +253,7 @@ pub async fn load_page(
     limit: u32,
     filters: &[TableFilter],
     sort: Option<&TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     if schema != "main" {
         return Err("SQLite only supports the main schema.".into());
@@ -263,7 +264,15 @@ pub async fn load_page(
     let sort = sort.cloned();
     blocking(move || {
         let connection = lock(&connection)?;
-        load_page_sync(&connection, &table, offset, limit, &filters, sort.as_ref())
+        load_page_sync(
+            &connection,
+            &table,
+            offset,
+            limit,
+            &filters,
+            sort.as_ref(),
+            count_total,
+        )
     })
     .await
 }
@@ -404,6 +413,7 @@ fn load_page_sync(
     limit: u32,
     filters: &[TableFilter],
     sort: Option<&TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     let meta = load_meta(connection, table)?;
     if meta.columns.is_empty() {
@@ -426,12 +436,18 @@ fn load_page_sync(
         count_sql.push_str(" WHERE ");
         count_sql.push_str(predicate);
     }
-    let total_rows = connection
-        .query_row(&count_sql, params_from_iter(params.iter()), |row| {
-            row.get::<_, i64>(0)
-        })
-        .map_err(|error| error.to_string())?
-        .max(0) as u64;
+    let total_rows = if count_total {
+        Some(
+            connection
+                .query_row(&count_sql, params_from_iter(params.iter()), |row| {
+                    row.get::<_, i64>(0)
+                })
+                .map_err(|error| error.to_string())?
+                .max(0) as u64,
+        )
+    } else {
+        None
+    };
 
     let mut sql = format!("SELECT {selected} FROM {}", quote_identifier(table));
     if let Some(predicate) = predicate {
@@ -451,16 +467,19 @@ fn load_page_sync(
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
     let mut budget = QueryBudget::new();
     while let Some(row) = rows.next().map_err(|error| error.to_string())? {
-        let values = (0..meta.columns.len())
-            .map(|index| {
-                let value = cell_text(row, index)?;
-                Ok(if meta.primary_indices.contains(&index) {
-                    value
-                } else {
-                    budget.page_cell(value)
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let mut values = Vec::with_capacity(meta.columns.len());
+        let mut truncated = Vec::with_capacity(meta.columns.len());
+        for index in 0..meta.columns.len() {
+            let value = cell_text(row, index)?;
+            if meta.primary_indices.contains(&index) {
+                values.push(value);
+                truncated.push(false);
+            } else {
+                let (value, clipped) = budget.page_cell_flagged(value);
+                values.push(value);
+                truncated.push(clipped);
+            }
+        }
         let key = meta
             .primary_indices
             .iter()
@@ -470,6 +489,7 @@ fn load_page_sync(
             version: String::new(),
             key,
             values,
+            truncated,
         });
     }
 
@@ -510,16 +530,23 @@ fn apply_changes_sync(
                 common::ensure_one_row(count as u64)?;
             }
             GridChange::Update {
-                values, original, ..
+                values,
+                original,
+                truncated,
+                ..
             } => {
-                let (sql, params) = build_update(table, &meta, values, original)?;
+                let (sql, params) = build_update(table, &meta, values, original, &truncated)?;
                 let count = transaction
                     .execute(&sql, params_from_iter(params.iter()))
                     .map_err(|error| error.to_string())?;
                 common::ensure_one_row(count as u64)?;
             }
-            GridChange::Delete { original, .. } => {
-                let (sql, params) = build_delete(table, &meta, original)?;
+            GridChange::Delete {
+                original,
+                truncated,
+                ..
+            } => {
+                let (sql, params) = build_delete(table, &meta, original, &truncated)?;
                 let count = transaction
                     .execute(&sql, params_from_iter(params.iter()))
                     .map_err(|error| error.to_string())?;
@@ -837,6 +864,7 @@ fn build_update(
     meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<(String, Vec<Option<String>>), String> {
     if values.is_empty() {
         return Err("Update contains no changed values.".into());
@@ -857,7 +885,7 @@ fn build_update(
         };
         assignments.push(format!("{} = {expression}", quote_identifier(&name)));
     }
-    let predicate = original_predicate(meta, original, &mut params);
+    let predicate = original_predicate(meta, original, truncated, &mut params);
     Ok((
         format!(
             "UPDATE {} SET {} WHERE {predicate}",
@@ -872,12 +900,13 @@ fn build_delete(
     table: &str,
     meta: &TableMeta,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<(String, Vec<Option<String>>), String> {
     if original.len() != meta.columns.len() {
         return Err("Delete is missing the original row values.".into());
     }
     let mut params = Vec::with_capacity(meta.columns.len());
-    let predicate = original_predicate(meta, original, &mut params);
+    let predicate = original_predicate(meta, original, truncated, &mut params);
     Ok((
         format!("DELETE FROM {} WHERE {predicate}", quote_identifier(table)),
         params,
@@ -887,6 +916,7 @@ fn build_delete(
 fn original_predicate(
     meta: &TableMeta,
     original: Vec<Option<String>>,
+    truncated: &[bool],
     params: &mut Vec<Option<String>>,
 ) -> String {
     let mut predicates = Vec::with_capacity(meta.columns.len());
@@ -902,9 +932,7 @@ fn original_predicate(
         predicates.push(format!("{expression} IS ?"));
     }
     for (index, column) in meta.columns.iter().enumerate() {
-        if meta.primary_indices.contains(&index)
-            || crate::common::is_truncated_cell(&original[index])
-        {
+        if meta.primary_indices.contains(&index) || truncated.get(index).copied().unwrap_or(false) {
             continue;
         }
         params.push(original[index].clone());
@@ -995,7 +1023,7 @@ mod tests {
             interrupt,
         };
 
-        let page = load_page(&session, "main", "item_names", 0, 10, &[], None)
+        let page = load_page(&session, "main", "item_names", 0, 10, &[], None, true)
             .await
             .expect("page view");
         assert_eq!(page.rows.len(), 2);
@@ -1034,6 +1062,7 @@ mod tests {
                 column: "id".into(),
                 descending: false,
             }),
+            true,
         )
         .await
         .expect("load sorted page");
@@ -1174,11 +1203,12 @@ mod tests {
                 column: "name".into(),
                 descending: false,
             }),
+            true,
         )
         .await
         .expect("load filtered page");
         assert_eq!(page.rows.len(), 2);
-        assert_eq!(page.total_rows, 2);
+        assert_eq!(page.total_rows, Some(2));
         assert_eq!(page.rows[0].values[1].as_deref(), Some("Alice"));
         assert_eq!(page.rows[1].values[1].as_deref(), Some("Charlie"));
 
@@ -1195,6 +1225,7 @@ mod tests {
                 version: String::new(),
                 values,
                 original: original.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await
@@ -1209,6 +1240,7 @@ mod tests {
                 version: String::new(),
                 values: BTreeMap::from([("name".to_string(), Some("Stale".to_string()))]),
                 original,
+                truncated: Vec::new(),
             }],
         )
         .await;
@@ -1229,7 +1261,7 @@ mod tests {
             connection: Arc::new(Mutex::new(connection)),
             interrupt,
         };
-        let page = load_page(&session, "main", "measures", 0, 100, &[], None)
+        let page = load_page(&session, "main", "measures", 0, 100, &[], None, true)
             .await
             .expect("load page");
         assert_eq!(
@@ -1250,6 +1282,7 @@ mod tests {
                     ("payload".to_string(), Some("DEADBEEF".to_string())),
                 ]),
                 original: page.rows[0].values.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await
@@ -1277,12 +1310,13 @@ mod tests {
                 version: String::new(),
                 values: BTreeMap::from([("payload".to_string(), Some("xyz".to_string()))]),
                 original: page.rows[0].values.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await;
         assert!(invalid.is_err(), "invalid binary input must be rejected");
 
-        let page = load_page(&session, "main", "measures", 0, 100, &[], None)
+        let page = load_page(&session, "main", "measures", 0, 100, &[], None, true)
             .await
             .expect("reload page");
         assert_eq!(page.rows[0].values[3].as_deref(), Some("new"));
@@ -1337,5 +1371,49 @@ mod tests {
         let cell = output.result_sets[0].rows[0][0].as_deref().expect("cell");
         assert!(cell.ends_with(" [truncated]"));
         assert!(cell.len() <= crate::common::MAX_CELL_CHARS + " [truncated]".len());
+    }
+}
+
+#[cfg(test)]
+mod truncation_predicate_tests {
+    use super::*;
+    use crate::models::FilterKind;
+
+    fn column(name: &str, primary_key: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            filter_type: "TEXT".into(),
+            filter_kind: FilterKind::Text,
+            sortable: true,
+            nullable: true,
+            primary_key,
+            generated: false,
+            identity: false,
+        }
+    }
+
+    #[test]
+    fn update_and_delete_skip_truncated_columns() {
+        let meta = TableMeta::new(vec![column("id", true), column("secret", false)], None);
+        let original = vec![Some("1".into()), Some("partial [truncated]".into())];
+        let truncated = [false, true];
+
+        let (update, update_params) = build_update(
+            "items",
+            &meta,
+            BTreeMap::from([("secret".into(), Some("new".into()))]),
+            original.clone(),
+            &truncated,
+        )
+        .expect("update");
+        let (delete, delete_params) =
+            build_delete("items", &meta, original, &truncated).expect("delete");
+
+        assert!(!update.contains("\"secret\" IS ?"));
+        assert!(!delete.contains("\"secret\""));
+        assert!(delete.contains("CAST(\"id\" AS TEXT) IS ?"));
+        assert_eq!(update_params.len(), 2);
+        assert_eq!(delete_params.len(), 1);
     }
 }

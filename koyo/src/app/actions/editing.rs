@@ -34,6 +34,19 @@ impl KoyoApp {
         if page.rows.get(row).is_none() || info.generated || info.identity {
             return;
         }
+        if page.rows[row]
+            .truncated
+            .get(column)
+            .copied()
+            .unwrap_or(false)
+        {
+            this_notice(
+                &mut self.tabs[index],
+                "This cell was truncated for display. Filter the row before editing it.",
+            );
+            cx.notify();
+            return;
+        }
         let current = table
             .staged
             .iter()
@@ -63,6 +76,7 @@ impl KoyoApp {
                 key: row_data.key.clone(),
                 version: row_data.version.clone(),
                 original: row_data.values.clone(),
+                truncated: row_data.truncated.clone(),
                 column: info.name.clone(),
                 original_value: row_data.values[column].clone(),
             },
@@ -175,12 +189,14 @@ impl KoyoApp {
                 key,
                 version,
                 original,
+                truncated,
                 column,
                 original_value,
             } => CellTarget::Update {
                 key: key.clone(),
                 version: version.clone(),
                 original: original.clone(),
+                truncated: truncated.clone(),
                 column: column.clone(),
                 original_value: original_value.clone(),
             },
@@ -217,6 +233,7 @@ impl KoyoApp {
                 key,
                 version,
                 original,
+                truncated,
                 column,
                 original_value,
             } => {
@@ -247,6 +264,7 @@ impl KoyoApp {
                         version,
                         values,
                         original,
+                        truncated,
                     });
                 }
             }

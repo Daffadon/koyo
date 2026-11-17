@@ -361,7 +361,10 @@ fn render_data_row(
         let value = update_values
             .and_then(|values| values.get(&column.name).cloned())
             .unwrap_or_else(|| row.values[column_index].clone());
-        let can_edit = editable && !column.generated && !column.identity;
+        let can_edit = editable
+            && !column.generated
+            && !column.identity
+            && !row.truncated.get(column_index).copied().unwrap_or(false);
         let copy_value = value.clone().unwrap_or_default();
         let copy_row = Rc::clone(&copy_row_text);
         row_view = row_view.child(

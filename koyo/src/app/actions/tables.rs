@@ -80,15 +80,25 @@ impl KoyoApp {
                     String::new()
                 };
                 let info = database::connect(&manager, &profile_for_task, &password).await?;
+                let mut catalog_errors = Vec::new();
                 let tables = database::list_tables(&manager, info.session_id)
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|error| {
+                        catalog_errors.push(error);
+                        Vec::new()
+                    });
                 let objects = database::list_schema_objects(&manager, info.session_id)
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|error| {
+                        catalog_errors.push(error);
+                        Vec::new()
+                    });
                 let metadata = database::list_database_metadata(&manager, info.session_id)
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|error| {
+                        catalog_errors.push(error);
+                        Vec::new()
+                    });
                 let page = database::load_table_page(
                     &manager,
                     info.session_id,
@@ -99,19 +109,21 @@ impl KoyoApp {
                     PAGE_LIMIT,
                     Vec::new(),
                     None,
+                    true,
                 )
                 .await;
-                Ok::<_, String>((info, tables, objects, metadata, page))
+                let catalog_error = (!catalog_errors.is_empty()).then(|| catalog_errors.join("; "));
+                Ok::<_, String>((info, tables, objects, metadata, page, catalog_error))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
-                    if let Ok((info, _, _, _, _)) = &result {
+                    if let Ok((info, _, _, _, _, _)) = &result {
                         this.disconnect_session(info.session_id);
                     }
                     return;
                 };
                 match result {
-                    Ok((info, tables, objects, metadata, page)) => {
+                    Ok((info, tables, objects, metadata, page, catalog_error)) => {
                         let operation_matches = this.tabs[index]
                             .body
                             .table()
@@ -126,6 +138,9 @@ impl KoyoApp {
                         this.tabs[index].tables = tables;
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
+                        if let Some(error) = catalog_error {
+                            this.tabs[index].notice = error;
+                        }
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
                             if table_tab.operation_id != Some(operation_id) {
                                 return;
@@ -224,6 +239,7 @@ impl KoyoApp {
         let name = table.table.clone();
         let filters_for_task = filters.clone();
         let sort_for_task = sort.clone();
+        let count_total = offset == 0 || table.total_rows_cache.is_none();
         cx.notify();
 
         let manager = self.manager.clone();
@@ -241,6 +257,7 @@ impl KoyoApp {
                     PAGE_LIMIT,
                     filters_for_task,
                     sort_for_task,
+                    count_total,
                 )
                 .await
             },
@@ -258,6 +275,9 @@ impl KoyoApp {
                 table.loading = false;
                 match result {
                     Ok(page) => {
+                        if let Some(total) = page.total_rows {
+                            table.total_rows_cache = Some(total);
+                        }
                         table.page = Some(page);
                         table.filters = filters;
                         table.sort = sort;
@@ -384,11 +404,13 @@ impl KoyoApp {
                     version,
                     values,
                     original,
+                    truncated,
                 } => GridChange::Update {
                     key,
                     version,
                     values,
                     original,
+                    truncated,
                 },
             })
             .collect::<Vec<_>>();
@@ -677,12 +699,14 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
-        let TabBody::Table(table) = &self.tabs[index].body else {
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
         if table.loading {
             return;
         }
+        // Refresh is the user's explicit request for current data.
+        table.total_rows_cache = None;
         let offset = table.page.as_ref().map(|page| page.offset).unwrap_or(0);
         let filters = table.filters.clone();
         let sort = table.sort.clone();

@@ -313,6 +313,7 @@ fn remove_legacy_profiles(path: &Path) -> Result<(), String> {
 pub struct ProfileStore {
     encrypted: EncryptedStateStore,
     legacy_path: PathBuf,
+    migration_warning: Arc<Mutex<Option<String>>>,
 }
 
 impl ProfileStore {
@@ -321,6 +322,7 @@ impl ProfileStore {
         Self {
             encrypted: EncryptedStateStore::new(config_dir.join(PROFILE_FILE)),
             legacy_path: config_dir.join(LEGACY_PROFILE_FILE),
+            migration_warning: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -334,7 +336,18 @@ impl ProfileStore {
         Self {
             encrypted: EncryptedStateStore::with_key(config_dir.join(PROFILE_FILE), key),
             legacy_path: config_dir.join(LEGACY_PROFILE_FILE),
+            migration_warning: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Consume the one-time warning raised when a plaintext profile file was
+    /// imported. The old profile IDs were replaced, so passwords saved under
+    /// the old IDs remain in the credential store until the user removes them.
+    pub fn take_migration_warning(&self) -> Option<String> {
+        self.migration_warning
+            .lock()
+            .ok()
+            .and_then(|mut warning| warning.take())
     }
 
     pub fn load_profiles(&self) -> Result<Vec<ConnectionProfile>, String> {
@@ -367,6 +380,12 @@ impl ProfileStore {
                 format!("Could not save encrypted connection profiles: {error}")
             })?;
             remove_legacy_profiles(&self.legacy_path)?;
+            if let Ok(mut warning) = self.migration_warning.lock() {
+                *warning = Some(
+                    "Plaintext connection profiles were imported and encrypted. Old passwords remain in the OS credential store under the previous profile IDs; remove them manually if needed."
+                        .into(),
+                );
+            }
             return Ok(profiles);
         }
 
@@ -520,7 +539,6 @@ impl ProfileStore {
                 }
             }
         } else {
-            let old_profiles = profiles.clone();
             self.write_profiles(&profiles)?;
             if let Some(password) = password_to_save {
                 let entry = match credential_entry(id) {
@@ -621,6 +639,8 @@ mod tests {
         assert_eq!(loaded[0].username, "app_user");
         assert_ne!(loaded[0].id, profile.id, "legacy IDs must be regenerated");
         assert!(!directory.join(LEGACY_PROFILE_FILE).exists());
+        assert!(store.take_migration_warning().is_some());
+        assert!(store.take_migration_warning().is_none());
         let encrypted = fs::read(directory.join(PROFILE_FILE)).expect("read encrypted profiles");
         assert!(
             !encrypted

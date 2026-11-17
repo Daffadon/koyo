@@ -462,7 +462,7 @@ impl KoyoApp {
             .map(|thread| AiThread {
                 id: thread.id,
                 title: thread.title.clone(),
-                messages: thread.messages.clone(),
+                messages: transcript_snapshot(&thread.messages),
             })
             .collect()
     }

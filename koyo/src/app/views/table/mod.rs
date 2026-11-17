@@ -116,7 +116,10 @@ pub(super) fn render(
         .map(|page| page.limit)
         .unwrap_or(crate::app::PAGE_LIMIT);
     let has_more = page_ref.is_some_and(|page| page.has_more);
-    let total_rows = page_ref.map(|page| page.total_rows).unwrap_or(0);
+    let total_rows = page_ref
+        .and_then(|page| page.total_rows)
+        .or(table.total_rows_cache)
+        .unwrap_or(0);
     let total_pages = total_rows.div_ceil(u64::from(limit.max(1))).max(1);
     let page_number = offset / limit.max(1) + 1;
 

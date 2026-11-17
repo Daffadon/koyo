@@ -36,6 +36,9 @@ impl KoyoApp {
             }
             Err(error) => (Vec::new(), error),
         };
+        if let Some(warning) = store.take_migration_warning() {
+            status = warning;
+        }
         if let Some(warning) = state_warning {
             status = warning;
         }
@@ -577,6 +580,7 @@ impl KoyoApp {
                 indexes: Vec<koyo_core::models::TableIndexInfo>,
                 diagram_metadata_loaded: bool,
                 page: Option<koyo_core::models::TablePage>,
+                total_rows_cache: Option<u64>,
                 filters: Vec<koyo_core::models::TableFilter>,
                 filter_text: String,
                 sort: Option<koyo_core::models::TableSort>,
@@ -609,6 +613,7 @@ impl KoyoApp {
                 indexes: table.indexes.clone(),
                 diagram_metadata_loaded: table.diagram_metadata_loaded,
                 page: table.page.clone(),
+                total_rows_cache: table.total_rows_cache,
                 filters: table.filters.clone(),
                 filter_text: table.filter_input.read(cx).value().to_string(),
                 sort: table.sort.clone(),
@@ -640,6 +645,7 @@ impl KoyoApp {
                 indexes,
                 diagram_metadata_loaded,
                 page,
+                total_rows_cache,
                 filters,
                 filter_text,
                 sort,
@@ -656,6 +662,7 @@ impl KoyoApp {
                     table.indexes = indexes;
                     table.diagram_metadata_loaded = diagram_metadata_loaded;
                     table.page = page;
+                    table.total_rows_cache = total_rows_cache;
                     table.filters = filters;
                     table.filter_input.update(cx, |input, cx| {
                         input.set_value(filter_text, window, cx);
@@ -978,6 +985,7 @@ impl KoyoApp {
                 diagram_metadata_loaded: false,
                 diagram_generation: 0,
                 page: None,
+                total_rows_cache: None,
                 filters: Vec::new(),
                 sort: None,
                 staged: Vec::new(),
@@ -1257,8 +1265,12 @@ impl KoyoApp {
                     .profile
                     .clone()
                     .unwrap_or_else(|| connection.profile.clone());
-                self.parked_connections
-                    .retain(|parked| parked.connection.session_id != connection.session_id);
+                // Only one idle session is reusable. Disconnect any older
+                // parked connection instead of keeping invisible sessions.
+                let previous = std::mem::take(&mut self.parked_connections);
+                for parked in previous {
+                    self.disconnect_session(parked.connection.session_id);
+                }
                 self.parked_connections.push(LiveConnection {
                     profile,
                     connection,

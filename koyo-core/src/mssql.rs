@@ -449,6 +449,7 @@ pub async fn load_page(
     limit: u32,
     filters: &[TableFilter],
     sort: Option<&TableSort>,
+    count_total: bool,
 ) -> Result<TablePage, String> {
     let meta = load_meta(&mut session.client, schema, table).await?;
     let limit = limit.clamp(1, TABLE_PAGE_LIMIT);
@@ -477,22 +478,28 @@ pub async fn load_page(
         count_sql.push_str(" WHERE ");
         count_sql.push_str(predicate);
     }
-    let mut count_query = Query::new(count_sql);
-    for value in &params {
-        count_query.bind(value.as_deref());
-    }
-    let count_row = count_query
-        .query(&mut session.client)
-        .await
-        .map_err(|error| error.to_string())?
-        .into_row()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "SQL Server returned no row count.".to_string())?;
-    let total_rows = count_row
-        .get::<i64, _>(0)
-        .ok_or_else(|| "SQL Server returned an invalid row count.".to_string())?
-        .max(0) as u64;
+    let total_rows = if count_total {
+        let mut count_query = Query::new(count_sql);
+        for value in &params {
+            count_query.bind(value.as_deref());
+        }
+        let count_row = count_query
+            .query(&mut session.client)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_row()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "SQL Server returned no row count.".to_string())?;
+        Some(
+            count_row
+                .get::<i64, _>(0)
+                .ok_or_else(|| "SQL Server returned an invalid row count.".to_string())?
+                .max(0) as u64,
+        )
+    } else {
+        None
+    };
 
     sql.push_str(&format!(
         " ORDER BY {order} OFFSET {offset} ROWS FETCH NEXT {} ROWS ONLY",
@@ -513,18 +520,19 @@ pub async fn load_page(
     let mut page_rows = Vec::with_capacity(results.first().map_or(0, Vec::len));
     let mut budget = QueryBudget::new();
     for row in results.into_iter().next().unwrap_or_default() {
-        let values = row
-            .cells()
-            .enumerate()
-            .map(|(index, (_, value))| {
-                let value = column_text(value);
-                if meta.primary_indices.contains(&index) {
-                    value
-                } else {
-                    budget.page_cell(value)
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut values = Vec::with_capacity(meta.columns.len());
+        let mut truncated = Vec::with_capacity(meta.columns.len());
+        for (index, (_, value)) in row.cells().enumerate() {
+            let value = column_text(value);
+            if meta.primary_indices.contains(&index) {
+                values.push(value);
+                truncated.push(false);
+            } else {
+                let (value, clipped) = budget.page_cell_flagged(value);
+                values.push(value);
+                truncated.push(clipped);
+            }
+        }
         let key = meta
             .primary_indices
             .iter()
@@ -534,6 +542,7 @@ pub async fn load_page(
             version: String::new(),
             key,
             values,
+            truncated,
         });
     }
     let has_more = page_rows.len() > limit as usize;
@@ -574,9 +583,16 @@ pub async fn apply_changes(
         let built = match change {
             GridChange::Insert { values } => build_insert(schema, table, &meta, values),
             GridChange::Update {
-                values, original, ..
-            } => build_update(schema, table, &meta, values, original),
-            GridChange::Delete { original, .. } => build_delete(schema, table, &meta, original),
+                values,
+                original,
+                truncated,
+                ..
+            } => build_update(schema, table, &meta, values, original, &truncated),
+            GridChange::Delete {
+                original,
+                truncated,
+                ..
+            } => build_delete(schema, table, &meta, original, &truncated),
         };
         let (sql, params) = match built {
             Ok(built) => built,
@@ -938,6 +954,7 @@ fn build_update(
     meta: &MssqlMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<(String, Vec<Option<String>>), String> {
     if values.is_empty() {
         return Err("No changes were staged for this row.".into());
@@ -958,7 +975,7 @@ fn build_update(
         ));
         params.push(value);
     }
-    let predicate = original_predicate(&meta.columns, &original, &mut params);
+    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
     Ok((
         format!(
             "UPDATE {} SET {} WHERE {predicate}",
@@ -974,12 +991,13 @@ fn build_delete(
     table: &str,
     meta: &MssqlMeta,
     original: Vec<Option<String>>,
+    truncated: &[bool],
 ) -> Result<(String, Vec<Option<String>>), String> {
     if original.len() != meta.columns.len() {
         return Err("The table shape changed. Reload before retrying.".into());
     }
     let mut params = Vec::with_capacity(original.len());
-    let predicate = original_predicate(&meta.columns, &original, &mut params);
+    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
     Ok((
         format!(
             "DELETE FROM {} WHERE {predicate}",
@@ -1003,13 +1021,15 @@ fn page_display_expression(column: &ColumnInfo) -> String {
 fn original_predicate(
     columns: &[ColumnInfo],
     original: &[Option<String>],
+    truncated: &[bool],
     params: &mut Vec<Option<String>>,
 ) -> String {
     columns
         .iter()
         .zip(original)
-        .filter(|(_, value)| !common::is_truncated_cell(value))
-        .map(|(column, value)| {
+        .enumerate()
+        .filter(|(index, (_, _))| !truncated.get(*index).copied().unwrap_or(false))
+        .map(|(_, (column, value))| {
             params.push(value.clone());
             let placeholder = format!("@P{}", params.len());
             let expression = display_expression(column);
@@ -1249,7 +1269,7 @@ mod tests {
         )
         .await
         .expect("cleanup");
-        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None)
+        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None, true)
             .await
             .expect("page");
         assert!(page.editable);
@@ -1270,6 +1290,7 @@ mod tests {
                 column: "name".into(),
                 descending: false,
             }),
+            true,
         )
         .await
         .expect("filtered page");
@@ -1291,6 +1312,7 @@ mod tests {
                 value: Some("1".into()),
             }],
             None,
+            true,
         )
         .await
         .expect("numeric filter");
@@ -1308,6 +1330,7 @@ mod tests {
                 value: Some("2000-01-01T00:00:00".into()),
             }],
             None,
+            true,
         )
         .await
         .expect("temporal filter");
@@ -1328,7 +1351,7 @@ mod tests {
         .await
         .expect("insert");
 
-        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None)
+        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None, true)
             .await
             .expect("page after insert");
         assert_eq!(page.rows.len(), initial_rows + 1);
@@ -1351,12 +1374,13 @@ mod tests {
                     ("created_at".into(), Some("2025-01-02T03:04:05".into())),
                 ]),
                 original: new_row.values.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await
         .expect("update");
 
-        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None)
+        let page = load_page(&mut session, "dbo", "users", 0, 100, &[], None, true)
             .await
             .expect("page after update");
         let new_row = page
@@ -1374,6 +1398,7 @@ mod tests {
                 key: new_row.key,
                 version: String::new(),
                 original: new_row.values,
+                truncated: Vec::new(),
             }],
         )
         .await
@@ -1407,7 +1432,7 @@ mod tests {
         )
         .await
         .expect("insert binary fixture");
-        let binary_page = load_page(&mut session, "dbo", &binary_table, 0, 100, &[], None)
+        let binary_page = load_page(&mut session, "dbo", &binary_table, 0, 100, &[], None, true)
             .await
             .expect("load binary page");
         assert_eq!(binary_page.rows[0].values[1].as_deref(), Some("00AA"));
@@ -1420,6 +1445,7 @@ mod tests {
                 version: String::new(),
                 values: BTreeMap::from([("payload".to_string(), Some("DEADBEEF".to_string()))]),
                 original: binary_page.rows[0].values.clone(),
+                truncated: Vec::new(),
             }],
         )
         .await
@@ -1506,5 +1532,37 @@ mod cancel_tests {
             started.elapsed() < Duration::from_secs(5),
             "cancelled query should return before the delay ends"
         );
+    }
+}
+
+#[cfg(test)]
+mod truncation_predicate_tests {
+    use super::*;
+    use crate::models::FilterKind;
+
+    fn column(name: &str, primary_key: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: "text".into(),
+            filter_type: "TEXT".into(),
+            filter_kind: FilterKind::Text,
+            sortable: true,
+            nullable: true,
+            primary_key,
+            generated: false,
+            identity: false,
+        }
+    }
+
+    #[test]
+    fn predicates_skip_truncated_columns() {
+        let columns = vec![column("id", true), column("secret", false)];
+        let original = vec![Some("1".into()), Some("partial [truncated]".into())];
+        let mut params = Vec::new();
+        let predicate = original_predicate(&columns, &original, &[false, true], &mut params);
+
+        assert!(!predicate.contains("[secret]"));
+        assert!(predicate.contains("[id]"));
+        assert_eq!(params.len(), 1);
     }
 }

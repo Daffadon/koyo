@@ -43,6 +43,7 @@ pub(crate) enum StagedChange {
         version: String,
         values: BTreeMap<String, Option<String>>,
         original: Vec<Option<String>>,
+        truncated: Vec<bool>,
     },
 }
 
@@ -105,6 +106,7 @@ pub(crate) struct TableTab {
     pub(crate) diagram_metadata_loaded: bool,
     pub(crate) diagram_generation: u64,
     pub(crate) page: Option<TablePage>,
+    pub(crate) total_rows_cache: Option<u64>,
     pub(crate) filters: Vec<TableFilter>,
     pub(crate) sort: Option<TableSort>,
     pub(crate) staged: Vec<StagedChange>,
@@ -174,6 +176,7 @@ pub(crate) enum CellTarget {
         key: Vec<Option<String>>,
         version: String,
         original: Vec<Option<String>>,
+        truncated: Vec<bool>,
         column: String,
         original_value: Option<String>,
     },

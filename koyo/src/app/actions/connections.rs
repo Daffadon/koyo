@@ -315,6 +315,7 @@ impl KoyoApp {
                                 // previous session. Never let Apply use them
                                 // against the newly connected server.
                                 table.page = None;
+                                table.total_rows_cache = None;
                                 table.staged.clear();
                                 table.loading = false;
                                 table.operation_id = None;

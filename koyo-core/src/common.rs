@@ -76,13 +76,31 @@ impl QueryBudget {
     /// is exhausted, keep a visible marker instead of turning the cell into
     /// NULL. Primary-key cells should bypass this method so edits stay valid.
     pub fn page_cell(&mut self, value: Option<String>) -> Option<String> {
-        let Some(value) = value else {
-            return None;
+        self.page_cell_flagged(value).0
+    }
+
+    /// Like `page_cell`, but reports whether this cell was clipped or replaced.
+    /// The flag lets the UI refuse edits that would write partial data back.
+    pub fn page_cell_flagged(&mut self, value: Option<String>) -> (Option<String>, bool) {
+        let Some(mut value) = value else {
+            return (None, false);
         };
-        self.cell(Some(value)).or_else(|| {
+        if self.remaining == 0 {
             self.truncated = true;
-            Some("[truncated]".to_string())
-        })
+            return (Some("[truncated]".to_string()), true);
+        }
+        let cap = self.remaining.min(MAX_CELL_CHARS);
+        let mut clipped = false;
+        if value.len() > cap {
+            value.truncate(floor_char_boundary(&value, cap));
+            if !value.ends_with(" [truncated]") {
+                value.push_str(" [truncated]");
+            }
+            self.truncated = true;
+            clipped = true;
+        }
+        self.remaining = self.remaining.saturating_sub(value.len());
+        (Some(value), clipped)
     }
 
     pub fn cell_str(&mut self, value: Option<&str>) -> Option<String> {
@@ -215,12 +233,6 @@ pub fn ensure_one_row(count: u64) -> Result<(), String> {
         ),
         _ => Err("The change matched more than one row. Reload before retrying.".into()),
     }
-}
-
-pub fn is_truncated_cell(value: &Option<String>) -> bool {
-    value
-        .as_deref()
-        .is_some_and(|value| value.ends_with(" [truncated]"))
 }
 
 pub fn build_keyed_order_by(

@@ -734,6 +734,36 @@ mod tests {
     }
 
     #[test]
+    fn alias_conflicts_with_another_table_are_numbered() {
+        let refs = vec![
+            TableRef {
+                schema: None,
+                table: "users".into(),
+                alias: Some("t".into()),
+            },
+            TableRef {
+                schema: None,
+                table: "orders".into(),
+                alias: Some("t".into()),
+            },
+        ];
+        assert_eq!(suggest_aliases(&refs[1], &refs), vec!["t2", "t3", "t4"]);
+    }
+
+    #[test]
+    fn aliases_stop_at_where_clause() {
+        let refs = parse_table_refs("SELECT u.email FROM users u WHERE u.active = 1");
+        assert_eq!(
+            refs,
+            vec![TableRef {
+                schema: None,
+                table: "users".into(),
+                alias: Some("u".into()),
+            }]
+        );
+    }
+
+    #[test]
     fn repeated_table_is_adding_an_alias() {
         let refs = vec![
             TableRef {

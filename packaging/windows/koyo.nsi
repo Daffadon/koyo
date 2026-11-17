@@ -3,7 +3,7 @@ Unicode true
 !include "MUI2.nsh"
 
 !ifndef VERSION
-  !define VERSION "0.2.4"
+  !error "VERSION must be defined (for example, makensis /DVERSION=1.2.3 packaging/windows/koyo.nsi)"
 !endif
 !ifndef ICON
   !define ICON "../../koyo/assets/koyo.ico"

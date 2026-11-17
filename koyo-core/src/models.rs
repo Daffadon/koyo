@@ -196,6 +196,8 @@ pub struct GridRow {
     pub version: String,
     pub key: Vec<Option<String>>,
     pub values: Vec<Option<String>>,
+    #[serde(default)]
+    pub truncated: Vec<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -205,7 +207,7 @@ pub struct TablePage {
     pub rows: Vec<GridRow>,
     pub offset: u32,
     pub limit: u32,
-    pub total_rows: u64,
+    pub total_rows: Option<u64>,
     pub has_more: bool,
     pub editable: bool,
 }
@@ -245,12 +247,16 @@ pub enum GridChange {
         values: BTreeMap<String, Option<String>>,
         #[serde(default)]
         original: Vec<Option<String>>,
+        #[serde(default)]
+        truncated: Vec<bool>,
     },
     Delete {
         key: Vec<Option<String>>,
         version: String,
         #[serde(default)]
         original: Vec<Option<String>>,
+        #[serde(default)]
+        truncated: Vec<bool>,
     },
 }
 
