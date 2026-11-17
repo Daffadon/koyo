@@ -196,6 +196,17 @@ pub(super) fn render(
     // animation frame; toggling the button in and out is what flickers.
     let cancel_disabled = !loading || cancelling || !cancel_supported;
     actions = actions
+        .when(loading, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w(px(20.0))
+                    .h(px(20.0))
+                    .child(Spinner::new().with_size(Size::Small).color(palette.muted)),
+            )
+        })
         .child(
             Button::new("cancel-table")
                 .secondary()
@@ -321,6 +332,9 @@ pub(super) fn render(
         })
         .collect::<Vec<_>>();
 
+    // Keep the current page mounted while the next one loads. The small
+    // spinner in the toolbar is enough; a full-size overlay hides the data
+    // and makes paging look like the table disappeared.
     let grid = if page.is_none() && loading {
         loading_state(palette)
     } else if let Some(page) = &page {
@@ -342,29 +356,6 @@ pub(super) fn render(
             palette,
         )
         .into_any_element()
-    };
-    let grid = if loading && page.is_some() {
-        div()
-            .relative()
-            .flex_1()
-            .w_full()
-            .min_h(px(0.0))
-            .child(grid)
-            .child(
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(palette.background)
-                    .child(Spinner::new().with_size(Size::Large).color(palette.muted)),
-            )
-            .into_any_element()
-    } else {
-        grid
     };
 
     let footer_mono = cx.theme().mono_font_family.clone();
