@@ -28,33 +28,19 @@ pub(super) fn result_grid(
             })
             .collect::<Vec<_>>(),
     );
-    let width = RESULT_ROW_RAIL_WIDTH + widths.iter().sum::<f32>();
+    let columns_width = widths.iter().sum::<f32>();
+    let width = RESULT_ROW_RAIL_WIDTH + columns_width;
     let palette = *palette;
     let scroll_handle = result_grid_scroll_handle(tab_id, result_index);
-    let header_left = px(f32::from(scroll_handle.offset().x).min(0.0));
+    let max_left = -f32::from(scroll_handle.max_offset().x);
+    let visible_x = f32::from(scroll_handle.offset().x).clamp(max_left, 0.0);
+    let header_left = px(visible_x);
+    let frozen_left = px(-visible_x);
 
     let header = h_flex()
-        .w(px(width))
-        .min_w(px(width))
+        .w(px(columns_width))
+        .min_w(px(columns_width))
         .flex_shrink_0()
-        .bg(palette.panel)
-        .border_b_1()
-        .border_color(palette.border)
-        .child(
-            div()
-                .w(px(RESULT_ROW_RAIL_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_end()
-                .px_1p5()
-                .py_2()
-                .text_xs()
-                .text_color(palette.muted)
-                .border_r_1()
-                .border_color(palette.border)
-                .child("Row"),
-        )
         .children(result.columns.iter().enumerate().map(|(index, column)| {
             let column_width = widths.get(index).copied().unwrap_or(RESULT_COLUMN_WIDTH);
             h_flex()
@@ -171,6 +157,7 @@ pub(super) fn result_grid(
                         row_index,
                         widths.as_slice(),
                         palette,
+                        frozen_left,
                         cx,
                     ))
             }))
@@ -183,17 +170,40 @@ pub(super) fn result_grid(
         .min_h(px(0.0))
         .overflow_hidden()
         .child(
-            div()
-                .id(("result-header-clip", tab_id))
+            h_flex()
                 .w_full()
                 .flex_shrink_0()
-                .overflow_hidden()
+                .bg(palette.panel)
+                .border_b_1()
+                .border_color(palette.border)
                 .child(
                     div()
-                        .relative()
-                        .left(header_left)
-                        .w(px(width))
-                        .child(header),
+                        .w(px(RESULT_ROW_RAIL_WIDTH))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .px_1p5()
+                        .py_2()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .border_r_1()
+                        .border_color(palette.border)
+                        .child("Row"),
+                )
+                .child(
+                    div()
+                        .id(("result-header-clip", tab_id))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .relative()
+                                .left(header_left)
+                                .w(px(columns_width))
+                                .child(header),
+                        ),
                 ),
         )
         .child(
@@ -219,6 +229,7 @@ fn render_result_row(
     row_index: usize,
     widths: &[f32],
     palette: Palette,
+    frozen_left: Pixels,
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let Some(row) = result.rows.get(row_index) else {
@@ -228,7 +239,13 @@ fn render_result_row(
         .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\t");
+    let row_bg = if row_index % 2 == 1 {
+        palette.panel
+    } else {
+        palette.background
+    };
     h_flex()
+        .relative()
         .id(SharedString::from(format!(
             "result-row-{tab_id}-{result_index}-{row_index}"
         )))
@@ -237,28 +254,7 @@ fn render_result_row(
         .border_b_1()
         .border_color(palette.border)
         .when(row_index % 2 == 1, |this| this.bg(palette.panel))
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "result-row-rail-{tab_id}-{result_index}-{row_index}"
-                )))
-                .w(px(RESULT_ROW_RAIL_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_end()
-                .px_1p5()
-                .text_xs()
-                .text_color(palette.muted)
-                .border_r_1()
-                .border_color(palette.border)
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.panel_alt))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_to_clipboard(row_text.clone(), "Copied row.", cx);
-                }))
-                .child((row_index + 1).to_string()),
-        )
+        .child(div().w(px(RESULT_ROW_RAIL_WIDTH)).flex_shrink_0())
         .children((0..result.columns.len()).map(|column_index| {
             let value = row.get(column_index).cloned().unwrap_or(None);
             let copy_text = value.clone().unwrap_or_default();
@@ -285,5 +281,31 @@ fn render_result_row(
                 }))
                 .child(value_text(&value, &palette))
         }))
+        .child(
+            div()
+                .id(SharedString::from(format!(
+                    "result-row-rail-{tab_id}-{result_index}-{row_index}"
+                )))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(frozen_left)
+                .w(px(RESULT_ROW_RAIL_WIDTH))
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_1p5()
+                .bg(row_bg)
+                .text_xs()
+                .text_color(palette.muted)
+                .border_r_1()
+                .border_color(palette.border)
+                .cursor_pointer()
+                .hover(|style| style.bg(palette.panel_alt))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_to_clipboard(row_text.clone(), "Copied row.", cx);
+                }))
+                .child((row_index + 1).to_string()),
+        )
         .into_any_element()
 }

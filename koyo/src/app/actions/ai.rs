@@ -70,6 +70,9 @@ impl KoyoApp {
         self.ai_open = !self.ai_open;
         if !self.ai_open {
             self.ai_settings_open = false;
+            // Closing removes the focused composer. Put focus back on the
+            // workspace so the global shortcut can reopen the panel.
+            self.root_focus.focus(window, cx);
         } else if !self.ai_settings_open {
             self.focus_ai_input(window, cx);
         }
@@ -77,9 +80,10 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_ai(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ai_open = false;
         self.ai_settings_open = false;
+        self.root_focus.focus(window, cx);
         self.persist_state(cx);
         cx.notify();
     }

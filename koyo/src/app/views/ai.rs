@@ -96,8 +96,8 @@ pub(super) fn render(
                         .ghost()
                         .compact()
                         .icon(IconName::PanelRightClose)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.close_ai(cx);
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.close_ai(window, cx);
                         })),
                     "Hide AI",
                 )),

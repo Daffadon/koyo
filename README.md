@@ -24,7 +24,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - SQL editor with keyword, schema, table, column, and alias completion. `u.` completion resolves through the table behind the alias. Press **Tab** or **Enter** to apply the selected completion; Enter inserts a newline when the completion menu is closed.
 - Run with **Ctrl+Enter** or **Cmd+Enter**; cancel a running statement where the engine supports it.
 - Multiple result sets per execution, shown as a data grid or as JSON (one object per row).
-- Copy the active result set as CSV, copy individual cells, or copy rows as TSV.
+- Copy the active result set as CSV or JSON from the result options menu, copy individual cells, or copy rows as TSV.
 - Drag column edges to resize query-result columns.
 - Persistent query history: load an old statement or re-run it against the same profile. History keeps the latest 100 distinct SQL/profile pairs.
 - Each result set is capped at 1,000 displayed rows.

@@ -1,5 +1,6 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Editor;
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::tab::{Tab as BarTab, TabBar};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, resizable_panel, v_flex, v_resizable};
@@ -241,6 +242,7 @@ pub(super) fn render(
         .into_any_element(),
     };
 
+    let weak_app = cx.entity().downgrade();
     let results_header = h_flex()
         .items_center()
         .justify_between()
@@ -322,10 +324,61 @@ pub(super) fn render(
                                 })),
                             "Copy active result as CSV",
                         ))
+                        .child({
+                            let csv_app = weak_app.clone();
+                            let json_app = weak_app.clone();
+                            let collapse_app = weak_app.clone();
+                            Button::new(("result-options", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Ellipsis)
+                                .tooltip("All result options")
+                                .dropdown_menu(move |menu, _, _| {
+                                    let csv_app = csv_app.clone();
+                                    let json_app = json_app.clone();
+                                    let collapse_app = collapse_app.clone();
+                                    menu.item(
+                                        PopupMenuItem::new("Copy as CSV").on_click(move |_, _, cx| {
+                                            let _ = csv_app.update(cx, |this, cx| {
+                                                this.copy_active_result(tab_id, cx);
+                                            });
+                                        }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("Copy as JSON").on_click(move |_, _, cx| {
+                                            let _ = json_app.update(cx, |this, cx| {
+                                                this.copy_active_result_json(tab_id, cx);
+                                            });
+                                        }),
+                                    )
+                                    .separator()
+                                    .item(
+                                        PopupMenuItem::new(if results_collapsed {
+                                            "Expand results"
+                                        } else {
+                                            "Collapse results"
+                                        })
+                                        .on_click(move |_, _, cx| {
+                                            let _ = collapse_app.update(cx, |this, cx| {
+                                                this.toggle_results(tab_id, cx);
+                                            });
+                                        }),
+                                    )
+                                })
+                        })
                     },
                 )
                 .when(output.is_some_and(|output| output.truncated), |this| {
-                    this.child("Results truncated to protect memory")
+                    this.child(
+                        Button::new(("result-truncated", tab_id))
+                            .ghost()
+                            .compact()
+                            .icon(IconName::Info)
+                            .label("Truncated")
+                            .tooltip(
+                                "The result hit Koyo's row or memory cap. Copy includes the rows that were returned.",
+                            ),
+                    )
                 }),
         );
 

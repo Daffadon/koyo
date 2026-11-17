@@ -60,6 +60,26 @@ pub(crate) fn results_as_csv(result: &QueryResultSet) -> String {
     output
 }
 
+pub(crate) fn results_as_json(result: &QueryResultSet) -> String {
+    let rows = result
+        .rows
+        .iter()
+        .map(|row| {
+            let mut object = serde_json::Map::with_capacity(result.columns.len());
+            for (index, column) in result.columns.iter().enumerate() {
+                let value = row
+                    .get(index)
+                    .and_then(Option::as_ref)
+                    .map(|value| serde_json::Value::String(value.clone()))
+                    .unwrap_or(serde_json::Value::Null);
+                object.insert(column.clone(), value);
+            }
+            serde_json::Value::Object(object)
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&rows).unwrap_or_else(|_| "[]".to_string())
+}
+
 fn push_csv_row<'a>(output: &mut String, fields: impl Iterator<Item = &'a str>) {
     for (index, field) in fields.enumerate() {
         if index > 0 {
@@ -368,7 +388,7 @@ pub(crate) fn this_notice(tab: &mut Tab, message: impl Into<String>) {
 mod tests {
     use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, QueryResultSet};
 
-    use super::{parse_filter_input, results_as_csv};
+    use super::{parse_filter_input, results_as_csv, results_as_json};
 
     #[test]
     fn csv_quotes_commas_quotes_newlines_and_nulls() {
@@ -403,6 +423,18 @@ mod tests {
             results_as_csv(&result),
             "value\n'\"=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n'-1+2\n'@cmd\n"
         );
+    }
+
+    #[test]
+    fn json_result_keeps_nulls_and_column_names() {
+        let result = QueryResultSet {
+            columns: vec!["name".into(), "note".into()],
+            rows: vec![vec![Some("Ada".into()), None]],
+        };
+        let json = results_as_json(&result);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed[0]["name"], "Ada");
+        assert!(parsed[0]["note"].is_null());
     }
 
     #[test]

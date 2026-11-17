@@ -92,6 +92,7 @@ impl Render for KoyoApp {
             .flex()
             .flex_col()
             .size_full()
+            .track_focus(&self.root_focus)
             .key_context("Koyo")
             .bg(palette.background)
             .text_color(palette.foreground)

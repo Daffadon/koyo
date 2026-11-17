@@ -184,6 +184,29 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn copy_active_result_json(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let json = match &self.tabs[index].body {
+            TabBody::Query(query) => query.output.as_ref().and_then(|output| {
+                let result = output.result_sets.get(
+                    query
+                        .active_result
+                        .min(output.result_sets.len().saturating_sub(1)),
+                )?;
+                Some(results_as_json(result))
+            }),
+            TabBody::Table(_) => None,
+        };
+        let Some(json) = json else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        self.tabs[index].notice = "Copied active result as JSON.".into();
+        cx.notify();
+    }
+
     pub(crate) fn copy_to_clipboard(
         &mut self,
         text: String,

@@ -85,6 +85,7 @@ impl KoyoApp {
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
+            root_focus: cx.focus_handle(),
             sidebar_open: saved.sidebar_open,
             sidebar_width: saved
                 .sidebar_width

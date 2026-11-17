@@ -223,6 +223,7 @@ pub(crate) struct KoyoApp {
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,
+    pub(crate) root_focus: FocusHandle,
     pub(crate) sidebar_open: bool,
     pub(crate) sidebar_width: f32,
     pub(crate) sidebar_resizing: bool,
