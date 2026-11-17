@@ -34,7 +34,7 @@ impl KoyoApp {
             cx.notify();
             return;
         };
-        if self.focus_existing_table(profile.id, &schema, &table, cx) {
+        if self.focus_existing_table(profile.id, &schema, &table, shared.clone(), window, cx) {
             return;
         }
         let mut tab =
@@ -174,6 +174,8 @@ impl KoyoApp {
         profile_id: uuid::Uuid,
         schema: &str,
         table: &str,
+        connection: Option<koyo_core::models::ConnectionInfo>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((pane, tab_id)) = self.tabs.iter().find_map(|tab| {
@@ -204,8 +206,39 @@ impl KoyoApp {
             return false;
         };
         self.switch_tab(pane, order, cx);
+        let index = self.tab_index(tab_id).expect("tab exists");
+        let needs_connect = self.tabs[index].connection.is_none() && !self.tabs[index].connecting;
         self.status = format!("Focused {schema}.{table}.");
-        cx.notify();
+        if needs_connect {
+            // Restored tabs have no session after an app restart. Opening the
+            // same table again must reconnect instead of leaving the restored
+            // tab stuck on its reconnect notice. Reuse the sidebar session
+            // when it is already live so the user does not need the password
+            // again.
+            if let Some(connection) = connection {
+                self.tabs[index].connection = Some(connection.clone());
+                self.tabs[index].connecting = false;
+                self.tabs[index].profile = Some(connection.profile.clone());
+                self.tabs[index].notice.clear();
+                if let TabBody::Table(table_tab) = &mut self.tabs[index].body {
+                    table_tab.page = None;
+                    table_tab.total_rows_cache = None;
+                    table_tab.staged.clear();
+                    table_tab.loading = false;
+                    table_tab.operation_id = None;
+                    table_tab.foreign_keys.clear();
+                    table_tab.foreign_keys_loading = false;
+                    table_tab.indexes.clear();
+                    table_tab.diagram_metadata_loaded = false;
+                }
+                self.status = format!("Connected to {}.", connection.profile.name);
+                self.load_page(tab_id, 0, Vec::new(), None, cx);
+            } else {
+                self.connect_profile(profile_id, Some(tab_id), false, window, cx);
+            }
+        } else {
+            cx.notify();
+        }
         true
     }
 
