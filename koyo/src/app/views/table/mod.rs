@@ -34,6 +34,10 @@ thread_local! {
     /// Kept here instead of in `TableTab` to avoid growing the tab state.
     static TABLE_SCROLL_HANDLES: RefCell<HashMap<u64, ScrollHandle>> =
         RefCell::new(HashMap::new());
+    /// Last page offset rendered for each table tab. A page change must reset
+    /// the vertical scroll; otherwise the new page opens at the old page's
+    /// bottom offset and looks blank.
+    static TABLE_PAGE_OFFSETS: RefCell<HashMap<u64, u32>> = RefCell::new(HashMap::new());
 }
 
 fn table_scroll_handle(tab_id: u64) -> ScrollHandle {
@@ -44,6 +48,20 @@ fn table_scroll_handle(tab_id: u64) -> ScrollHandle {
             .or_insert_with(ScrollHandle::new)
             .clone()
     })
+}
+
+/// Return the tab handle and reset only its vertical offset when the table
+/// page changes. Horizontal scroll is preserved so wide tables keep column
+/// context while paging.
+pub(super) fn page_scroll_handle(tab_id: u64, page_offset: u32) -> ScrollHandle {
+    let handle = table_scroll_handle(tab_id);
+    let changed = TABLE_PAGE_OFFSETS
+        .with(|offsets| offsets.borrow_mut().insert(tab_id, page_offset) != Some(page_offset));
+    if changed {
+        let current = handle.offset();
+        handle.set_offset(point(current.x, px(0.0)));
+    }
+    handle
 }
 
 /// Drop handles for tabs that no longer exist so closing tables does not leak.
@@ -58,6 +76,14 @@ pub(super) fn prune_scroll_handles(app: &KoyoApp) {
         if handles.capacity() > handles.len().saturating_mul(4).max(16) {
             handles.shrink_to_fit();
         }
+    });
+    TABLE_PAGE_OFFSETS.with(|offsets| {
+        let mut offsets = offsets.borrow_mut();
+        offsets.retain(|tab_id, _| {
+            app.tabs
+                .iter()
+                .any(|tab| tab.id == *tab_id && matches!(tab.body, TabBody::Table(_)))
+        });
     });
 }
 

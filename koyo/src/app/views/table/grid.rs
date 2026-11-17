@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
 use super::super::widgets::value_text;
-use super::{CELL_WIDTH, table_scroll_handle};
+use super::{CELL_WIDTH, page_scroll_handle};
 use crate::app::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -34,7 +34,7 @@ pub(super) fn render_grid(
     // Monospace data is part of the read of the grid; take it once here so the
     // virtual row closure and the header share the same face.
     let mono = cx.theme().mono_font_family.clone();
-    let scroll_handle = table_scroll_handle(tab_id);
+    let scroll_handle = page_scroll_handle(tab_id, page.offset);
     let header = h_flex()
         .w(px(columns_width))
         .min_w(px(columns_width))
