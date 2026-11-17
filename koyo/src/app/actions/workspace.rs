@@ -749,7 +749,11 @@ impl KoyoApp {
         let starter = starter_sql(engine);
         let completion = Rc::new(RefCell::new(CompletionCatalog::default()));
         let editor = cx.new(|cx| {
-            gpui_kit::component::input::EditorState::new(window, cx).default_value(starter.clone())
+            let mut editor = gpui_kit::component::input::EditorState::new(window, cx)
+                .default_value(starter.clone());
+            // The SQL grammar also colors `--` and `/* ... */` comments.
+            editor.set_highlighter("sql", cx);
+            editor
         });
         let provider: Rc<dyn gpui_kit::base::input::CompletionProvider> =
             Rc::new(SqlCompletionProvider::new(completion.clone()));

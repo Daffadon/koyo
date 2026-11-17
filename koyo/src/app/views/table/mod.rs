@@ -151,25 +151,25 @@ pub(super) fn render(
                 })),
         );
 
-    let mut actions = h_flex().flex_wrap().items_center().gap_2().child(
-        div()
-            .w(px(88.0))
-            .flex()
-            .justify_end()
-            .when(has_staged, |this| {
-                this.child(
-                    div()
-                        .px_2()
-                        .py_1()
-                        .rounded_sm()
-                        .bg(palette.panel_alt)
-                        .text_xs()
-                        .text_color(palette.warning)
-                        .whitespace_nowrap()
-                        .child(format!("{} pending", staged.len())),
-                )
-            }),
-    );
+    let mut actions = h_flex()
+        .w_full()
+        .flex_wrap()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .when(has_staged, |this| {
+            this.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(palette.panel_alt)
+                    .text_xs()
+                    .text_color(palette.warning)
+                    .whitespace_nowrap()
+                    .child(format!("{} pending", staged.len())),
+            )
+        });
 
     // Keep Cancel mounted when idle. Loading is often shorter than one
     // animation frame; toggling the button in and out is what flickers.
@@ -245,28 +245,33 @@ pub(super) fn render(
             )
         });
 
-    let toolbar = h_flex()
-        .flex_wrap()
-        .items_center()
-        .gap_4()
+    let toolbar = v_flex()
+        .w_full()
+        .gap_2()
         .px_5()
         .py_3()
         .border_b_1()
         .border_color(palette.border)
         .child(
-            v_flex()
-                .min_w(px(180.0))
-                .max_w(px(420.0))
+            h_flex()
+                .w_full()
+                .items_start()
+                .gap_3()
                 .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                    v_flex()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .max_w(px(520.0))
+                        .child(
+                            div()
+                                .text_lg()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(div().text_xs().text_color(palette.muted).child(subtitle)),
                 )
-                .child(div().text_xs().text_color(palette.muted).child(subtitle)),
+                .child(mode_switch),
         )
-        .child(mode_switch)
-        .child(div().flex_1().min_w(px(0.0)))
         .child(actions);
 
     if mode == TableMode::Diagram {
