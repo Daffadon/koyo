@@ -1,7 +1,9 @@
+use std::ops::Range;
 use std::time::Instant;
 
+use gpui_kit::component::input::EditorState;
 use gpui_kit::prelude::*;
-use gpui_kit::{ClipboardItem, Window};
+use gpui_kit::{ClipboardItem, Entity, Window};
 use koyo_core::database;
 use koyo_core::models::{ConnectionProfile, Engine};
 use uuid::Uuid;
@@ -35,7 +37,18 @@ impl KoyoApp {
         if query.running {
             return;
         }
-        let sql = query.editor.read(cx).value().to_string();
+        let (selected, full) = {
+            let editor = query.editor.read(cx);
+            (
+                editor.selected_value().to_string(),
+                editor.value().to_string(),
+            )
+        };
+        let sql = if selected.trim().is_empty() {
+            full
+        } else {
+            selected
+        };
         if sql.trim().is_empty() {
             self.tabs[index].notice = "Enter SQL to run.".into();
             cx.notify();
@@ -159,6 +172,60 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+    }
+
+    fn focused_query_editor(&self) -> Option<Entity<EditorState>> {
+        self.focused_index().and_then(|index| {
+            self.tabs.get(index).and_then(|tab| match &tab.body {
+                TabBody::Query(query) => Some(query.editor.clone()),
+                TabBody::Table(_) => None,
+            })
+        })
+    }
+
+    fn apply_editor_edit(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        edit: fn(&str, Range<usize>) -> EditorEdit,
+    ) {
+        let Some(editor) = self.focused_query_editor() else {
+            return;
+        };
+        editor.update(cx, |editor, cx| {
+            let text = editor.value().to_string();
+            let selection = editor.selected_range();
+            let result = edit(&text, selection.clone());
+            if result.text == text && result.selection == selection {
+                return;
+            }
+            editor.set_selected_range(0..text.len(), cx);
+            editor.replace(result.text, window, cx);
+            let len = editor.value().len();
+            let start = result.selection.start.min(len);
+            let end = result.selection.end.min(len);
+            editor.set_selected_range(start..end, cx);
+        });
+    }
+
+    pub(crate) fn toggle_sql_comment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_edit(window, cx, toggle_comment);
+    }
+
+    pub(crate) fn move_line_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_edit(window, cx, move_line_up);
+    }
+
+    pub(crate) fn move_line_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_edit(window, cx, move_line_down);
+    }
+
+    pub(crate) fn duplicate_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_edit(window, cx, duplicate_line);
+    }
+
+    pub(crate) fn delete_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.apply_editor_edit(window, cx, delete_line);
     }
 
     pub(crate) fn copy_active_result(&mut self, tab_id: u64, cx: &mut Context<Self>) {

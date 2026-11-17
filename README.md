@@ -22,7 +22,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 ### SQL workbench
 
 - SQL editor with syntax highlighting, keyword, schema, table, column, and alias completion. `u.` completion resolves through the table behind the alias. Press **Tab** or **Enter** to apply the selected completion; Enter inserts a newline when the completion menu is closed.
-- Run with **Ctrl+Enter** or **Cmd+Enter**; cancel a running statement where the engine supports it.
+- Run with **Ctrl+Enter** or **Cmd+Enter**. Selected SQL runs alone; with no selection the whole editor runs.
+- Line editing: **Ctrl+/** toggles SQL line comments, **Alt+Up/Down** moves lines, **Shift+Alt+Down** duplicates a line, and **Ctrl+Shift+K** deletes a line.
 - Multiple result sets per execution, shown as a data grid or as JSON (one object per row).
 - Copy the active result set as CSV or JSON from the result options menu, copy individual cells, or copy rows as TSV.
 - Drag column edges to resize query-result columns.

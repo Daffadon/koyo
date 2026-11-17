@@ -5,7 +5,10 @@ use gpui_kit::{CursorStyle, InteractiveElement};
 
 use super::{connection, query, table, widgets};
 use crate::app::*;
-use crate::{AcceptCompletion, RunQuery, ToggleAi, ToggleSidebar};
+use crate::{
+    AcceptCompletion, DeleteLine, DuplicateLine, MoveLineDown, MoveLineUp, RunQuery, ToggleAi,
+    ToggleComment, ToggleSidebar,
+};
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
 const SIDEBAR_DIVIDER_WIDTH: f32 = 6.0;
@@ -159,6 +162,21 @@ impl Render for KoyoApp {
             )
             .on_action(cx.listener(|this, _: &AcceptCompletion, window, cx| {
                 this.accept_completion_or_indent(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleComment, window, cx| {
+                this.toggle_sql_comment(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| {
+                this.move_line_up(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| {
+                this.move_line_down(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateLine, window, cx| {
+                this.duplicate_line(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &DeleteLine, window, cx| {
+                this.delete_line(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
                 this.run_active_query(cx);

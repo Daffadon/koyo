@@ -105,7 +105,7 @@ pub(super) fn render(
         .icon(IconName::Play)
         .loading(running)
         .disabled(!connected || running)
-        .tooltip("Run query (Ctrl/⌘ + Enter)")
+        .tooltip("Run query (Ctrl/⌘ + Enter); selected SQL runs alone")
         .tooltip_show_delay(std::time::Duration::from_millis(120))
         .on_click(cx.listener(move |this, _, _, cx| {
             this.run_query(tab_id, cx);
