@@ -111,7 +111,10 @@ impl CompletionProvider for SqlCompletionProvider {
         let query = token.rsplit('.').next().unwrap_or(token);
         let starts_with = |value: &str| starts_with_ignore_case(value, query);
 
-        let refs = parse_table_refs(before);
+        // Parse the whole statement, not just text before the cursor: a
+        // qualified reference on an earlier line still needs the FROM alias
+        // that appears below it.
+        let refs = parse_table_refs(&text);
         let qualified_ref = qualifier
             .as_deref()
             .and_then(|qualifier| resolve_table_ref(&refs, qualifier));
@@ -697,6 +700,14 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn resolves_alias_defined_after_the_cursor() {
+        let refs = parse_table_refs("SELECT m.\nFROM maintenance.maintenances m");
+        let resolved = resolve_table_ref(&refs, "m").expect("alias should resolve");
+        assert_eq!(resolved.schema.as_deref(), Some("maintenance"));
+        assert_eq!(resolved.table, "maintenances");
     }
 
     #[test]
