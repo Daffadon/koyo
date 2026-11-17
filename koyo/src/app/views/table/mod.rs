@@ -28,14 +28,6 @@ mod filter;
 mod grid;
 
 const CELL_WIDTH: f32 = crate::app::DEFAULT_COLUMN_WIDTH;
-/// Narrow gutter that carries the global row number. It scrolls with the data
-/// columns and must be part of every width calculation in the grid.
-pub(super) const ROW_RAIL_WIDTH: f32 = 56.0;
-/// Every grid row is forced to this height so one scroll gesture maps
-/// cleanly on both axes. It matches the natural row height: `text_sm`
-/// line box (0.875rem x 1.618 ~= 23px) + `py_1` (8px) + the 1px bottom border.
-pub(super) const ROW_HEIGHT: f32 = 32.0;
-
 thread_local! {
     /// Two-axis scroll handles keyed by tab id, so the handle (and with it
     /// the scroll position) survives the re-render GPUI runs every frame.

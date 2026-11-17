@@ -7,8 +7,9 @@ use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{GridRow, TablePage, TableSort};
 use std::rc::Rc;
 
+use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
 use super::super::widgets::value_text;
-use super::{CELL_WIDTH, ROW_HEIGHT, ROW_RAIL_WIDTH, table_scroll_handle};
+use super::{CELL_WIDTH, table_scroll_handle};
 use crate::app::*;
 
 #[allow(clippy::too_many_arguments)]
@@ -25,7 +26,6 @@ pub(super) fn render_grid(
 ) -> AnyElement {
     let column_widths = Rc::new(column_widths.to_vec());
     let columns_width = column_widths.iter().sum::<f32>();
-    let width = ROW_RAIL_WIDTH + columns_width;
     // Header affordances must not dim while a sort/page load is in flight;
     // only staged edits and missing connections make a column unsortable.
     let header_locked = !staged.is_empty();
@@ -35,13 +35,6 @@ pub(super) fn render_grid(
     // virtual row closure and the header share the same face.
     let mono = cx.theme().mono_font_family.clone();
     let scroll_handle = table_scroll_handle(tab_id);
-    // Use the same clamped range as the body scroller. Raw wheel deltas can
-    // overshoot the real scroll range, which otherwise makes the header drift
-    // out of alignment. Clamp both edges.
-    let max_left = -f32::from(scroll_handle.max_offset().x);
-    let visible_x = f32::from(scroll_handle.offset().x).clamp(max_left, 0.0);
-    let header_left = px(visible_x);
-    let frozen_left = px(-visible_x);
     let header = h_flex()
         .w(px(columns_width))
         .min_w(px(columns_width))
@@ -161,7 +154,8 @@ pub(super) fn render_grid(
                                 ),
                         )
                 }),
-        );
+        )
+        .into_any_element();
 
     let insert_count = staged
         .iter()
@@ -169,97 +163,40 @@ pub(super) fn render_grid(
         .count();
     let row_count = page.rows.len() + insert_count;
 
-    // A table page is capped at 200 rows, so one two-axis scroller can own the
-    // rows without a nested axis-locked list.
-    let body: AnyElement = if row_count == 0 {
-        v_flex()
-            .w(px(width))
-            .min_w(px(width))
-            .py_4()
-            .pr_4()
-            .pl(px(ROW_RAIL_WIDTH + 16.0))
-            .text_xs()
-            .text_color(palette.muted)
-            .child("No rows in this table.")
-            .into_any_element()
-    } else {
-        v_flex()
-            .w(px(width))
-            .min_w(px(width))
-            .children((0..row_count).map(|row_index| {
-                render_virtual_row(
-                    tab_id,
-                    &page,
-                    &staged,
-                    row_index,
-                    editable,
-                    palette,
-                    &mono,
-                    column_widths.as_slice(),
-                    frozen_left,
-                    cx,
-                )
-            }))
-            .into_any_element()
-    };
+    let empty = v_flex()
+        .py_4()
+        .pr_4()
+        .pl(px(ROW_RAIL_WIDTH + 16.0))
+        .text_xs()
+        .text_color(palette.muted)
+        .child("No rows in this table.")
+        .into_any_element();
 
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .child(
-            div()
-                .flex()
-                .w_full()
-                .flex_shrink_0()
-                .bg(palette.panel)
-                .border_b_1()
-                .border_color(palette.border)
-                .child(
-                    div()
-                        .w(px(ROW_RAIL_WIDTH))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .px_1p5()
-                        .py_2()
-                        .text_xs()
-                        .text_color(palette.muted)
-                        .border_r_1()
-                        .border_color(palette.border)
-                        .child("Row"),
-                )
-                .child(
-                    div()
-                        .id(("table-header-clip", tab_id))
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .relative()
-                                .left(header_left)
-                                .w(px(columns_width))
-                                .child(header),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .id(("table-body", tab_id))
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_scroll()
-                .restrict_scroll_to_axis()
-                .track_scroll(&scroll_handle)
-                .child(body),
-        )
-        .into_any_element()
+    data_grid::render(
+        ("table-header-clip", tab_id),
+        ("table-body", tab_id),
+        columns_width,
+        header,
+        empty,
+        row_count,
+        &scroll_handle,
+        mono.clone(),
+        palette,
+        |row_index, frozen_left| {
+            render_virtual_row(
+                tab_id,
+                &page,
+                &staged,
+                row_index,
+                editable,
+                palette,
+                &mono,
+                column_widths.as_slice(),
+                frozen_left,
+                cx,
+            )
+        },
+    )
 }
 
 /// Render one virtual row. Database rows come first and staged inserts follow

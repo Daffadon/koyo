@@ -19,11 +19,6 @@ mod json;
 
 const COLLAPSED_RESULTS_HEIGHT: f32 = 38.0;
 
-/// Fixed result row height for the table view. Matches `table::ROW_HEIGHT`:
-/// `text_sm` line box (0.875rem x 1.618 ~= 23px) + `py_1` (8px) + the 1px
-/// bottom border.
-pub(super) const ROW_HEIGHT: f32 = 32.0;
-
 thread_local! {
     /// Two-axis result-grid handles. The JSON view keeps its uniform list
     /// handle above; the table view uses one scroller for both axes.

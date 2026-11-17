@@ -5,8 +5,9 @@ use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::QueryResultSet;
 use std::rc::Rc;
 
+use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
 use super::super::widgets::value_text;
-use super::{ROW_HEIGHT, result_grid_scroll_handle};
+use super::result_grid_scroll_handle;
 use crate::app::*;
 
 pub(super) fn result_grid(
@@ -29,14 +30,8 @@ pub(super) fn result_grid(
             .collect::<Vec<_>>(),
     );
     let columns_width = widths.iter().sum::<f32>();
-    let width = RESULT_ROW_RAIL_WIDTH + columns_width;
     let palette = *palette;
     let scroll_handle = result_grid_scroll_handle(tab_id, result_index);
-    let max_left = -f32::from(scroll_handle.max_offset().x);
-    let visible_x = f32::from(scroll_handle.offset().x).clamp(max_left, 0.0);
-    let header_left = px(visible_x);
-    let frozen_left = px(-visible_x);
-
     let header = h_flex()
         .w(px(columns_width))
         .min_w(px(columns_width))
@@ -117,109 +112,40 @@ pub(super) fn result_grid(
                             cx.stop_propagation();
                         })),
                 )
-        }));
+        }))
+        .into_any_element();
 
     let row_count = result.rows.len();
+    let empty = v_flex()
+        .p_4()
+        .text_xs()
+        .text_color(palette.muted)
+        .child("No rows returned.")
+        .into_any_element();
 
-    // Result sets are capped at 1,000 rows. Render only a window around the
-    // current scroll offset so a wide result does not build tens of thousands
-    // of cell elements on every frame.
-    let rows: AnyElement = if row_count == 0 {
-        v_flex()
-            .w(px(width))
-            .min_w(px(width))
-            .p_4()
-            .text_xs()
-            .text_color(palette.muted)
-            .child("No rows returned.")
-            .into_any_element()
-    } else {
-        let offset_y = f32::from(scroll_handle.offset().y);
-        let first = ((-offset_y / ROW_HEIGHT).floor() as usize)
-            .saturating_sub(8)
-            .min(row_count);
-        let last = (first + 160).min(row_count);
-        div()
-            .relative()
-            .w(px(width))
-            .min_w(px(width))
-            .h(px(row_count as f32 * ROW_HEIGHT))
-            .children((first..last).map(|row_index| {
-                div()
-                    .absolute()
-                    .top(px(row_index as f32 * ROW_HEIGHT))
-                    .left_0()
-                    .w_full()
-                    .child(render_result_row(
-                        tab_id,
-                        result_index,
-                        result,
-                        row_index,
-                        widths.as_slice(),
-                        palette,
-                        frozen_left,
-                        cx,
-                    ))
-            }))
-            .into_any_element()
-    };
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_hidden()
-        .child(
-            h_flex()
-                .w_full()
-                .flex_shrink_0()
-                .bg(palette.panel)
-                .border_b_1()
-                .border_color(palette.border)
-                .child(
-                    div()
-                        .w(px(RESULT_ROW_RAIL_WIDTH))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .px_1p5()
-                        .py_2()
-                        .text_xs()
-                        .text_color(palette.muted)
-                        .border_r_1()
-                        .border_color(palette.border)
-                        .child("Row"),
-                )
-                .child(
-                    div()
-                        .id(("result-header-clip", tab_id))
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .relative()
-                                .left(header_left)
-                                .w(px(columns_width))
-                                .child(header),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .id(("result-body", tab_id))
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_scroll()
-                .restrict_scroll_to_axis()
-                .track_scroll(&scroll_handle)
-                .child(rows),
-        )
-        .font_family(mono.clone())
-        .into_any_element()
+    data_grid::render(
+        ("result-header-clip", tab_id),
+        ("result-body", tab_id),
+        columns_width,
+        header,
+        empty,
+        row_count,
+        &scroll_handle,
+        mono.clone(),
+        palette,
+        |row_index, frozen_left| {
+            render_result_row(
+                tab_id,
+                result_index,
+                result,
+                row_index,
+                widths.as_slice(),
+                palette,
+                frozen_left,
+                cx,
+            )
+        },
+    )
 }
 
 fn render_result_row(
@@ -239,11 +165,6 @@ fn render_result_row(
         .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\t");
-    let row_bg = if row_index % 2 == 1 {
-        palette.panel
-    } else {
-        palette.background
-    };
     h_flex()
         .relative()
         .id(SharedString::from(format!(
@@ -253,8 +174,8 @@ fn render_result_row(
         .h(px(ROW_HEIGHT))
         .border_b_1()
         .border_color(palette.border)
-        .when(row_index % 2 == 1, |this| this.bg(palette.panel))
-        .child(div().w(px(RESULT_ROW_RAIL_WIDTH)).flex_shrink_0())
+        .hover(|style| style.bg(palette.panel))
+        .child(div().w(px(ROW_RAIL_WIDTH)).flex_shrink_0())
         .children((0..result.columns.len()).map(|column_index| {
             let value = row.get(column_index).cloned().unwrap_or(None);
             let copy_text = value.clone().unwrap_or_default();
@@ -290,12 +211,12 @@ fn render_result_row(
                 .top_0()
                 .bottom_0()
                 .left(frozen_left)
-                .w(px(RESULT_ROW_RAIL_WIDTH))
+                .w(px(ROW_RAIL_WIDTH))
                 .flex()
                 .items_center()
                 .justify_end()
                 .px_1p5()
-                .bg(row_bg)
+                .bg(palette.background)
                 .text_xs()
                 .text_color(palette.muted)
                 .border_r_1()

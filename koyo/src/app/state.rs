@@ -22,7 +22,6 @@ use uuid::Uuid;
 pub(crate) const PAGE_LIMIT: u32 = 100;
 pub(crate) const DEFAULT_COLUMN_WIDTH: f32 = 170.0;
 pub(crate) const RESULT_COLUMN_WIDTH: f32 = 180.0;
-pub(crate) const RESULT_ROW_RAIL_WIDTH: f32 = 56.0;
 pub(crate) const MIN_COLUMN_WIDTH: f32 = 72.0;
 pub(crate) const MAX_COLUMN_WIDTH: f32 = 640.0;
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
