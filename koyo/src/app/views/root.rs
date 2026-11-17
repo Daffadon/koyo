@@ -5,7 +5,7 @@ use gpui_kit::{CursorStyle, InteractiveElement};
 
 use super::{connection, query, table, widgets};
 use crate::app::*;
-use crate::{AcceptCompletion, CompletionEnter, RunQuery, ToggleAi, ToggleSidebar};
+use crate::{AcceptCompletion, RunQuery, ToggleAi, ToggleSidebar};
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
 const SIDEBAR_DIVIDER_WIDTH: f32 = 6.0;
@@ -158,9 +158,6 @@ impl Render for KoyoApp {
             )
             .on_action(cx.listener(|this, _: &AcceptCompletion, window, cx| {
                 this.accept_completion_or_indent(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &CompletionEnter, window, cx| {
-                this.enter_editor(window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
                 this.run_active_query(cx);

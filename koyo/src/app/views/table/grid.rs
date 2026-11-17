@@ -24,7 +24,7 @@ pub(super) fn render_grid(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let column_widths = Rc::new(column_widths.to_vec());
-    let width = ROW_RAIL_WIDTH + column_widths.iter().sum::<f32>();
+    let columns_width = column_widths.iter().sum::<f32>();
     // Header affordances must not dim while a sort/page load is in flight;
     // only staged edits and missing connections make a column unsortable.
     let header_locked = !staged.is_empty();
@@ -34,32 +34,15 @@ pub(super) fn render_grid(
     // virtual row closure and the header share the same face.
     let mono = cx.theme().mono_font_family.clone();
     let scroll_handle = table_scroll_handle(tab_id);
-    // Overscroll at the left edge may leave a positive offset. Clamp the
-    // header so it cannot drift away from the first column.
-    let header_left = px(f32::from(scroll_handle.offset().x).min(0.0));
-
+    // Use the same clamped range as the body scroller. Raw wheel deltas can
+    // overshoot the real scroll range, which otherwise makes the header drift
+    // out of alignment. Clamp both edges.
+    let max_left = -f32::from(scroll_handle.max_offset().x);
+    let header_left = px(f32::from(scroll_handle.offset().x).clamp(max_left, 0.0));
     let header = h_flex()
-        .w(px(width))
-        .min_w(px(width))
+        .w(px(columns_width))
+        .min_w(px(columns_width))
         .flex_shrink_0()
-        .bg(palette.panel)
-        .border_b_1()
-        .border_color(palette.border)
-        .child(
-            div()
-                .w(px(ROW_RAIL_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_end()
-                .px_1p5()
-                .py_2()
-                .text_xs()
-                .text_color(palette.muted)
-                .border_r_1()
-                .border_color(palette.border)
-                .child("Row"),
-        )
         .children(
             page.columns
                 .iter()
@@ -187,19 +170,19 @@ pub(super) fn render_grid(
     // rows without a nested axis-locked list.
     let body: AnyElement = if row_count == 0 {
         v_flex()
-            .w(px(width))
-            .min_w(px(width))
+            .w(px(columns_width))
+            .min_w(px(columns_width))
             .py_4()
             .pr_4()
-            .pl(px(ROW_RAIL_WIDTH + 16.0))
+            .pl_4()
             .text_xs()
             .text_color(palette.muted)
             .child("No rows in this table.")
             .into_any_element()
     } else {
         v_flex()
-            .w(px(width))
-            .min_w(px(width))
+            .w(px(columns_width))
+            .min_w(px(columns_width))
             .children((0..row_count).map(|row_index| {
                 render_virtual_row(
                     tab_id,
@@ -216,6 +199,57 @@ pub(super) fn render_grid(
             .into_any_element()
     };
 
+    let mut rail = v_flex()
+        .w(px(ROW_RAIL_WIDTH))
+        .min_w(px(ROW_RAIL_WIDTH))
+        .flex_shrink_0();
+    for row_index in 0..row_count {
+        if page.rows.get(row_index).is_some() {
+            let row_text = row_copy_text(&page, &staged, row_index);
+            rail = rail.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "table-row-rail-{tab_id}-{row_index}"
+                    )))
+                    .h(px(ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .px_1p5()
+                    .bg(palette.background)
+                    .text_xs()
+                    .text_color(palette.muted)
+                    .border_b_1()
+                    .border_r_1()
+                    .border_color(palette.border)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.panel_alt))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy_to_clipboard(row_text.clone(), "Copied row.", cx);
+                    }))
+                    .child((page.offset as usize + row_index + 1).to_string()),
+            );
+        } else {
+            rail = rail.child(
+                div()
+                    .h(px(ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .px_1p5()
+                    .bg(palette.accent_soft)
+                    .text_xs()
+                    .text_color(palette.accent)
+                    .border_b_1()
+                    .border_r_1()
+                    .border_color(palette.border)
+                    .child("new"),
+            );
+        }
+    }
+
     div()
         .flex()
         .flex_col()
@@ -224,29 +258,76 @@ pub(super) fn render_grid(
         .overflow_hidden()
         .child(
             div()
-                .id(("table-header-clip", tab_id))
+                .flex()
                 .w_full()
                 .flex_shrink_0()
-                .overflow_hidden()
+                .bg(palette.panel)
+                .border_b_1()
+                .border_color(palette.border)
                 .child(
                     div()
-                        .relative()
-                        .left(header_left)
-                        .w(px(width))
-                        .child(header),
+                        .w(px(ROW_RAIL_WIDTH))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .px_1p5()
+                        .py_2()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .border_r_1()
+                        .border_color(palette.border)
+                        .child("Row"),
+                )
+                .child(
+                    div()
+                        .id(("table-header-clip", tab_id))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .relative()
+                                .left(header_left)
+                                .w(px(columns_width))
+                                .child(header),
+                        ),
                 ),
         )
         .child(
             div()
-                .id(("table-body", tab_id))
                 .flex()
-                .flex_col()
                 .flex_1()
                 .min_h(px(0.0))
-                .overflow_scroll()
-                .restrict_scroll_to_axis()
-                .track_scroll(&scroll_handle)
-                .child(body),
+                .overflow_hidden()
+                .child(
+                    div()
+                        .w(px(ROW_RAIL_WIDTH))
+                        .h_full()
+                        .flex_shrink_0()
+                        .relative()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .absolute()
+                                .top(scroll_handle.offset().y)
+                                .w_full()
+                                .child(rail),
+                        ),
+                )
+                .child(
+                    div()
+                        .id(("table-body", tab_id))
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .overflow_scroll()
+                        .restrict_scroll_to_axis()
+                        .track_scroll(&scroll_handle)
+                        .child(body),
+                ),
         )
         .into_any_element()
 }
@@ -314,21 +395,8 @@ fn render_data_row(
         } if staged_key == key => Some(values),
         _ => None,
     });
-    let copy_row_text = Rc::new(
-        page.columns
-            .iter()
-            .enumerate()
-            .map(|(column_index, column)| {
-                update_values
-                    .and_then(|values| values.get(&column.name).cloned())
-                    .unwrap_or_else(|| row.values[column_index].clone())
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>()
-            .join("\t"),
-    );
+    let copy_row_text = Rc::new(row_copy_text(page, staged, row_index));
 
-    let row_text_for_rail = Rc::clone(&copy_row_text);
     let mut row_view = h_flex()
         .id(SharedString::from(format!(
             "table-row-{tab_id}-{row_index}"
@@ -342,29 +410,7 @@ fn render_data_row(
         .when(update_values.is_none(), |this| {
             // Quiet row wash; the stronger cell hover still wins over it.
             this.hover(|style| style.bg(palette.panel))
-        })
-        .child(
-            div()
-                .id(SharedString::from(format!(
-                    "table-row-rail-{tab_id}-{row_index}"
-                )))
-                .w(px(ROW_RAIL_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_end()
-                .px_1p5()
-                .text_xs()
-                .text_color(palette.muted)
-                .border_r_1()
-                .border_color(palette.border)
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.panel_alt))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
-                }))
-                .child((page.offset as usize + row_index + 1).to_string()),
-        );
+        });
 
     for (column_index, column) in page.columns.iter().enumerate() {
         let value = update_values
@@ -416,6 +462,31 @@ fn render_data_row(
     row_view.into_any_element()
 }
 
+fn row_copy_text(page: &TablePage, staged: &[StagedChange], row_index: usize) -> String {
+    let Some(row) = page.rows.get(row_index) else {
+        return String::new();
+    };
+    let update_values = staged.iter().find_map(|change| match change {
+        StagedChange::Update {
+            key: staged_key,
+            values,
+            ..
+        } if staged_key == &row.key => Some(values),
+        _ => None,
+    });
+    page.columns
+        .iter()
+        .enumerate()
+        .map(|(column_index, column)| {
+            update_values
+                .and_then(|values| values.get(&column.name).cloned())
+                .unwrap_or_else(|| row.values[column_index].clone())
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
 fn render_insert_row(
     tab_id: u64,
     page: &TablePage,
@@ -432,23 +503,7 @@ fn render_insert_row(
         .border_b_1()
         .border_color(palette.border)
         .bg(palette.accent_soft)
-        .font_family(mono.clone())
-        .child(
-            // Inserted rows follow the page, so a number would be a lie; the
-            // rail marks them as new instead.
-            div()
-                .w(px(ROW_RAIL_WIDTH))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_end()
-                .px_1p5()
-                .text_xs()
-                .text_color(palette.accent)
-                .border_r_1()
-                .border_color(palette.border)
-                .child("new"),
-        );
+        .font_family(mono.clone());
 
     for (column_index, column) in page.columns.iter().enumerate() {
         let generated = column.generated || column.identity;

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Enter, Escape, IndentInline, InputState, TextareaState};
+use gpui_kit::component::input::{Enter, IndentInline, InputState, TextareaState};
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -496,35 +496,6 @@ impl KoyoApp {
         } else {
             handle.dispatch_action(&IndentInline, window, cx);
         }
-    }
-
-    pub(crate) fn enter_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(editor) = self.focused_index().and_then(|index| {
-            self.tabs.get(index).and_then(|tab| match &tab.body {
-                TabBody::Query(query) => Some(query.editor.clone()),
-                TabBody::Table(_) => None,
-            })
-        }) else {
-            return;
-        };
-        let (completion_open, handle) = {
-            let editor = editor.read(cx);
-            (
-                editor.completion_menu_state().open,
-                editor.focus_handle(cx).clone(),
-            )
-        };
-        if completion_open {
-            handle.dispatch_action(&Escape, window, cx);
-        }
-        handle.dispatch_action(
-            &Enter {
-                secondary: false,
-                shift: false,
-            },
-            window,
-            cx,
-        );
     }
 
     pub(crate) fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {

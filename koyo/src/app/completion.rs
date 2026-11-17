@@ -212,6 +212,16 @@ impl CompletionProvider for SqlCompletionProvider {
                             label: qualified.clone(),
                             kind: Some(CompletionItemKind::CLASS),
                             detail: Some(format!("{schema} table")),
+                            // Replace the whole qualified token. Relying on
+                            // the menu's default prefix range duplicates the
+                            // schema when the user already typed `schema.`.
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                range: LspRange::new(
+                                    position_for_offset(&text, token_start),
+                                    position_for_offset(&text, offset),
+                                ),
+                                new_text: qualified,
+                            })),
                             ..Default::default()
                         },
                     );
