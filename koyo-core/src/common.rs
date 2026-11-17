@@ -227,8 +227,10 @@ pub fn build_keyed_order_by(
     columns: &[ColumnInfo],
     primary_indices: &[usize],
     sort: Option<&TableSort>,
+    table: &str,
     quote: impl Fn(&str) -> String,
 ) -> Result<String, String> {
+    let order_column = |name: &str| format!("{}.{}", quote(table), quote(name));
     let sort_column = sort
         .map(|sort| find_column(columns, &sort.column))
         .transpose()?;
@@ -239,19 +241,19 @@ pub fn build_keyed_order_by(
         }
         terms.push(format!(
             "{} {}",
-            quote(&column.name),
+            order_column(&column.name),
             if sort.descending { "DESC" } else { "ASC" }
         ));
     }
     for index in primary_indices {
         let column = &columns[*index];
         if sort_column.is_none_or(|sort| sort.name != column.name) {
-            terms.push(format!("{} ASC", quote(&column.name)));
+            terms.push(format!("{} ASC", order_column(&column.name)));
         }
     }
     if terms.is_empty() {
         if let Some(column) = columns.first() {
-            terms.push(format!("{} ASC", quote(&column.name)));
+            terms.push(format!("{} ASC", order_column(&column.name)));
         }
     }
     if terms.is_empty() {

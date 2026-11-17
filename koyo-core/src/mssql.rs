@@ -460,8 +460,13 @@ pub async fn load_page(
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta.columns, filters, &mut params)?;
-    let order =
-        common::build_keyed_order_by(&meta.columns, &meta.primary_indices, sort, quote_identifier)?;
+    let order = common::build_keyed_order_by(
+        &meta.columns,
+        &meta.primary_indices,
+        sort,
+        table,
+        quote_identifier,
+    )?;
     let mut sql = format!("SELECT {selected} FROM {}", quote_relation(schema, table));
     if let Some(predicate) = &predicate {
         sql.push_str(" WHERE ");

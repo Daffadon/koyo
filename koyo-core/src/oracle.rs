@@ -487,8 +487,13 @@ fn load_page_sync(
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta.columns, filters, &mut params)?;
-    let order =
-        common::build_keyed_order_by(&meta.columns, &meta.primary_indices, sort, quote_identifier)?;
+    let order = common::build_keyed_order_by(
+        &meta.columns,
+        &meta.primary_indices,
+        sort,
+        table,
+        quote_identifier,
+    )?;
     let mut count_sql = format!("SELECT COUNT(*) FROM {}", quote_relation(schema, table));
     if let Some(predicate) = &predicate {
         count_sql.push_str(" WHERE ");

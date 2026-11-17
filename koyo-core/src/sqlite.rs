@@ -420,7 +420,7 @@ fn load_page_sync(
         .join(", ");
     let mut params = Vec::new();
     let predicate = build_filter_predicate(&meta, filters, &mut params)?;
-    let order = build_order_by(&meta, sort)?;
+    let order = build_order_by(&meta, table, sort)?;
     let mut count_sql = format!("SELECT count(*) FROM {}", quote_identifier(table));
     if let Some(predicate) = &predicate {
         count_sql.push_str(" WHERE ");
@@ -757,7 +757,13 @@ fn build_filter_predicate(
     Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
 }
 
-fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, String> {
+fn build_order_by(
+    meta: &TableMeta,
+    table: &str,
+    sort: Option<&TableSort>,
+) -> Result<String, String> {
+    let order_column =
+        |name: &str| format!("{}.{}", quote_identifier(table), quote_identifier(name));
     let sort_column = sort
         .map(|sort| find_column(&meta.columns, &sort.column))
         .transpose()?;
@@ -768,7 +774,7 @@ fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, 
         }
         terms.push(format!(
             "{} {}",
-            quote_identifier(&column.name),
+            order_column(&column.name),
             if sort.descending { "DESC" } else { "ASC" }
         ));
     }
@@ -776,13 +782,13 @@ fn build_order_by(meta: &TableMeta, sort: Option<&TableSort>) -> Result<String, 
         if meta.primary_indices.contains(&index)
             && sort_column.is_none_or(|sort| sort.name != column.name)
         {
-            terms.push(format!("{} ASC", quote_identifier(&column.name)));
+            terms.push(format!("{} ASC", order_column(&column.name)));
         }
     }
     if meta.primary_indices.is_empty() {
         if meta.relation_kind.as_deref() == Some("view") {
             if let Some(column) = meta.columns.first() {
-                terms.push(format!("{} ASC", quote_identifier(&column.name)));
+                terms.push(format!("{} ASC", order_column(&column.name)));
             }
         } else {
             terms.push("rowid".into());
@@ -998,6 +1004,55 @@ mod tests {
             vec![Some("1".into()), Some("Alice".into())]
         );
         assert!(!page.editable);
+    }
+
+    #[tokio::test]
+    async fn sorts_integer_primary_key_numerically() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        connection
+            .execute_batch(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT);
+                 INSERT INTO items (id, name) VALUES
+                   (1, 'one'), (12, 'twelve'), (13, 'thirteen'),
+                   (14, 'fourteen'), (2, 'two'), (3, 'three');",
+            )
+            .expect("create sqlite fixture");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+
+        let page = load_page(
+            &session,
+            "main",
+            "items",
+            0,
+            100,
+            &[],
+            Some(&TableSort {
+                column: "id".into(),
+                descending: false,
+            }),
+        )
+        .await
+        .expect("load sorted page");
+        let ids = page
+            .rows
+            .iter()
+            .map(|row| row.values[0].as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![
+                Some("1"),
+                Some("2"),
+                Some("3"),
+                Some("12"),
+                Some("13"),
+                Some("14")
+            ]
+        );
     }
 
     #[tokio::test]

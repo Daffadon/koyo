@@ -352,6 +352,7 @@ pub async fn load_page(
         &meta.columns,
         meta.primary_indices.as_slice(),
         sort,
+        table,
         quote_identifier,
     )?;
     let mut count_sql = format!("SELECT COUNT(*) FROM {}", quote_relation(schema, table));

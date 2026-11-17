@@ -1083,7 +1083,7 @@ fn build_table_page_query(
     let mut params = Vec::new();
     let predicate = build_filter_predicate(meta, filters, &mut params)?;
     let is_view = matches!(meta.relation_kind.as_deref(), Some("v" | "m"));
-    let order = build_order_by(meta, sort, is_view)?;
+    let order = build_order_by(meta, table, sort, is_view)?;
     let mut sql = if is_view {
         format!("SELECT {selected} FROM {}", quote_relation(schema, table))
     } else {
@@ -1174,9 +1174,12 @@ fn build_filter_predicate(
 
 fn build_order_by(
     meta: &TableMeta,
+    table: &str,
     sort: Option<&TableSort>,
     is_view: bool,
 ) -> Result<String, String> {
+    let order_column =
+        |name: &str| format!("{}.{}", quote_identifier(table), quote_identifier(name));
     let sort_column = sort
         .map(|sort| find_column(&meta.columns, &sort.column))
         .transpose()?;
@@ -1187,7 +1190,7 @@ fn build_order_by(
         }
         terms.push(format!(
             "{} {}",
-            quote_identifier(&column.name),
+            order_column(&column.name),
             if sort.descending { "DESC" } else { "ASC" }
         ));
     }
@@ -1195,13 +1198,13 @@ fn build_order_by(
         if sort_column.is_some_and(|sort| sort.name == column.name) {
             continue;
         }
-        terms.push(format!("{} ASC", quote_identifier(&column.name)));
+        terms.push(format!("{} ASC", order_column(&column.name)));
     }
     if meta.primary_columns().next().is_none() {
         if is_view {
             if let Some(column) = meta.columns.first() {
                 if sort_column.is_none_or(|sort| sort.name != column.name) {
-                    terms.push(format!("{} ASC", quote_identifier(&column.name)));
+                    terms.push(format!("{} ASC", order_column(&column.name)));
                 }
             }
         } else {
@@ -1817,7 +1820,7 @@ mod tests {
         assert!(sql.contains("strpos(lower(\"name\"::text), lower($1)) > 0"));
         assert!(sql.contains("\"id\" > $2::text::integer"));
         assert!(sql.contains("\"active\" IS TRUE"));
-        assert!(sql.contains("ORDER BY \"name\" DESC, \"id\" ASC"));
+        assert!(sql.contains("ORDER BY \"items\".\"name\" DESC, \"items\".\"id\" ASC"));
         assert!(sql.contains("LIMIT 101 OFFSET 10"));
         assert_eq!(params, vec![Some("a_b%".into()), Some("2".into())]);
     }
@@ -1875,7 +1878,7 @@ mod tests {
             .expect("build view query");
         assert!(!sql.contains("xmin"));
         assert!(!sql.contains("ctid"));
-        assert!(sql.contains("ORDER BY \"label\" ASC"));
+        assert!(sql.contains("ORDER BY \"item_view\".\"label\" ASC"));
     }
 
     #[test]
@@ -1892,7 +1895,7 @@ mod tests {
         let (sorted_sql, _) =
             build_table_page_query("public", "items", &meta, 0, 101, &[], Some(&sort))
                 .expect("build sorted query");
-        assert!(sorted_sql.contains("ORDER BY \"label\" ASC, ctid"));
+        assert!(sorted_sql.contains("ORDER BY \"items\".\"label\" ASC, ctid"));
 
         let partitioned = table_meta(vec![column("label", "text", FilterKind::Text, false)], "p");
         let (partitioned_sql, _) =
