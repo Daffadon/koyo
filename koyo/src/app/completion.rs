@@ -88,10 +88,11 @@ impl CompletionProvider for SqlCompletionProvider {
         &self,
         text: &Rope,
         offset: usize,
-        _trigger: CompletionContext,
+        trigger: CompletionContext,
         _window: &mut Window,
         _cx: &mut App,
     ) -> Task<Result<CompletionResponse>> {
+        let manual = trigger.trigger_kind == lsp_types::CompletionTriggerKind::INVOKED;
         let text = text.to_string();
         let offset = offset.min(text.len());
         let offset = text.floor_char_boundary(offset);
@@ -124,6 +125,10 @@ impl CompletionProvider for SqlCompletionProvider {
         let catalog = self.catalog.borrow();
         let mut items = Vec::new();
         let mut seen = BTreeSet::new();
+        let column_context = qualified_ref
+            .clone()
+            .or_else(|| manual.then(|| refs.last().cloned()).flatten());
+        let show_context_columns = manual && query.is_empty() && column_context.is_some();
 
         if qualifier.is_none() {
             for keyword in SQL_KEYWORDS {
@@ -187,7 +192,7 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        if qualifier.is_none() {
+        if qualifier.is_none() && !show_context_columns {
             for schema in &catalog.schemas {
                 if starts_with(schema) {
                     push_item(
@@ -204,7 +209,7 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        if qualified_ref.is_none() {
+        if qualified_ref.is_none() && !show_context_columns {
             for (schema, table) in &catalog.tables {
                 let qualified = format!("{schema}.{table}");
                 if starts_with(table) || starts_with(&qualified) {
@@ -232,14 +237,14 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        // Columns are only useful once the user has typed a name, or after a
-        // dot. Returning every column on an empty prefix would drown the menu.
-        if qualified_ref.is_some()
+        // On manual completion with no prefix, show columns for the table in
+        // the current statement instead of every table in the database.
+        if column_context.is_some()
             || (!query.is_empty() && qualifier.is_none())
             || token.ends_with('.')
         {
             for (schema, table, column) in &catalog.columns {
-                if let Some(table_ref) = &qualified_ref {
+                if let Some(table_ref) = &column_context {
                     if table_ref
                         .schema
                         .as_ref()
@@ -333,6 +338,37 @@ fn parse_table_refs(text: &str) -> Vec<TableRef> {
     let mut index = 0;
     while index < tokens.len() {
         let keyword = tokens[index].to_ascii_uppercase();
+        if keyword == "ALTER"
+            && tokens
+                .get(index + 1)
+                .is_some_and(|token| token.eq_ignore_ascii_case("TABLE"))
+        {
+            index += 2;
+            if tokens.get(index).is_some_and(|token| {
+                token.eq_ignore_ascii_case("ONLY") || token.eq_ignore_ascii_case("IF")
+            }) {
+                index += 1;
+                if tokens
+                    .get(index)
+                    .is_some_and(|token| token.eq_ignore_ascii_case("EXISTS"))
+                {
+                    index += 1;
+                }
+            }
+            if let Some(token) = tokens.get(index) {
+                let raw = clean_identifier(token);
+                if !raw.is_empty() {
+                    let (schema, table) = split_table_name(&raw);
+                    refs.push(TableRef {
+                        schema,
+                        table,
+                        alias: None,
+                    });
+                }
+            }
+            index += 1;
+            continue;
+        }
         if !matches!(keyword.as_str(), "FROM" | "JOIN" | "UPDATE") {
             index += 1;
             continue;
@@ -699,6 +735,20 @@ mod tests {
                     alias: Some("o".into()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_alter_table_target_for_column_completion() {
+        let refs =
+            parse_table_refs("ALTER TABLE maintenance.maintenances_to_personnels\nDROP COLUMN ");
+        assert_eq!(
+            refs,
+            vec![TableRef {
+                schema: Some("maintenance".into()),
+                table: "maintenances_to_personnels".into(),
+                alias: None,
+            }]
         );
     }
 

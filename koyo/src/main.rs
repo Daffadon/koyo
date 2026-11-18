@@ -4,6 +4,7 @@ mod app;
 
 use app::KoyoApp;
 use fs2::FileExt;
+use gpui_kit::component::input::ShowCompletions;
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 use std::fs::{self, File, OpenOptions};
@@ -131,6 +132,11 @@ fn main() {
                 KeyBinding::new("tab", AcceptCompletion, Some("Input && mode == editor")),
                 KeyBinding::new("ctrl-/", ToggleComment, Some("Input && mode == editor")),
                 KeyBinding::new("cmd-/", ToggleComment, Some("Input && mode == editor")),
+                KeyBinding::new(
+                    "ctrl-space",
+                    ShowCompletions,
+                    Some("Input && mode == editor"),
+                ),
                 KeyBinding::new("alt-up", MoveLineUp, Some("Input && mode == editor")),
                 KeyBinding::new("alt-down", MoveLineDown, Some("Input && mode == editor")),
                 KeyBinding::new(
