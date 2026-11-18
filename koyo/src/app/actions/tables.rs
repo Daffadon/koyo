@@ -19,6 +19,9 @@ use crate::app::*;
 
 struct TableCsvToast;
 
+/// A dead TCP session can otherwise leave a page load spinning forever.
+const TABLE_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl KoyoApp {
     pub(crate) fn open_table(
         &mut self,
@@ -293,7 +296,7 @@ impl KoyoApp {
             tab_id,
             async move {
                 tokio::time::timeout(
-                    Duration::from_secs(30),
+                    TABLE_IO_TIMEOUT,
                     database::load_table_page(
                         &manager,
                         session_id,
@@ -1083,7 +1086,7 @@ async fn export_table_csv(
             .checked_mul(PAGE_LIMIT)
             .ok_or_else(|| "Page range is too large.".to_string())?;
         let page = tokio::time::timeout(
-            Duration::from_secs(30),
+            TABLE_IO_TIMEOUT,
             database::load_table_page(
                 &manager,
                 session_id,

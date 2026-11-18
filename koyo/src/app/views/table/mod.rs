@@ -91,6 +91,9 @@ pub(super) fn prune_scroll_handles(app: &KoyoApp) {
                 .iter()
                 .any(|tab| tab.id == *tab_id && matches!(tab.body, TabBody::Table(_)))
         });
+        if offsets.capacity() > offsets.len().saturating_mul(4).max(16) {
+            offsets.shrink_to_fit();
+        }
     });
 }
 

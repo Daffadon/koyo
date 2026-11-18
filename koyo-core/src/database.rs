@@ -2360,3 +2360,59 @@ mod connection_loss_tests {
         assert!(!is_connection_lost("database is locked"));
     }
 }
+
+#[cfg(test)]
+mod session_cleanup_tests {
+    use super::{SessionManager, connect, disconnect, run_sql};
+    use crate::models::{ConnectionProfile, Engine, SslMode};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn disconnect_removes_the_session_entry() {
+        let path = std::env::temp_dir().join(format!("koyo-session-{}.db", Uuid::new_v4()));
+        let manager = SessionManager::default();
+        let profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "cleanup test".into(),
+            engine: Engine::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: String::new(),
+            username: String::new(),
+            ssl_mode: SslMode::Disable,
+            sqlite_path: path.display().to_string(),
+        };
+        let connection = connect(&manager, &profile, "")
+            .await
+            .expect("connect sqlite");
+        assert!(
+            manager
+                .sessions
+                .lock()
+                .await
+                .contains_key(&connection.session_id)
+        );
+
+        disconnect(&manager, connection.session_id)
+            .await
+            .expect("disconnect sqlite");
+
+        assert!(
+            !manager
+                .sessions
+                .lock()
+                .await
+                .contains_key(&connection.session_id)
+        );
+        let error = run_sql(
+            &manager,
+            connection.session_id,
+            Uuid::new_v4(),
+            "SELECT 1".into(),
+        )
+        .await
+        .expect_err("closed session");
+        assert_eq!(error, "Session is no longer connected.");
+        let _ = std::fs::remove_file(path);
+    }
+}
