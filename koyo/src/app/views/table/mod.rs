@@ -119,6 +119,7 @@ pub(super) fn render(
     let mode = table.mode;
 
     let title = format!("{}.{}", table.schema, table.table);
+    let title_for_copy = title.clone();
     let subtitle = if !connected {
         if tab.connecting {
             "Connecting to this table..."
@@ -303,10 +304,36 @@ pub(super) fn render(
                         .min_w(px(0.0))
                         .max_w(px(520.0))
                         .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
+                            h_flex()
+                                .items_center()
+                                .gap_1()
+                                .min_w(px(0.0))
+                                .child(
+                                    div()
+                                        .min_w(px(0.0))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .text_ellipsis()
+                                        .text_lg()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(title),
+                                )
+                                .child(button_tooltip(
+                                    "tooltip-copy-table-name",
+                                    Button::new("copy-table-name")
+                                        .ghost()
+                                        .compact()
+                                        .icon(IconName::Copy)
+                                        .accessibility_label("Copy table name")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.copy_to_clipboard(
+                                                title_for_copy.clone(),
+                                                "Copied table name.",
+                                                cx,
+                                            );
+                                        })),
+                                    "Copy table name",
+                                )),
                         )
                         .child(div().text_xs().text_color(palette.muted).child(subtitle)),
                 )
