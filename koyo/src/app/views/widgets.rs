@@ -45,8 +45,11 @@ pub(super) fn top_bar_tooltip(
     tooltip_button(id, button, label, Some(gpui_kit::base::Placement::Top))
 }
 
-/// Theme-aware monogram used in the title bar and sidebar.
-pub(super) fn logo_mark(palette: &Palette, size: f32) -> impl IntoElement {
+/// Brand monogram used in the title bar and sidebar. The mark keeps the
+/// phthalo-green identity in both light and dark themes.
+pub(super) fn logo_mark(_palette: &Palette, size: f32) -> impl IntoElement {
+    let green: gpui_kit::Hsla = gpui_kit::rgb(0x123524).into();
+    let cream: gpui_kit::Hsla = gpui_kit::rgb(0xF6F2E7).into();
     div()
         .size(px(size))
         .flex_none()
@@ -54,11 +57,11 @@ pub(super) fn logo_mark(palette: &Palette, size: f32) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded_md()
-        .bg(palette.foreground)
-        .text_color(palette.background)
-        .text_sm()
+        .bg(green)
+        .text_color(cream)
+        .text_size(px(size * 0.46))
         .font_weight(FontWeight::BOLD)
-        .child("K")
+        .child("KY")
 }
 
 pub(super) fn button_tooltip_if(
