@@ -107,7 +107,15 @@ impl KoyoApp {
                         this.status = format!("{} objects.", this.tabs[index].schema_objects.len());
                     }
                     Err(error) => {
-                        this.tabs[index].notice = error;
+                        if database::is_connection_lost(&error) {
+                            this.mark_connection_lost(
+                                session_id,
+                                "Connection lost while loading database objects. Reconnect to continue.",
+                                cx,
+                            );
+                        } else {
+                            this.tabs[index].notice = error;
+                        }
                     }
                 }
                 cx.notify();

@@ -1176,6 +1176,56 @@ impl KoyoApp {
         }
     }
 
+    /// An engine-reported dead session. Stop pending work, mark every tab on
+    /// that session disconnected, and keep local staged edits for a retry.
+    pub(crate) fn mark_connection_lost(
+        &mut self,
+        session_id: Uuid,
+        notice: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.session_id == session_id)
+            })
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        self.parked_connections
+            .retain(|parked| parked.connection.session_id != session_id);
+        for tab_id in ids {
+            let Some(index) = self.tab_index(tab_id) else {
+                continue;
+            };
+            self.tabs[index].connection = None;
+            self.tabs[index].connecting = false;
+            self.tabs[index].catalog_loading = false;
+            self.tabs[index].auto_connect = false;
+            self.tabs[index].notice = notice.to_string();
+            match &mut self.tabs[index].body {
+                TabBody::Query(query) => {
+                    query.running = false;
+                    query.cancelling = false;
+                    query.operation_id = None;
+                    query.pending_run = false;
+                }
+                TabBody::Table(table) => {
+                    table.loading = false;
+                    table.cancelling = false;
+                    table.operation_id = None;
+                    table.foreign_keys_loading = false;
+                    table.exporting = false;
+                }
+            }
+        }
+        self.disconnect_session(session_id);
+        self.status = notice.to_string();
+        cx.notify();
+    }
+
     pub(crate) fn disconnect_tabs_for_session(
         &mut self,
         session_id: Uuid,

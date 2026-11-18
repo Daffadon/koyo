@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::InputState;
@@ -286,23 +287,30 @@ impl KoyoApp {
         cx.notify();
 
         let manager = self.manager.clone();
+        let session_id = connection.session_id;
         self.spawn_task(
             cx,
             tab_id,
             async move {
-                database::load_table_page(
-                    &manager,
-                    connection.session_id,
-                    operation_id,
-                    schema,
-                    name,
-                    offset,
-                    PAGE_LIMIT,
-                    filters_for_task,
-                    sort_for_task,
-                    count_total,
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    database::load_table_page(
+                        &manager,
+                        session_id,
+                        operation_id,
+                        schema,
+                        name,
+                        offset,
+                        PAGE_LIMIT,
+                        filters_for_task,
+                        sort_for_task,
+                        count_total,
+                    ),
                 )
                 .await
+                .unwrap_or_else(|_| {
+                    Err("Table load timed out. The database connection may have closed.".into())
+                })
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -316,7 +324,7 @@ impl KoyoApp {
                 }
                 table.operation_id = None;
                 table.loading = false;
-                match result {
+                let error = match result {
                     Ok(page) => {
                         if let Some(total) = page.total_rows {
                             table.total_rows_cache = Some(total);
@@ -324,8 +332,18 @@ impl KoyoApp {
                         table.page = Some(page);
                         table.filters = filters;
                         table.sort = sort;
+                        None
                     }
-                    Err(error) => {
+                    Err(error) => Some(error),
+                };
+                if let Some(error) = error {
+                    if database::is_connection_lost(&error) || error.contains("timed out") {
+                        this.mark_connection_lost(
+                            session_id,
+                            "Connection lost while loading rows. Reconnect to continue.",
+                            cx,
+                        );
+                    } else {
                         this.tabs[index].notice = error;
                     }
                 }
@@ -654,16 +672,24 @@ impl KoyoApp {
                         });
                     }
                     Err(error) => {
-                        let message = format!("CSV download failed: {error}");
-                        this.tabs[index].notice = message.clone();
-                        let _ = cx.update_window(window_handle, |_, window, cx| {
-                            window.push_notification(
-                                Notification::error(message)
-                                    .title("CSV failed")
-                                    .id::<TableCsvToast>(),
+                        if database::is_connection_lost(&error) || error.contains("timed out") {
+                            this.mark_connection_lost(
+                                session_id,
+                                "Connection lost while downloading CSV. Reconnect to continue.",
                                 cx,
                             );
-                        });
+                        } else {
+                            let message = format!("CSV download failed: {error}");
+                            this.tabs[index].notice = message.clone();
+                            let _ = cx.update_window(window_handle, |_, window, cx| {
+                                window.push_notification(
+                                    Notification::error(message)
+                                        .title("CSV failed")
+                                        .id::<TableCsvToast>(),
+                                    cx,
+                                );
+                            });
+                        }
                     }
                 }
                 cx.notify();
@@ -755,7 +781,13 @@ impl KoyoApp {
                         this.load_page(tab_id, offset, filters, sort, cx);
                     }
                     Err(error) => {
-                        if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
+                        if database::is_connection_lost(&error) {
+                            this.mark_connection_lost(
+                                session_id,
+                                "Connection lost while applying changes. Reconnect to retry.",
+                                cx,
+                            );
+                        } else if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
                             table.staged.clear();
                             this.tabs[index].notice = "Commit result could not be confirmed. Page reloaded; verify data before retrying."
                                 .into();
@@ -1050,19 +1082,25 @@ async fn export_table_csv(
             .saturating_sub(1)
             .checked_mul(PAGE_LIMIT)
             .ok_or_else(|| "Page range is too large.".to_string())?;
-        let page = database::load_table_page(
-            &manager,
-            session_id,
-            Uuid::new_v4(),
-            schema.clone(),
-            table.clone(),
-            offset,
-            PAGE_LIMIT,
-            filters.clone(),
-            sort.clone(),
-            false,
+        let page = tokio::time::timeout(
+            Duration::from_secs(30),
+            database::load_table_page(
+                &manager,
+                session_id,
+                Uuid::new_v4(),
+                schema.clone(),
+                table.clone(),
+                offset,
+                PAGE_LIMIT,
+                filters.clone(),
+                sort.clone(),
+                false,
+            ),
         )
-        .await?;
+        .await
+        .unwrap_or_else(|_| {
+            Err("CSV export timed out. The database connection may have closed.".into())
+        })?;
         let chunk = table_page_as_csv(&page, first_chunk);
         if !chunk.is_empty() {
             file.write_all(chunk.as_bytes())

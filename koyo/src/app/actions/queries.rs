@@ -98,16 +98,27 @@ impl KoyoApp {
                 query.cancelling = false;
                 query.duration_ms = Some(started.elapsed().as_millis());
                 let success = result.is_ok();
-                match result {
+                let lost = match result {
                     Ok(output) => {
                         query.output = Some(output);
                         query.active_result = 0;
                         query.error.clear();
+                        None
                     }
-                    Err(error) => query.error = error,
-                }
+                    Err(error) => {
+                        if database::is_connection_lost(&error) {
+                            Some(error)
+                        } else {
+                            query.error = error;
+                            None
+                        }
+                    }
+                };
                 let duration_ms = started.elapsed().as_millis();
                 this.record_query_history(history_sql, history_profile, success, duration_ms, cx);
+                if let Some(error) = lost {
+                    this.mark_connection_lost(session_id, &format!("Connection lost: {error}"), cx);
+                }
                 cx.notify();
             },
         );

@@ -1480,6 +1480,35 @@ async fn postgres_transaction_assigned(client: &Client) -> Result<bool, String> 
         .map_err(|error| error.to_string())
 }
 
+/// Whether an engine error means the session itself is gone, rather than the
+/// statement failing on a live connection. Kept as string matching because
+/// the engine adapters return user-facing `String` errors.
+pub fn is_connection_lost(error: &str) -> bool {
+    const PATTERNS: &[&str] = &[
+        "connection closed",
+        "connection is closed",
+        "connection was closed",
+        "connection reset",
+        "connection terminated",
+        "terminating connection",
+        "server closed the connection",
+        "lost connection",
+        "broken pipe",
+        "error communicating with the server",
+        "unexpected end of file",
+        "unexpected eof",
+        "could not receive data from server",
+        "tcp provider error",
+        "socket error",
+        "session is no longer connected",
+        "ora-03113",
+        "ora-03114",
+        "ora-03135",
+    ];
+    let lower = error.to_ascii_lowercase();
+    PATTERNS.iter().any(|pattern| lower.contains(pattern))
+}
+
 fn format_pg_error(error: &tokio_postgres::Error) -> String {
     let Some(db_error) = error.as_db_error() else {
         return error.to_string();
@@ -2308,5 +2337,26 @@ mod tests {
             "cancellation should stop the oversized result promptly"
         );
         connection_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod connection_loss_tests {
+    use super::is_connection_lost;
+
+    #[test]
+    fn distinguishes_lost_connections_from_sql_errors() {
+        assert!(is_connection_lost("connection closed"));
+        assert!(is_connection_lost(
+            "SQLSTATE 08006: server closed the connection unexpectedly"
+        ));
+        assert!(is_connection_lost(
+            "ORA-03113: end-of-file on communication channel"
+        ));
+        assert!(is_connection_lost("Session is no longer connected."));
+        assert!(!is_connection_lost(
+            "SQLSTATE 42P01: relation \"missing\" does not exist"
+        ));
+        assert!(!is_connection_lost("database is locked"));
     }
 }

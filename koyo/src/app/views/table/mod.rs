@@ -132,6 +132,11 @@ pub(super) fn render(
     } else {
         "Read-only table without a primary key."
     };
+    let reconnect_label = if tab.profile.is_some() {
+        "Reconnect"
+    } else {
+        "Connect"
+    };
 
     let page_ref = page.as_deref();
     let editable = page_ref.is_some_and(|page| page.editable) && connected;
@@ -353,7 +358,27 @@ pub(super) fn render(
                                     "Copy table name",
                                 )),
                         )
-                        .child(div().text_xs().text_color(palette.muted).child(subtitle)),
+                        .child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().text_xs().text_color(palette.muted).child(subtitle))
+                                .when(!connected, |this| {
+                                    this.child(
+                                        Button::new("table-reconnect")
+                                            .link()
+                                            .compact()
+                                            .label(reconnect_label)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.open_connection_dialog(
+                                                    Some(tab_id),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                }),
+                        ),
                 )
                 .child(mode_switch),
         )
