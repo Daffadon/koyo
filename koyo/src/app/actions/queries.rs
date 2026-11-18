@@ -253,6 +253,53 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn download_active_result(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let exported = match &self.tabs[index].body {
+            TabBody::Query(query) => query.output.as_ref().and_then(|output| {
+                let result = output.result_sets.get(
+                    query
+                        .active_result
+                        .min(output.result_sets.len().saturating_sub(1)),
+                )?;
+                Some((results_as_csv(result), output.truncated))
+            }),
+            TabBody::Table(_) => None,
+        };
+        let Some((csv, truncated)) = exported else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name("query-result.csv")
+            .save_file()
+        else {
+            return;
+        };
+        let path = if path.extension().is_none() {
+            path.with_extension("csv")
+        } else {
+            path
+        };
+        let suffix = if truncated {
+            " The result was truncated; the file contains the rows Koyo returned."
+        } else {
+            ""
+        };
+        match std::fs::write(&path, csv) {
+            Ok(()) => {
+                self.tabs[index].notice =
+                    format!("Downloaded active result to {}.{suffix}", path.display());
+            }
+            Err(error) => {
+                self.tabs[index].notice = format!("CSV download failed: {error}");
+            }
+        }
+        cx.notify();
+    }
+
     pub(crate) fn copy_active_result_json(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;

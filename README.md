@@ -25,7 +25,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Run with **Ctrl+Enter** or **Cmd+Enter**. Selected SQL runs alone; with no selection the whole editor runs.
 - Line editing: **Ctrl+/** toggles SQL line comments, **Alt+Up/Down** moves lines, **Shift+Alt+Down** duplicates a line, and **Ctrl+Shift+K** deletes a line.
 - Multiple result sets per execution, shown as a data grid or as JSON (one object per row).
-- Copy the active result set as CSV or JSON from the result options menu, copy individual cells, or copy rows as TSV.
+- Copy the active result set as CSV or JSON from the result options menu, download it as a CSV file, copy individual cells, or copy rows as TSV.
 - Drag column edges to resize query-result columns.
 - Persistent query history: load an old statement or re-run it against the same profile. History keeps the latest 100 distinct SQL/profile pairs.
 - Each result set is capped at 1,000 displayed rows.
@@ -34,6 +34,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 - Explore tables, views, functions, triggers, and engine metadata grouped by schema.
 - Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
+- Download table rows as CSV from the current page, a page range, or every page. All-page exports use the current filter and sort and stream page by page through the existing table session.
 - Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
 - Foreign-key diagram for the open table.
 - Tables with primary keys support staged inserts and updates. Apply the batch in one transaction.

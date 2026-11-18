@@ -121,6 +121,7 @@ pub(crate) struct TableTab {
     pub(crate) resize_pointer_x: Option<f32>,
     pub(crate) resize_column: Option<usize>,
     pub(crate) column_resized: bool,
+    pub(crate) exporting: bool,
 }
 
 /// A connected session kept alive after its last tab closes. Tabs can park
@@ -200,6 +201,25 @@ pub(crate) struct CellEdit {
     pub(crate) nullable: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExportScope {
+    CurrentPage,
+    Page,
+    Range,
+    All,
+}
+
+pub(crate) struct TableExportDialog {
+    pub(crate) tab_id: u64,
+    pub(crate) title: SharedString,
+    pub(crate) current_page: u32,
+    pub(crate) total_pages: u32,
+    pub(crate) scope: ExportScope,
+    pub(crate) page: Entity<InputState>,
+    pub(crate) end_page: Entity<InputState>,
+    pub(crate) error: String,
+}
+
 pub(crate) struct ConfirmState {
     pub(crate) title: String,
     pub(crate) description: String,
@@ -258,6 +278,7 @@ pub(crate) struct KoyoApp {
     pub(crate) dialog: Option<ConnectionDialog>,
     pub(crate) cell_edit: Option<CellEdit>,
     pub(crate) confirm: Option<ConfirmState>,
+    pub(crate) export: Option<TableExportDialog>,
     pub(crate) next_tab_id: u64,
 }
 

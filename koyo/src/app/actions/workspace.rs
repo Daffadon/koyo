@@ -117,6 +117,7 @@ impl KoyoApp {
             dialog: None,
             cell_edit: None,
             confirm: None,
+            export: None,
             next_tab_id: 1,
         };
         cx.spawn(async move |this, cx| {
@@ -1071,6 +1072,7 @@ impl KoyoApp {
                 resize_pointer_x: None,
                 resize_column: None,
                 column_resized: false,
+                exporting: false,
             }),
         }
     }
@@ -1123,6 +1125,7 @@ impl KoyoApp {
                 table.cancelling = false;
                 table.operation_id = None;
                 table.foreign_keys_loading = false;
+                table.exporting = false;
             }
         }
         if let Some(dialog) = self.dialog.as_mut() {

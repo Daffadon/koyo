@@ -3,9 +3,10 @@ use gpui_kit::*;
 use koyo_core::common::ensure_filter_operator;
 use koyo_core::models::{
     ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, QueryResultSet, TableFilter,
+    TablePage,
 };
 
-use super::state::{ConnectionDialog, QueryTab, Tab};
+use super::state::{ConnectionDialog, ExportScope, QueryTab, Tab};
 
 pub(crate) fn query_tab_title(profile: Option<&ConnectionProfile>) -> SharedString {
     let Some(profile) = profile else {
@@ -58,6 +59,102 @@ pub(crate) fn results_as_csv(result: &QueryResultSet) -> String {
         );
     }
     output
+}
+
+/// Default file name for a table export. Keep path separators out of it.
+pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
+    let name = format!("{schema}.{table}")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("{name}.csv")
+}
+
+/// Table page as CSV. The first page carries the header row.
+pub(crate) fn table_page_as_csv(page: &TablePage, header: bool) -> String {
+    if page.columns.is_empty() {
+        return String::new();
+    }
+    let mut output = String::new();
+    if header {
+        push_csv_row(
+            &mut output,
+            page.columns.iter().map(|column| column.name.as_str()),
+        );
+    }
+    for row in &page.rows {
+        push_csv_row(
+            &mut output,
+            (0..page.columns.len()).map(|index| {
+                row.values
+                    .get(index)
+                    .and_then(Option::as_deref)
+                    .unwrap_or("")
+            }),
+        );
+    }
+    output
+}
+
+/// Resolve the export dialog's scope to an inclusive 1-based page range.
+/// `total_pages` is 0 when the row count is unknown.
+pub(crate) fn resolve_export_pages(
+    scope: ExportScope,
+    current_page: u32,
+    page: &str,
+    range_start: &str,
+    range_end: &str,
+    total_pages: u32,
+) -> Result<(u32, Option<u32>), String> {
+    let parse_page = |value: &str, label: &str| {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(format!("Enter a {label}."));
+        }
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("{label} must be a whole number."))
+            .and_then(|page| {
+                if page == 0 {
+                    Err(format!("{label} starts at 1."))
+                } else {
+                    Ok(page)
+                }
+            })
+    };
+    let (first, last) = match scope {
+        ExportScope::CurrentPage => (current_page, Some(current_page)),
+        ExportScope::Page => {
+            let page = parse_page(page, "page number")?;
+            (page, Some(page))
+        }
+        ExportScope::Range => {
+            let first = parse_page(range_start, "start page")?;
+            let last = parse_page(range_end, "end page")?;
+            if last < first {
+                return Err("End page must be at or after the start page.".into());
+            }
+            (first, Some(last))
+        }
+        ExportScope::All => (1, None),
+    };
+    if total_pages > 0 {
+        if first > total_pages {
+            return Err(format!("This table has {total_pages} pages."));
+        }
+        if let Some(last) = last
+            && last > total_pages
+        {
+            return Err(format!("This table has {total_pages} pages."));
+        }
+    }
+    Ok((first, last))
 }
 
 pub(crate) fn results_as_json(result: &QueryResultSet) -> String {
@@ -388,7 +485,11 @@ pub(crate) fn this_notice(tab: &mut Tab, message: impl Into<String>) {
 mod tests {
     use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, QueryResultSet};
 
-    use super::{parse_filter_input, results_as_csv, results_as_json};
+    use super::{
+        parse_filter_input, resolve_export_pages, results_as_csv, results_as_json,
+        table_csv_file_name, table_page_as_csv,
+    };
+    use crate::app::ExportScope;
 
     #[test]
     fn csv_quotes_commas_quotes_newlines_and_nulls() {
@@ -435,6 +536,67 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(parsed[0]["name"], "Ada");
         assert!(parsed[0]["note"].is_null());
+    }
+
+    #[test]
+    fn table_csv_writes_header_once_and_guards_formulas() {
+        let page = koyo_core::models::TablePage {
+            columns: vec![ColumnInfo {
+                name: "name".into(),
+                data_type: "text".into(),
+                filter_type: "text".into(),
+                filter_kind: FilterKind::Text,
+                sortable: true,
+                nullable: true,
+                primary_key: false,
+                generated: false,
+                identity: false,
+            }],
+            rows: vec![koyo_core::models::GridRow {
+                version: String::new(),
+                key: Vec::new(),
+                values: vec![Some("=cmd".into())],
+                truncated: Vec::new(),
+            }],
+            offset: 0,
+            limit: 100,
+            total_rows: Some(1),
+            has_more: false,
+            editable: false,
+        };
+
+        assert_eq!(table_page_as_csv(&page, true), "name\n'=cmd\n");
+        assert_eq!(table_page_as_csv(&page, false), "'=cmd\n");
+    }
+
+    #[test]
+    fn table_export_file_name_stays_a_file_name() {
+        assert_eq!(table_csv_file_name("main", "people"), "main.people.csv");
+        assert_eq!(table_csv_file_name("a/b", "c\\d"), "a_b.c_d.csv");
+    }
+
+    #[test]
+    fn export_scope_resolves_and_validates_pages() {
+        assert_eq!(
+            resolve_export_pages(ExportScope::CurrentPage, 3, "", "", "", 5),
+            Ok((3, Some(3)))
+        );
+        assert_eq!(
+            resolve_export_pages(ExportScope::Page, 0, "4", "", "", 5),
+            Ok((4, Some(4)))
+        );
+        assert_eq!(
+            resolve_export_pages(ExportScope::Range, 0, "", "2", "4", 5),
+            Ok((2, Some(4)))
+        );
+        assert_eq!(
+            resolve_export_pages(ExportScope::All, 0, "", "", "", 5),
+            Ok((1, None))
+        );
+        assert!(resolve_export_pages(ExportScope::Page, 0, "0", "", "", 5).is_err());
+        assert!(resolve_export_pages(ExportScope::Range, 0, "", "4", "2", 5).is_err());
+        assert!(resolve_export_pages(ExportScope::All, 0, "", "", "", 0).is_ok());
+        assert!(resolve_export_pages(ExportScope::Page, 0, "6", "", "", 5).is_err());
     }
 
     #[test]

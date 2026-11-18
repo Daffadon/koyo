@@ -116,6 +116,7 @@ pub(super) fn render(
     let engine = tab.engine();
     let cancel_supported = engine != Some(koyo_core::models::Engine::Oracle);
     let has_staged = !staged.is_empty();
+    let exporting = table.exporting;
     let mode = table.mode;
 
     let title = format!("{}.{}", table.schema, table.table);
@@ -255,6 +256,23 @@ pub(super) fn render(
                     this.apply_changes(tab_id, cx);
                 })),
         )
+        .child(button_tooltip(
+            "tooltip-download-table",
+            Button::new("download-table")
+                .ghost()
+                .compact()
+                .icon(IconName::ArrowDown)
+                .label("CSV")
+                .disabled(loading || !connected || page.is_none() || exporting)
+                .when(
+                    loading || !connected || page.is_none() || exporting,
+                    |this| this.text_color(palette.foreground),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_table_export(tab_id, window, cx);
+                })),
+            "Download table as CSV",
+        ))
         .child(button_tooltip(
             "tooltip-refresh-table",
             Button::new("refresh-table")

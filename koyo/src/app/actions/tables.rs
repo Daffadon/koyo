@@ -1,7 +1,13 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use koyo_core::SessionManager;
 use koyo_core::database;
 use koyo_core::models::{GridChange, TableFilter, TableSort};
 use uuid::Uuid;
@@ -407,6 +413,193 @@ impl KoyoApp {
         );
     }
 
+    pub(crate) fn open_table_export(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &self.tabs[index].body else {
+            return;
+        };
+        if table.exporting {
+            return;
+        }
+        let Some(page) = table.page.as_ref() else {
+            return;
+        };
+        let current_page = page.offset / PAGE_LIMIT + 1;
+        let total_pages = table
+            .total_rows_cache
+            .map(|total| {
+                total
+                    .div_ceil(u64::from(PAGE_LIMIT))
+                    .min(u64::from(u32::MAX)) as u32
+            })
+            .unwrap_or(0);
+        let page_input = cx.new(|cx| InputState::new(window, cx).placeholder("Page number"));
+        let end_page_input = cx.new(|cx| InputState::new(window, cx).placeholder("End page"));
+        self.export = Some(TableExportDialog {
+            tab_id,
+            title: format!("{}.{}", table.schema, table.table).into(),
+            current_page,
+            total_pages,
+            scope: ExportScope::CurrentPage,
+            page: page_input,
+            end_page: end_page_input,
+            error: String::new(),
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn close_table_export(&mut self, cx: &mut Context<Self>) {
+        self.export = None;
+        cx.notify();
+    }
+
+    pub(crate) fn set_table_export_scope(&mut self, scope: ExportScope, cx: &mut Context<Self>) {
+        if let Some(dialog) = self.export.as_mut() {
+            dialog.scope = scope;
+            dialog.error.clear();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn download_table_csv(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.export.as_ref() else {
+            return;
+        };
+        let tab_id = dialog.tab_id;
+        let scope = dialog.scope;
+        let page_text = dialog.page.read(cx).value().to_string();
+        let end_page_text = dialog.end_page.read(cx).value().to_string();
+        let Some(index) = self.tab_index(tab_id) else {
+            self.export = None;
+            return;
+        };
+        let Some(connection) = self.tabs[index].connection.clone() else {
+            if let Some(dialog) = self.export.as_mut() {
+                dialog.error = "This table is not connected.".into();
+            }
+            cx.notify();
+            return;
+        };
+        let TabBody::Table(table) = &self.tabs[index].body else {
+            self.export = None;
+            return;
+        };
+        if table.exporting {
+            return;
+        }
+        let current_page = table.page.as_ref().map(|page| page.offset / PAGE_LIMIT + 1);
+        let Some(current_page) = current_page else {
+            if let Some(dialog) = self.export.as_mut() {
+                dialog.error = "Load a table page before downloading.".into();
+            }
+            cx.notify();
+            return;
+        };
+        let total_pages = table
+            .total_rows_cache
+            .map(|total| {
+                total
+                    .div_ceil(u64::from(PAGE_LIMIT))
+                    .min(u64::from(u32::MAX)) as u32
+            })
+            .unwrap_or(0);
+        let (first_page, last_page) = match resolve_export_pages(
+            scope,
+            current_page,
+            &page_text,
+            &page_text,
+            &end_page_text,
+            total_pages,
+        ) {
+            Ok(range) => range,
+            Err(error) => {
+                if let Some(dialog) = self.export.as_mut() {
+                    dialog.error = error;
+                }
+                cx.notify();
+                return;
+            }
+        };
+        let schema = table.schema.clone();
+        let table_name = table.table.clone();
+        let filters = table.filters.clone();
+        let sort = table.sort.clone();
+        let default_name = table_csv_file_name(&table.schema, &table.table);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name(&default_name)
+            .save_file()
+        else {
+            return;
+        };
+        let path = if path.extension().is_none() {
+            path.with_extension("csv")
+        } else {
+            path
+        };
+        if let TabBody::Table(table) = &mut self.tabs[index].body {
+            table.exporting = true;
+            self.tabs[index].notice = format!("Exporting CSV to {}...", path.display());
+        }
+        self.export = None;
+        cx.notify();
+
+        let manager = self.manager.clone();
+        let session_id = connection.session_id;
+        let path_for_task = path.clone();
+        self.spawn_task(
+            cx,
+            tab_id,
+            async move {
+                export_table_csv(
+                    manager,
+                    session_id,
+                    schema,
+                    table_name,
+                    first_page,
+                    last_page,
+                    filters,
+                    sort,
+                    path_for_task,
+                )
+                .await
+            },
+            move |this, cx, result| {
+                let Some(index) = this.tab_index(tab_id) else {
+                    return;
+                };
+                if let TabBody::Table(table) = &mut this.tabs[index].body {
+                    table.exporting = false;
+                }
+                match result {
+                    Ok((rows, truncated)) => {
+                        let suffix = if truncated {
+                            " Some cell values were truncated by Koyo's limits."
+                        } else {
+                            ""
+                        };
+                        this.tabs[index].notice = format!(
+                            "Downloaded {rows} {} to {}.{suffix}",
+                            if rows == 1 { "row" } else { "rows" },
+                            path.display()
+                        );
+                    }
+                    Err(error) => {
+                        this.tabs[index].notice = format!("CSV download failed: {error}");
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
     pub(crate) fn apply_changes(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
@@ -758,5 +951,142 @@ impl KoyoApp {
         } else {
             self.load_page(tab_id, offset, filters, sort, cx);
         }
+    }
+}
+
+async fn export_table_csv(
+    manager: Arc<SessionManager>,
+    session_id: Uuid,
+    schema: String,
+    table: String,
+    first_page: u32,
+    last_page: Option<u32>,
+    filters: Vec<TableFilter>,
+    sort: Option<TableSort>,
+    path: PathBuf,
+) -> Result<(usize, bool), String> {
+    let mut file =
+        File::create(&path).map_err(|error| format!("Could not create file: {error}"))?;
+    let mut page_number = first_page;
+    let mut rows = 0usize;
+    let mut truncated = false;
+    let mut first_chunk = true;
+    loop {
+        if last_page.is_some_and(|last| page_number > last) {
+            break;
+        }
+        let offset = page_number
+            .saturating_sub(1)
+            .checked_mul(PAGE_LIMIT)
+            .ok_or_else(|| "Page range is too large.".to_string())?;
+        let page = database::load_table_page(
+            &manager,
+            session_id,
+            Uuid::new_v4(),
+            schema.clone(),
+            table.clone(),
+            offset,
+            PAGE_LIMIT,
+            filters.clone(),
+            sort.clone(),
+            false,
+        )
+        .await?;
+        let chunk = table_page_as_csv(&page, first_chunk);
+        if !chunk.is_empty() {
+            file.write_all(chunk.as_bytes())
+                .map_err(|error| format!("Could not write file: {error}"))?;
+        }
+        first_chunk = false;
+        rows += page.rows.len();
+        truncated |= page
+            .rows
+            .iter()
+            .any(|row| row.truncated.iter().any(|value| *value));
+        if !page.has_more || page.rows.is_empty() {
+            break;
+        }
+        page_number = page_number
+            .checked_add(1)
+            .ok_or_else(|| "Page range is too large.".to_string())?;
+    }
+    file.flush()
+        .map_err(|error| format!("Could not finish file: {error}"))?;
+    Ok((rows, truncated))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use koyo_core::SessionManager;
+    use koyo_core::database;
+    use koyo_core::models::{ConnectionProfile, Engine, SslMode};
+    use uuid::Uuid;
+
+    use super::export_table_csv;
+
+    #[tokio::test]
+    async fn exports_every_page_with_one_header() {
+        let database_path = std::env::temp_dir().join(format!("koyo-export-{}.db", Uuid::new_v4()));
+        let csv_path = std::env::temp_dir().join(format!("koyo-export-{}.csv", Uuid::new_v4()));
+        let manager = Arc::new(SessionManager::default());
+        let profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "export test".into(),
+            engine: Engine::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: String::new(),
+            username: String::new(),
+            ssl_mode: SslMode::Disable,
+            sqlite_path: database_path.display().to_string(),
+        };
+        let connection = database::connect(&manager, &profile, "")
+            .await
+            .expect("connect sqlite");
+        database::run_sql(
+            &manager,
+            connection.session_id,
+            Uuid::new_v4(),
+            "CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT)".into(),
+        )
+        .await
+        .expect("create sqlite table");
+        database::run_sql(
+            &manager,
+            connection.session_id,
+            Uuid::new_v4(),
+            "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 250) \
+             INSERT INTO people(name) SELECT 'Person ' || n FROM seq"
+                .into(),
+        )
+        .await
+        .expect("seed sqlite");
+
+        let (rows, truncated) = export_table_csv(
+            manager,
+            connection.session_id,
+            "main".into(),
+            "people".into(),
+            1,
+            None,
+            Vec::new(),
+            None,
+            csv_path.clone(),
+        )
+        .await
+        .expect("export csv");
+
+        assert_eq!(rows, 250);
+        assert!(!truncated);
+        let csv = fs::read_to_string(&csv_path).expect("read csv");
+        assert_eq!(csv.lines().count(), 251);
+        assert_eq!(csv.lines().next(), Some("id,name"));
+        assert!(csv.contains("Person 250"));
+
+        let _ = fs::remove_file(database_path);
+        let _ = fs::remove_file(csv_path);
     }
 }

@@ -309,6 +309,18 @@ pub(super) fn render(
                     output.is_some_and(|output| !output.result_sets.is_empty()),
                     |this| {
                         this.child(button_tooltip(
+                            ("tooltip-download-csv", tab_id),
+                            Button::new(("download-result-csv", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::ArrowDown)
+                                .label("CSV")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.download_active_result(tab_id, cx);
+                                })),
+                            "Download active result as CSV",
+                        ))
+                        .child(button_tooltip(
                             ("tooltip-copy-csv", tab_id),
                             Button::new(("copy-result-csv", tab_id))
                                 .ghost()
@@ -322,6 +334,7 @@ pub(super) fn render(
                         .child({
                             let csv_app = weak_app.clone();
                             let json_app = weak_app.clone();
+                            let download_app = weak_app.clone();
                             let collapse_app = weak_app.clone();
                             Button::new(("result-options", tab_id))
                                 .ghost()
@@ -332,6 +345,7 @@ pub(super) fn render(
                                 .dropdown_menu(move |menu, _, _| {
                                     let csv_app = csv_app.clone();
                                     let json_app = json_app.clone();
+                                    let download_app = download_app.clone();
                                     let collapse_app = collapse_app.clone();
                                     menu.item(
                                         PopupMenuItem::new("Copy as CSV").on_click(move |_, _, cx| {
@@ -346,6 +360,15 @@ pub(super) fn render(
                                                 this.copy_active_result_json(tab_id, cx);
                                             });
                                         }),
+                                    )
+                                    .item(
+                                        PopupMenuItem::new("Download as CSV...").on_click(
+                                            move |_, _, cx| {
+                                                let _ = download_app.update(cx, |this, cx| {
+                                                    this.download_active_result(tab_id, cx);
+                                                });
+                                            },
+                                        ),
                                     )
                                     .separator()
                                     .item(
