@@ -446,6 +446,10 @@ impl KoyoApp {
             .unwrap_or(0);
         let page_input = cx.new(|cx| InputState::new(window, cx).placeholder("Page number"));
         let end_page_input = cx.new(|cx| InputState::new(window, cx).placeholder("End page"));
+        let file_name = table_csv_file_name(&table.schema, &table.table);
+        let path_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Choose where to save the CSV"));
+        set_input(&path_input, &default_export_path(&file_name), window, cx);
         self.export = Some(TableExportDialog {
             tab_id,
             title: format!("{}.{}", table.schema, table.table).into(),
@@ -454,6 +458,8 @@ impl KoyoApp {
             scope: ExportScope::CurrentPage,
             page: page_input,
             end_page: end_page_input,
+            path: path_input,
+            file_name,
             error: String::new(),
         });
         cx.notify();
@@ -461,6 +467,23 @@ impl KoyoApp {
 
     pub(crate) fn close_table_export(&mut self, cx: &mut Context<Self>) {
         self.export = None;
+        cx.notify();
+    }
+
+    pub(crate) fn browse_table_export_path(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dialog) = self.export.as_ref() else {
+            return;
+        };
+        let path_input = dialog.path.clone();
+        let file_name = dialog.file_name.clone();
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .set_file_name(&file_name)
+            .save_file()
+        else {
+            return;
+        };
+        set_input(&path_input, &path.display().to_string(), window, cx);
         cx.notify();
     }
 
@@ -480,6 +503,7 @@ impl KoyoApp {
         let scope = dialog.scope;
         let page_text = dialog.page.read(cx).value().to_string();
         let end_page_text = dialog.end_page.read(cx).value().to_string();
+        let path_text = dialog.path.read(cx).value().trim().to_string();
         let Some(index) = self.tab_index(tab_id) else {
             self.export = None;
             return;
@@ -536,14 +560,31 @@ impl KoyoApp {
         let filters = table.filters.clone();
         let sort = table.sort.clone();
         let export_title = format!("{schema}.{table_name}");
-        let default_name = table_csv_file_name(&table.schema, &table.table);
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV", &["csv"])
-            .set_file_name(&default_name)
-            .save_file()
-        else {
+        if path_text.is_empty() {
+            if let Some(dialog) = self.export.as_mut() {
+                dialog.error = "Choose where to save the CSV.".into();
+            }
+            cx.notify();
             return;
-        };
+        }
+        let path = PathBuf::from(path_text);
+        if path.is_dir() {
+            if let Some(dialog) = self.export.as_mut() {
+                dialog.error = "Choose a file path, not a folder.".into();
+            }
+            cx.notify();
+            return;
+        }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.is_dir()
+        {
+            if let Some(dialog) = self.export.as_mut() {
+                dialog.error = "The selected folder does not exist.".into();
+            }
+            cx.notify();
+            return;
+        }
         let path = if path.extension().is_none() {
             path.with_extension("csv")
         } else {

@@ -217,6 +217,8 @@ pub(crate) struct TableExportDialog {
     pub(crate) scope: ExportScope,
     pub(crate) page: Entity<InputState>,
     pub(crate) end_page: Entity<InputState>,
+    pub(crate) path: Entity<InputState>,
+    pub(crate) file_name: String,
     pub(crate) error: String,
 }
 

@@ -76,6 +76,19 @@ pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
     format!("{name}.csv")
 }
 
+pub(crate) fn default_export_path(file_name: &str) -> String {
+    let directory = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(std::path::PathBuf::from)
+        .map(|home| {
+            let downloads = home.join("Downloads");
+            if downloads.is_dir() { downloads } else { home }
+        })
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    directory.join(file_name).display().to_string()
+}
+
 /// Table page as CSV. The first page carries the header row.
 pub(crate) fn table_page_as_csv(page: &TablePage, header: bool) -> String {
     if page.columns.is_empty() {
@@ -486,8 +499,8 @@ mod tests {
     use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, QueryResultSet};
 
     use super::{
-        parse_filter_input, resolve_export_pages, results_as_csv, results_as_json,
-        table_csv_file_name, table_page_as_csv,
+        default_export_path, parse_filter_input, resolve_export_pages, results_as_csv,
+        results_as_json, table_csv_file_name, table_page_as_csv,
     };
     use crate::app::ExportScope;
 
@@ -573,6 +586,11 @@ mod tests {
     fn table_export_file_name_stays_a_file_name() {
         assert_eq!(table_csv_file_name("main", "people"), "main.people.csv");
         assert_eq!(table_csv_file_name("a/b", "c\\d"), "a_b.c_d.csv");
+    }
+
+    #[test]
+    fn default_export_path_keeps_the_file_name() {
+        assert!(default_export_path("main.people.csv").ends_with("main.people.csv"));
     }
 
     #[test]

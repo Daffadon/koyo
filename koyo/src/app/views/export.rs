@@ -5,7 +5,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::widgets::input_field;
+use super::widgets::{field_label, input_field};
 use crate::app::*;
 
 const SCOPES: [(ExportScope, &str); 4] = [
@@ -155,7 +155,26 @@ pub(super) fn render_export(
                         .gap_3()
                         .px_5()
                         .py_4()
-                        .child(div().text_xs().text_color(palette.muted).child("Pages"))
+                        .child(
+                            h_flex()
+                                .items_end()
+                                .gap_2()
+                                .child(div().flex_1().min_w(px(0.0)).child(input_field(
+                                    "Save to",
+                                    &dialog.path,
+                                    false,
+                                    palette,
+                                )))
+                                .child(
+                                    Button::new("export-browse")
+                                        .secondary()
+                                        .label("Browse...")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.browse_table_export_path(window, cx);
+                                        })),
+                                ),
+                        )
+                        .child(field_label("Pages", palette))
                         .child(scope_buttons)
                         .child(detail)
                         .when(!dialog.error.is_empty(), |this| {
