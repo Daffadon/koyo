@@ -540,5 +540,16 @@ pub(super) fn render(
                     ),
             ),
         )
+        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+            if event.dragging() {
+                this.resize_active_result_column(tab_id, f32::from(event.position.x), cx);
+            }
+        }))
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.end_result_column_resize(tab_id, cx);
+            }),
+        )
         .into_any_element()
 }

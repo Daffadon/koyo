@@ -67,6 +67,8 @@ impl KoyoApp {
         query.output = None;
         query.duration_ms = None;
         query.result_column_widths.clear();
+        query.result_resize_pointer_x = None;
+        query.result_resize_column = None;
         self.tabs[index].notice.clear();
         cx.notify();
 
@@ -476,8 +478,27 @@ impl KoyoApp {
         }
         if column < column_count {
             query.result_resize_pointer_x = Some(pointer_x);
+            query.result_resize_column = Some((result_index, column));
         }
         cx.notify();
+    }
+
+    pub(crate) fn resize_active_result_column(
+        &mut self,
+        tab_id: u64,
+        pointer_x: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Query(query) = &self.tabs[index].body else {
+            return;
+        };
+        let Some((result_index, column)) = query.result_resize_column else {
+            return;
+        };
+        self.resize_result_column(tab_id, result_index, column, pointer_x, cx);
     }
 
     pub(crate) fn resize_result_column(
@@ -486,7 +507,6 @@ impl KoyoApp {
         result_index: usize,
         column: usize,
         pointer_x: f32,
-        fallback_origin_x: f32,
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.tab_index(tab_id) else {
@@ -495,7 +515,12 @@ impl KoyoApp {
         let TabBody::Query(query) = &mut self.tabs[index].body else {
             return;
         };
-        let previous_x = query.result_resize_pointer_x.unwrap_or(fallback_origin_x);
+        if query.result_resize_column != Some((result_index, column)) {
+            return;
+        }
+        let Some(previous_x) = query.result_resize_pointer_x else {
+            return;
+        };
         let Some(width) = query
             .result_column_widths
             .get_mut(result_index)
@@ -517,6 +542,7 @@ impl KoyoApp {
         };
         if let TabBody::Query(query) = &mut self.tabs[index].body {
             query.result_resize_pointer_x = None;
+            query.result_resize_column = None;
         }
         cx.notify();
     }

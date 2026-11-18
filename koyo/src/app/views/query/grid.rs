@@ -116,25 +116,6 @@ pub(super) fn result_grid(
                                 );
                             }),
                         )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                this.end_result_column_resize(tab_id, cx);
-                            }),
-                        )
-                        .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                            if event.dragging() {
-                                let pointer_x = f32::from(event.position.x);
-                                this.resize_result_column(
-                                    tab_id,
-                                    result_index,
-                                    index,
-                                    pointer_x,
-                                    pointer_x,
-                                    cx,
-                                );
-                            }
-                        }))
                         .on_click(cx.listener(|_, _, _, cx| {
                             cx.stop_propagation();
                         })),

@@ -802,6 +802,7 @@ impl KoyoApp {
                 pending_run: false,
                 result_column_widths: Vec::new(),
                 result_resize_pointer_x: None,
+                result_resize_column: None,
             }),
         }
     }

@@ -87,6 +87,7 @@ pub(crate) struct QueryTab {
     pub(crate) pending_run: bool,
     pub(crate) result_column_widths: Vec<Vec<f32>>,
     pub(crate) result_resize_pointer_x: Option<f32>,
+    pub(crate) result_resize_column: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
