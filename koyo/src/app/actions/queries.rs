@@ -1,7 +1,9 @@
 use std::ops::Range;
 use std::time::Instant;
 
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::EditorState;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{ClipboardItem, Entity, Window};
 use koyo_core::database;
@@ -9,6 +11,8 @@ use koyo_core::models::{ConnectionProfile, Engine};
 use uuid::Uuid;
 
 use crate::app::*;
+
+struct QueryCsvToast;
 
 impl KoyoApp {
     pub(crate) fn run_active_query(&mut self, cx: &mut Context<Self>) {
@@ -253,7 +257,12 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn download_active_result(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn download_active_result(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -290,11 +299,19 @@ impl KoyoApp {
         };
         match std::fs::write(&path, csv) {
             Ok(()) => {
-                self.tabs[index].notice =
-                    format!("Downloaded active result to {}.{suffix}", path.display());
+                let message = format!("Downloaded active result to {}.{suffix}", path.display());
+                self.tabs[index].notice = message.clone();
+                window.push_notification(Notification::success(message).title("CSV ready"), cx);
             }
             Err(error) => {
-                self.tabs[index].notice = format!("CSV download failed: {error}");
+                let message = format!("CSV download failed: {error}");
+                self.tabs[index].notice = message.clone();
+                window.push_notification(
+                    Notification::error(message)
+                        .title("CSV failed")
+                        .id::<QueryCsvToast>(),
+                    cx,
+                );
             }
         }
         cx.notify();

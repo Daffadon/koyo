@@ -4,7 +4,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::SessionManager;
@@ -13,6 +15,8 @@ use koyo_core::models::{GridChange, TableFilter, TableSort};
 use uuid::Uuid;
 
 use crate::app::*;
+
+struct TableCsvToast;
 
 impl KoyoApp {
     pub(crate) fn open_table(
@@ -468,7 +472,7 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn download_table_csv(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn download_table_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = self.export.as_ref() else {
             return;
         };
@@ -531,6 +535,7 @@ impl KoyoApp {
         let table_name = table.table.clone();
         let filters = table.filters.clone();
         let sort = table.sort.clone();
+        let export_title = format!("{schema}.{table_name}");
         let default_name = table_csv_file_name(&table.schema, &table.table);
         let Some(path) = rfd::FileDialog::new()
             .add_filter("CSV", &["csv"])
@@ -549,11 +554,18 @@ impl KoyoApp {
             self.tabs[index].notice = format!("Exporting CSV to {}...", path.display());
         }
         self.export = None;
+        window.push_notification(
+            Notification::info(format!("Exporting {export_title}."))
+                .title("Downloading CSV")
+                .id::<TableCsvToast>(),
+            cx,
+        );
         cx.notify();
 
         let manager = self.manager.clone();
         let session_id = connection.session_id;
         let path_for_task = path.clone();
+        let window_handle = window.window_handle();
         self.spawn_task(
             cx,
             tab_id,
@@ -585,14 +597,32 @@ impl KoyoApp {
                         } else {
                             ""
                         };
-                        this.tabs[index].notice = format!(
+                        let message = format!(
                             "Downloaded {rows} {} to {}.{suffix}",
                             if rows == 1 { "row" } else { "rows" },
                             path.display()
                         );
+                        this.tabs[index].notice = message.clone();
+                        let _ = cx.update_window(window_handle, |_, window, cx| {
+                            window.push_notification(
+                                Notification::success(message)
+                                    .title("CSV ready")
+                                    .id::<TableCsvToast>(),
+                                cx,
+                            );
+                        });
                     }
                     Err(error) => {
-                        this.tabs[index].notice = format!("CSV download failed: {error}");
+                        let message = format!("CSV download failed: {error}");
+                        this.tabs[index].notice = message.clone();
+                        let _ = cx.update_window(window_handle, |_, window, cx| {
+                            window.push_notification(
+                                Notification::error(message)
+                                    .title("CSV failed")
+                                    .id::<TableCsvToast>(),
+                                cx,
+                            );
+                        });
                     }
                 }
                 cx.notify();

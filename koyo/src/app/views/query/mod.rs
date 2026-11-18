@@ -315,8 +315,8 @@ pub(super) fn render(
                                 .compact()
                                 .icon(IconName::ArrowDown)
                                 .label("CSV")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.download_active_result(tab_id, cx);
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.download_active_result(tab_id, window, cx);
                                 })),
                             "Download active result as CSV",
                         ))
@@ -363,9 +363,9 @@ pub(super) fn render(
                                     )
                                     .item(
                                         PopupMenuItem::new("Download as CSV...").on_click(
-                                            move |_, _, cx| {
+                                            move |_, window, cx| {
                                                 let _ = download_app.update(cx, |this, cx| {
-                                                    this.download_active_result(tab_id, cx);
+                                                    this.download_active_result(tab_id, window, cx);
                                                 });
                                             },
                                         ),
