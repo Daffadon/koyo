@@ -270,6 +270,7 @@ impl KoyoApp {
                         }
                         this.tabs[index].profile = Some(info.profile.clone());
                         this.tabs[index].connecting = false;
+                        this.tabs[index].auto_connect = false;
                         this.tabs[index].notice.clear();
                         if matches!(this.tabs[index].body, TabBody::Query(_)) {
                             this.tabs[index].title = query_tab_title(Some(&info.profile));
@@ -325,6 +326,12 @@ impl KoyoApp {
                                 table.diagram_metadata_loaded = false;
                                 this.load_page(tab_id, offset, filters, sort, cx);
                             }
+                        }
+                        // A restored tab may be visible while the user
+                        // reconnects from another tab. Adopt the new session
+                        // immediately instead of waiting for another click.
+                        if let Some(active) = this.pane_active_id(this.focus) {
+                            this.auto_connect_tab(active, cx);
                         }
                         if run_pending {
                             this.run_query(tab_id, cx);

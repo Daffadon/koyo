@@ -222,6 +222,7 @@ impl KoyoApp {
                 match saved_tab {
                     TabSnapshot::Query { sql, .. } => {
                         let mut tab = self.make_query_tab(profile, window, cx);
+                        tab.auto_connect = true;
                         if let TabBody::Query(query) = &mut tab.body {
                             query.editor.update(cx, |editor, cx| {
                                 editor.set_value(sql.clone(), window, cx);
@@ -239,6 +240,7 @@ impl KoyoApp {
                         };
                         let mut tab =
                             self.make_table_tab(profile, schema.clone(), table.clone(), window, cx);
+                        tab.auto_connect = true;
                         tab.connecting = false;
                         tab.notice = "Restored tab. Reconnect to load rows.".into();
                         if let TabBody::Table(table) = &mut tab.body {
@@ -426,7 +428,7 @@ impl KoyoApp {
             .unwrap_or(0)
     }
 
-    fn pane_active_id(&self, pane: Pane) -> Option<u64> {
+    pub(crate) fn pane_active_id(&self, pane: Pane) -> Option<u64> {
         let id = match pane {
             Pane::Primary => self.primary_active,
             Pane::Secondary if self.split.is_some() => self.secondary_active,
@@ -780,6 +782,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: false,
+            auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,
             body: TabBody::Query(QueryTab {
@@ -973,6 +976,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: true,
+            auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,
             body: TabBody::Table(TableTab {
@@ -1144,6 +1148,7 @@ impl KoyoApp {
             }
         }
         self.tabs[index].connecting = false;
+        self.tabs[index].auto_connect = false;
         self.tabs[index].notice = "Disconnected. Reconnect when needed.".into();
         match &mut self.tabs[index].body {
             TabBody::Query(query) => {
@@ -1426,8 +1431,69 @@ impl KoyoApp {
         self.focus = pane;
         self.reveal_active_tab(pane);
         self.normalize_panes();
+        self.auto_connect_tab(id, cx);
         self.persist_state(cx);
         cx.notify();
+    }
+
+    /// Restored tabs have no live session. When one is selected after the user
+    /// reconnects a profile, adopt that live session instead of showing the
+    /// reconnect notice again.
+    pub(crate) fn auto_connect_tab(&mut self, tab_id: u64, cx: &mut Context<Self>) -> bool {
+        let Some(index) = self.tab_index(tab_id) else {
+            return false;
+        };
+        let tab = &self.tabs[index];
+        if !tab.auto_connect || tab.connection.is_some() || tab.connecting {
+            return false;
+        }
+        let Some(profile_id) = tab.profile.as_ref().map(|profile| profile.id) else {
+            return false;
+        };
+        let Some(connection) = self
+            .tabs
+            .iter()
+            .filter(|candidate| candidate.id != tab_id)
+            .filter_map(|candidate| candidate.connection.as_ref())
+            .find(|connection| connection.profile.id == profile_id)
+            .cloned()
+        else {
+            return false;
+        };
+
+        self.tabs[index].connection = Some(connection.clone());
+        self.tabs[index].connecting = false;
+        self.tabs[index].auto_connect = false;
+        self.tabs[index].profile = Some(connection.profile.clone());
+        self.tabs[index].notice.clear();
+        let is_table = matches!(self.tabs[index].body, TabBody::Table(_));
+        match &mut self.tabs[index].body {
+            TabBody::Query(query) => {
+                query.error.clear();
+                query.output = None;
+                query.running = false;
+                query.cancelling = false;
+                query.operation_id = None;
+                query.active_result = 0;
+            }
+            TabBody::Table(table) => {
+                table.page = None;
+                table.total_rows_cache = None;
+                table.staged.clear();
+                table.loading = false;
+                table.operation_id = None;
+                table.foreign_keys.clear();
+                table.foreign_keys_loading = false;
+                table.indexes.clear();
+                table.diagram_metadata_loaded = false;
+            }
+        }
+        if is_table {
+            self.load_page(tab_id, 0, Vec::new(), None, cx);
+        } else {
+            self.load_tables(tab_id, cx);
+        }
+        true
     }
 
     pub(crate) fn apply_pending_starters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
