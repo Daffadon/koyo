@@ -28,6 +28,15 @@ pub(super) fn horizontal_offsets(scroll_handle: &ScrollHandle) -> (Pixels, Pixel
     (px(visible_x), px(-visible_x))
 }
 
+fn clamp_vertical_offset(scroll_handle: &ScrollHandle, row_count: usize) {
+    let viewport_height = f32::from(scroll_handle.bounds().size.height);
+    let max_scroll = (row_count as f32 * ROW_HEIGHT - viewport_height).max(0.0);
+    let current = scroll_handle.offset();
+    if f32::from(current.y) < -max_scroll {
+        scroll_handle.set_offset(point(current.x, px(-max_scroll)));
+    }
+}
+
 fn visible_rows(scroll_handle: &ScrollHandle, row_count: usize) -> Range<usize> {
     visible_range(
         f32::from(scroll_handle.offset().y),
@@ -69,6 +78,10 @@ pub(super) fn render(
     mut render_row: impl FnMut(usize, Pixels) -> AnyElement,
 ) -> AnyElement {
     let width = ROW_RAIL_WIDTH + columns_width;
+    // A page, filter, or result refresh can replace many rows with only a few.
+    // The old scroll offset then points past the new content and leaves blank
+    // space above the remaining rows, so clamp it before computing the window.
+    clamp_vertical_offset(scroll_handle, row_count);
     let (visible_left, frozen_left) = horizontal_offsets(scroll_handle);
     let range = visible_rows(scroll_handle, row_count);
     let first = range.start;
