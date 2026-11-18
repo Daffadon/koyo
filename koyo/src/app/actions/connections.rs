@@ -60,6 +60,7 @@ impl KoyoApp {
             return;
         };
         let session_id = connection.session_id;
+        self.tabs[index].catalog_loading = true;
         self.tabs[index].catalog_generation = self.tabs[index].catalog_generation.wrapping_add(1);
         let generation = self.tabs[index].catalog_generation;
         let manager = self.manager.clone();
@@ -89,6 +90,7 @@ impl KoyoApp {
                 {
                     return;
                 }
+                this.tabs[index].catalog_loading = false;
                 match result {
                     Ok((tables, objects, metadata, columns)) => {
                         if let TabBody::Query(query) = &mut this.tabs[index].body {

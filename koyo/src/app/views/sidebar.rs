@@ -5,11 +5,13 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable, Icon, IconName, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use super::widgets::{control_focus, is_activation_key};
 use crate::app::{KoyoApp, Palette, TabBody, engine_label, unix_seconds};
 
 fn metadata_group_icon(name: &str) -> IconName {
@@ -119,6 +121,7 @@ impl KoyoApp {
         for (schema, schema_objects) in &by_schema {
             let is_expanded = searching || expanded.contains(schema);
             let schema_for_toggle = schema.clone();
+            let schema_for_keyboard = schema.clone();
             let toggle_id = SharedString::from(format!("schema-{schema}"));
             schema_nodes = schema_nodes.child(
                 div()
@@ -129,8 +132,22 @@ impl KoyoApp {
                     .px_2()
                     .py_1()
                     .rounded_md()
+                    .aria_label(format!("Schema {schema}"))
                     .cursor_pointer()
                     .hover(|style| style.bg(palette.panel))
+                    .track_focus(&control_focus(tab_id, format!("schema-node-{schema}"), cx))
+                    .tab_stop(true)
+                    .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if is_activation_key(event) {
+                            this.set_expanded(
+                                tab_id,
+                                schema_for_keyboard.clone(),
+                                !is_expanded,
+                                cx,
+                            );
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_expanded(tab_id, schema_for_toggle.clone(), !is_expanded, cx);
                     }))
@@ -172,6 +189,7 @@ impl KoyoApp {
                 let category_key = format!("{schema}/{kind:?}");
                 let category_expanded = searching || expanded.contains(&category_key);
                 let category_for_toggle = category_key.clone();
+                let category_for_keyboard = category_key.clone();
                 schema_nodes = schema_nodes.child(
                     div()
                         .id(SharedString::from(format!("schema-kind-{category_key}")))
@@ -184,6 +202,23 @@ impl KoyoApp {
                         .rounded_md()
                         .cursor_pointer()
                         .hover(|style| style.bg(palette.panel))
+                        .track_focus(&control_focus(
+                            tab_id,
+                            format!("schema-kind-{category_key}"),
+                            cx,
+                        ))
+                        .tab_stop(true)
+                        .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if is_activation_key(event) {
+                                this.set_expanded(
+                                    tab_id,
+                                    category_for_keyboard.clone(),
+                                    !category_expanded,
+                                    cx,
+                                );
+                            }
+                        }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_expanded(
                                 tab_id,
@@ -253,11 +288,42 @@ impl KoyoApp {
                             .when(!selected && clickable, |this| {
                                 this.hover(|style| style.bg(palette.panel))
                             })
+                            .aria_label(format!("{kind:?} {name}"))
                             .when(clickable, |this| {
                                 let name = name.clone();
-                                this.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_table(schema_name.clone(), name.clone(), window, cx);
-                                }))
+                                let schema_name_for_keyboard = schema_name.clone();
+                                let name_for_keyboard = name.clone();
+                                this.track_focus(&control_focus(
+                                    tab_id,
+                                    format!("schema-object-{schema_name}-{kind:?}-{name}"),
+                                    cx,
+                                ))
+                                .tab_stop(true)
+                                .focus(|style| {
+                                    style.bg(palette.accent_soft).border_color(palette.ring)
+                                })
+                                .on_key_down(cx.listener(
+                                    move |this, event: &KeyDownEvent, window, cx| {
+                                        if is_activation_key(event) {
+                                            this.open_table(
+                                                schema_name_for_keyboard.clone(),
+                                                name_for_keyboard.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                ))
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.open_table(
+                                            schema_name.clone(),
+                                            name.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
                             })
                             .child(Icon::new(schema_kind_icon(kind)).with_size(Size::Small))
                             .child(div().flex_1().text_sm().child(name.clone()))
@@ -288,6 +354,7 @@ impl KoyoApp {
 
         if !searching || !by_schema.is_empty() {
             let schemas_key = "Schemas".to_string();
+            let schemas_key_for_keyboard = schemas_key.clone();
             tree = tree.child(
                 div()
                     .id("schema-group-schemas")
@@ -297,8 +364,22 @@ impl KoyoApp {
                     .px_2()
                     .py_1()
                     .rounded_md()
+                    .aria_label("Schemas")
                     .cursor_pointer()
                     .hover(|style| style.bg(palette.panel))
+                    .track_focus(&control_focus(tab_id, "schema-group", cx))
+                    .tab_stop(true)
+                    .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if is_activation_key(event) {
+                            this.set_expanded(
+                                tab_id,
+                                schemas_key_for_keyboard.clone(),
+                                !schemas_expanded,
+                                cx,
+                            );
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_expanded(tab_id, schemas_key.clone(), !schemas_expanded, cx);
                     }))
@@ -344,6 +425,7 @@ impl KoyoApp {
             let key = format!("group:{}", group.name);
             let is_expanded = searching || expanded.contains(&key);
             let key_for_toggle = key.clone();
+            let key_for_keyboard = key.clone();
             tree = tree.child(
                 div()
                     .id(SharedString::from(format!("metadata-group-{key}")))
@@ -353,8 +435,17 @@ impl KoyoApp {
                     .px_2()
                     .py_1()
                     .rounded_md()
+                    .aria_label(group.name.clone())
                     .cursor_pointer()
                     .hover(|style| style.bg(palette.panel))
+                    .track_focus(&control_focus(tab_id, format!("metadata-group-{key}"), cx))
+                    .tab_stop(true)
+                    .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                        if is_activation_key(event) {
+                            this.set_expanded(tab_id, key_for_keyboard.clone(), !is_expanded, cx);
+                        }
+                    }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_expanded(tab_id, key_for_toggle.clone(), !is_expanded, cx);
                     }))
@@ -420,7 +511,18 @@ impl KoyoApp {
             );
         }
 
-        if objects.is_empty() && tab.metadata_groups.is_empty() {
+        if tab.catalog_loading && objects.is_empty() && tab.metadata_groups.is_empty() {
+            tree = tree.child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .p_3()
+                    .text_xs()
+                    .text_color(palette.muted)
+                    .child(Spinner::new().with_size(Size::Small).color(palette.muted))
+                    .child("Loading database objects..."),
+            );
+        } else if objects.is_empty() && tab.metadata_groups.is_empty() {
             tree = tree.child(
                 div()
                     .p_3()
@@ -480,7 +582,8 @@ impl KoyoApp {
                             .children(history.iter().enumerate().map(|(index, entry)| {
                                 let preview = history_preview(&entry.sql);
                                 let detail = format!(
-                                    "{} · {} · {} ms",
+                                    "{} · {} · {} · {} ms",
+                                    if entry.success { "Succeeded" } else { "Failed" },
                                     history_age(entry.at),
                                     entry.profile_name,
                                     entry.duration_ms
@@ -495,6 +598,22 @@ impl KoyoApp {
                                     .rounded_md()
                                     .cursor_pointer()
                                     .hover(|style| style.bg(palette.panel))
+                                    .track_focus(&control_focus(
+                                        tab_id,
+                                        format!("history-{index}"),
+                                        cx,
+                                    ))
+                                    .tab_stop(true)
+                                    .focus(|style| {
+                                        style.bg(palette.accent_soft).border_color(palette.ring)
+                                    })
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &KeyDownEvent, window, cx| {
+                                            if is_activation_key(event) {
+                                                this.load_history_entry(index, window, cx);
+                                            }
+                                        },
+                                    ))
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.load_history_entry(index, window, cx);
                                     }))
@@ -550,6 +669,7 @@ impl KoyoApp {
         };
 
         let search_field = Input::new(&self.explorer_filter)
+            .aria_label("Search tables")
             .w_full()
             .cleanable(true)
             .with_size(Size::Small)
@@ -816,7 +936,19 @@ impl KoyoApp {
                     }),
             )
             .when(has_explorer, |this| {
-                this.child(div().px_3().pb_2().child(search_field))
+                this.child(
+                    v_flex()
+                        .gap_1()
+                        .px_3()
+                        .pb_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.muted)
+                                .child("Search tables"),
+                        )
+                        .child(search_field),
+                )
             })
             .when(has_explorer, |this| this.child(tree))
             .when(!has_explorer, |this| {

@@ -213,6 +213,12 @@ pub(super) fn render(
         )
         .child(
             div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Settings JSON"),
+        )
+        .child(
+            div()
                 .rounded_md()
                 .border_1()
                 .border_color(palette.border)
@@ -220,6 +226,7 @@ pub(super) fn render(
                 .p_2()
                 .child(
                     Textarea::new(&app.ai_config_input)
+                        .aria_label("AI provider settings JSON")
                         .w_full()
                         .h(px(320.0))
                         .bordered(false)
@@ -375,6 +382,12 @@ pub(super) fn render(
         .border_color(palette.sidebar_border)
         .child(
             div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Message the database assistant"),
+        )
+        .child(
+            div()
                 .rounded_md()
                 .border_1()
                 .border_color(palette.border)
@@ -388,6 +401,7 @@ pub(super) fn render(
                 }))
                 .child(
                     Textarea::new(&app.ai_input)
+                        .aria_label("Message the database assistant")
                         .w_full()
                         .bordered(false)
                         .disabled(app.ai_pending),

@@ -782,6 +782,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: false,
+            catalog_loading: false,
             auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,
@@ -889,6 +890,70 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn nudge_column_width(
+        &mut self,
+        tab_id: u64,
+        column: usize,
+        delta: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        let column_count = table
+            .page
+            .as_ref()
+            .map(|page| page.columns.len())
+            .unwrap_or(0);
+        if table.column_widths.len() < column_count {
+            table
+                .column_widths
+                .resize(column_count, DEFAULT_COLUMN_WIDTH);
+        }
+        if let Some(width) = table.column_widths.get_mut(column) {
+            *width = (*width + delta).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn nudge_result_column_width(
+        &mut self,
+        tab_id: u64,
+        result_index: usize,
+        column: usize,
+        delta: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Query(query) = &mut self.tabs[index].body else {
+            return;
+        };
+        let column_count = query
+            .output
+            .as_ref()
+            .and_then(|output| output.result_sets.get(result_index))
+            .map(|result| result.columns.len())
+            .unwrap_or(0);
+        if query.result_column_widths.len() <= result_index {
+            query
+                .result_column_widths
+                .resize(result_index + 1, Vec::new());
+        }
+        let widths = &mut query.result_column_widths[result_index];
+        if widths.len() < column_count {
+            widths.resize(column_count, RESULT_COLUMN_WIDTH);
+        }
+        if let Some(width) = widths.get_mut(column) {
+            *width = (*width + delta).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn autosize_column(&mut self, tab_id: u64, column: usize, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
@@ -976,6 +1041,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: true,
+            catalog_loading: false,
             auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,

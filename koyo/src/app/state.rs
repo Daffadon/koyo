@@ -143,6 +143,7 @@ pub(crate) struct Tab {
     pub(crate) expanded: BTreeSet<String>,
     pub(crate) notice: String,
     pub(crate) connecting: bool,
+    pub(crate) catalog_loading: bool,
     /// Restored tabs may adopt an already-live session when selected.
     pub(crate) auto_connect: bool,
     pub(crate) catalog_generation: u64,

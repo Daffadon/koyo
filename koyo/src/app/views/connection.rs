@@ -120,17 +120,28 @@ pub(super) fn render_dialog(
                 ),
         )
         .child(
-            div().px_2().pb_2().child(
-                Input::new(&app.profile_filter)
-                    .w_full()
-                    .cleanable(true)
-                    .with_size(Size::Small)
-                    .prefix(
-                        Icon::new(IconName::Search)
-                            .with_size(Size::Small)
-                            .text_color(palette.muted),
-                    ),
-            ),
+            v_flex()
+                .gap_1()
+                .px_2()
+                .pb_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child("Search saved connections"),
+                )
+                .child(
+                    Input::new(&app.profile_filter)
+                        .aria_label("Search saved connections")
+                        .w_full()
+                        .cleanable(true)
+                        .with_size(Size::Small)
+                        .prefix(
+                            Icon::new(IconName::Search)
+                                .with_size(Size::Small)
+                                .text_color(palette.muted),
+                        ),
+                ),
         )
         .child(
             v_flex()
@@ -309,7 +320,10 @@ pub(super) fn render_dialog(
                                 .gap_2()
                                 .child(
                                     div().flex_1().min_w(px(0.0)).child(
-                                        Input::new(&dialog.sqlite_path).w_full().disabled(busy),
+                                        Input::new(&dialog.sqlite_path)
+                                            .aria_label("Database file")
+                                            .w_full()
+                                            .disabled(busy),
                                     ),
                                 )
                                 .child(
@@ -340,7 +354,12 @@ pub(super) fn render_dialog(
                                 .w(px(120.0))
                                 .gap_1()
                                 .child(field_label("Port", palette))
-                                .child(Input::new(&dialog.port).w_full().disabled(busy)),
+                                .child(
+                                    Input::new(&dialog.port)
+                                        .aria_label("Port")
+                                        .w_full()
+                                        .disabled(busy),
+                                ),
                         ),
                 )
                 .child(
@@ -368,7 +387,12 @@ pub(super) fn render_dialog(
                     v_flex()
                         .gap_1()
                         .child(field_label("Password", palette))
-                        .child(Input::new(&dialog.password).w_full().disabled(busy))
+                        .child(
+                            Input::new(&dialog.password)
+                                .aria_label("Password")
+                                .w_full()
+                                .disabled(busy),
+                        )
                         .child(div().text_xs().text_color(palette.muted).child(
                             if dialog.editing.is_some() {
                                 "Blank keeps the saved password only when the target is unchanged."
@@ -498,6 +522,8 @@ pub(super) fn render_dialog(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::Close)
+                                .accessibility_label("Close connection dialog")
+                                .tooltip("Close")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_connection_dialog(cx);

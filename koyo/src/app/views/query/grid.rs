@@ -6,7 +6,7 @@ use koyo_core::models::QueryResultSet;
 use std::rc::Rc;
 
 use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
-use super::super::widgets::value_text;
+use super::super::widgets::{control_focus, keyboard_row, value_text};
 use super::result_grid_scroll_handle;
 use crate::app::*;
 
@@ -74,6 +74,33 @@ pub(super) fn result_grid(
                         .border_color(palette.muted.opacity(0.35))
                         .occlude()
                         .cursor(CursorStyle::ResizeLeftRight)
+                        .aria_label(format!("Resize column {column}"))
+                        .track_focus(&control_focus(
+                            tab_id,
+                            format!("result-column-resize-{result_index}-{index}"),
+                            cx,
+                        ))
+                        .tab_stop(true)
+                        .focus(|style| style.bg(palette.accent_soft))
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            match event.keystroke.key.as_str() {
+                                "left" => this.nudge_result_column_width(
+                                    tab_id,
+                                    result_index,
+                                    index,
+                                    -16.0,
+                                    cx,
+                                ),
+                                "right" => this.nudge_result_column_width(
+                                    tab_id,
+                                    result_index,
+                                    index,
+                                    16.0,
+                                    cx,
+                                ),
+                                _ => {}
+                            }
+                        }))
                         .hover(|style| style.bg(palette.accent_soft))
                         .child(div().w(px(1.0)).self_stretch().bg(palette.border))
                         .on_mouse_down(
@@ -165,6 +192,7 @@ fn render_result_row(
         .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or(""))
         .collect::<Vec<_>>()
         .join("\t");
+    let row_text_for_keyboard = row_text.clone();
     h_flex()
         .relative()
         .id(SharedString::from(format!(
@@ -183,26 +211,41 @@ fn render_result_row(
                 .get(column_index)
                 .copied()
                 .unwrap_or(RESULT_COLUMN_WIDTH);
-            div()
-                .id(SharedString::from(format!(
-                    "result-cell-{tab_id}-{result_index}-{row_index}-{column_index}"
-                )))
-                .w(px(column_width))
-                .flex_shrink_0()
-                .px_2()
-                .py_1()
-                .border_l_1()
-                .border_r_1()
-                .border_color(palette.border)
-                .overflow_hidden()
-                .cursor_pointer()
-                .hover(|style| style.bg(palette.panel_alt))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_to_clipboard(copy_text.clone(), "Copied cell.", cx);
-                }))
-                .child(value_text(&value, &palette))
+            keyboard_row(
+                div()
+                    .id(SharedString::from(format!(
+                        "result-cell-{tab_id}-{result_index}-{row_index}-{column_index}"
+                    )))
+                    .w(px(column_width))
+                    .flex_shrink_0()
+                    .px_2()
+                    .py_1()
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(palette.border)
+                    .overflow_hidden()
+                    .aria_label(format!(
+                        "Copy cell row {} column {}",
+                        row_index + 1,
+                        column_index + 1
+                    ))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(palette.panel_alt))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy_to_clipboard(copy_text.clone(), "Copied cell.", cx);
+                    }))
+                    .child(value_text(&value, &palette)),
+                tab_id,
+                format!("result-cell-{result_index}-{row_index}-{column_index}"),
+                &palette,
+                cx,
+                move |this, _, cx| {
+                    let copy_text = value.clone().unwrap_or_default();
+                    this.copy_to_clipboard(copy_text, "Copied cell.", cx);
+                },
+            )
         }))
-        .child(
+        .child(keyboard_row(
             div()
                 .id(SharedString::from(format!(
                     "result-row-rail-{tab_id}-{result_index}-{row_index}"
@@ -221,12 +264,20 @@ fn render_result_row(
                 .text_color(palette.muted)
                 .border_r_1()
                 .border_color(palette.border)
+                .aria_label(format!("Copy row {}", row_index + 1))
                 .cursor_pointer()
                 .hover(|style| style.bg(palette.panel_alt))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.copy_to_clipboard(row_text.clone(), "Copied row.", cx);
                 }))
                 .child((row_index + 1).to_string()),
-        )
+            tab_id,
+            format!("result-row-rail-{result_index}-{row_index}"),
+            &palette,
+            cx,
+            move |this, _, cx| {
+                this.copy_to_clipboard(row_text_for_keyboard.clone(), "Copied row.", cx);
+            },
+        ))
         .into_any_element()
 }

@@ -13,6 +13,7 @@ pub(crate) struct Palette {
     pub panel_alt: gpui_kit::Hsla,
     pub accent: gpui_kit::Hsla,
     pub accent_soft: gpui_kit::Hsla,
+    pub ring: gpui_kit::Hsla,
     pub success: gpui_kit::Hsla,
     pub warning: gpui_kit::Hsla,
     pub danger: gpui_kit::Hsla,
@@ -31,6 +32,7 @@ pub(crate) fn palette(cx: &App) -> Palette {
         panel_alt: theme.muted,
         accent: theme.primary,
         accent_soft: theme.accent,
+        ring: theme.ring,
         success: theme.success,
         warning: theme.warning,
         danger: theme.danger,
@@ -50,7 +52,7 @@ pub(crate) fn apply_calm_light_theme(cx: &mut App) {
         colors.background = tone(0xF2F0E9);
         colors.foreground = tone(0x30342F);
         colors.muted = tone(0xE7E3D8);
-        colors.muted_foreground = tone(0x74796F);
+        colors.muted_foreground = tone(0x5F665D);
         colors.border = tone(0xD5D0C3);
 
         colors.sidebar = tone(0xEAE7DD);
@@ -70,8 +72,8 @@ pub(crate) fn apply_calm_light_theme(cx: &mut App) {
         colors.primary_foreground = tone(0xFBF9F4);
         colors.accent = tone(0xDCE5DE);
         colors.accent_foreground = tone(0x3B5A4B);
-        colors.input = tone(0xCFC9BC);
-        colors.ring = tone(0x8AA69A);
+        colors.input = tone(0x7A8177);
+        colors.ring = tone(0x4C7463);
         colors.caret = tone(0x557A68);
 
         colors.button = tone(0xEAE7DD);
@@ -97,9 +99,9 @@ pub(crate) fn apply_calm_light_theme(cx: &mut App) {
 
         colors.success = tone(0x4F7F63);
         colors.success_foreground = tone(0xF7FBF8);
-        colors.warning = tone(0xA9783F);
+        colors.warning = tone(0x7A5222);
         colors.warning_foreground = tone(0xFDF9F1);
-        colors.danger = tone(0xA85E57);
+        colors.danger = tone(0x7F4A43);
         colors.danger_foreground = tone(0xFFF8F7);
         colors.link = tone(0x4C7463);
         colors.link_hover = tone(0x3F6353);

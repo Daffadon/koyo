@@ -327,6 +327,7 @@ pub(super) fn render(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::Ellipsis)
+                                .accessibility_label("All result options")
                                 .tooltip("All result options")
                                 .dropdown_menu(move |menu, _, _| {
                                     let csv_app = csv_app.clone();
@@ -516,7 +517,12 @@ pub(super) fn render(
                                             }
                                         },
                                     ))
-                                    .child(Editor::new(&query.editor).h_full().bordered(false)),
+                                    .child(
+                                        Editor::new(&query.editor)
+                                            .aria_label("SQL editor")
+                                            .h_full()
+                                            .bordered(false),
+                                    ),
                             ),
                     )
                     .child(

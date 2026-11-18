@@ -19,6 +19,7 @@ impl Render for KoyoApp {
         self.normalize_panes();
         query::prune_scroll_handles(self);
         table::prune_scroll_handles(self);
+        widgets::prune_control_focus(self);
         self.apply_pending_starters(window, cx);
 
         let palette = palette(cx);

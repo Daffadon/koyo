@@ -6,8 +6,64 @@ use gpui_kit::component::{Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+
+thread_local! {
+    /// Stable focus handles for custom, non-Button controls. Creating a handle
+    /// during each render would lose focus as soon as the view repaints.
+    static CONTROL_FOCUS: RefCell<HashMap<(u64, SharedString), FocusHandle>> =
+        RefCell::new(HashMap::new());
+}
+
+pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
+    matches!(event.keystroke.key.as_str(), "enter" | "space")
+}
+
+pub(super) fn control_focus(tab_id: u64, key: impl Into<SharedString>, cx: &App) -> FocusHandle {
+    let key = key.into();
+    CONTROL_FOCUS.with(|handles| {
+        handles
+            .borrow_mut()
+            .entry((tab_id, key))
+            .or_insert_with(|| cx.focus_handle())
+            .clone()
+    })
+}
+
+pub(super) fn prune_control_focus(app: &KoyoApp) {
+    CONTROL_FOCUS.with(|handles| {
+        let mut handles = handles.borrow_mut();
+        handles.retain(|(tab_id, _), _| app.tabs.iter().any(|tab| tab.id == *tab_id));
+        if handles.capacity() > handles.len().saturating_mul(4).max(16) {
+            handles.shrink_to_fit();
+        }
+    });
+}
+
+/// Make a custom clickable row reachable by Tab, and activate it with Enter or
+/// Space. GPUI has no native button element for table rows and grid cells.
+pub(super) fn keyboard_row(
+    row: gpui_kit::Stateful<gpui_kit::Div>,
+    tab_id: u64,
+    key: impl Into<SharedString>,
+    palette: &Palette,
+    cx: &mut Context<KoyoApp>,
+    activate: impl Fn(&mut KoyoApp, &mut Window, &mut Context<KoyoApp>) + 'static,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let focus = control_focus(tab_id, key, cx);
+    row.track_focus(&focus)
+        .tab_stop(true)
+        .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                activate(this, window, cx);
+            }
+        }))
+}
 
 /// Per-button tooltip with a short delay. Anchored to the button itself so
 /// the popup follows the control when the toolbar reflows.
@@ -17,7 +73,9 @@ fn tooltip_button(
     label: impl Into<SharedString>,
     placement: Option<gpui_kit::base::Placement>,
 ) -> AnyElement {
+    let label = label.into();
     let button = button
+        .accessibility_label(label.clone())
         .tooltip(label)
         .tooltip_show_delay(std::time::Duration::from_millis(120));
     match placement {
@@ -149,6 +207,8 @@ pub(super) fn render_cell_editor(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::Close)
+                                .accessibility_label("Close cell editor")
+                                .tooltip("Close")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_cell_editor(cx);
                                 })),
@@ -170,7 +230,7 @@ pub(super) fn render_cell_editor(
                     InputGroup::new("cell-value-group")
                         .w_full()
                         .min_h(px(120.0))
-                        .input(Textarea::new(&edit.input))
+                        .input(Textarea::new(&edit.input).aria_label("Cell value"))
                         .disabled(!value_mode),
                 )
                 .when(insert, |this| {
@@ -320,7 +380,12 @@ pub(super) fn input_field(
         .min_w(px(0.0))
         .gap_1()
         .child(field_label(label, palette))
-        .child(Input::new(input).w_full().disabled(disabled))
+        .child(
+            Input::new(input)
+                .aria_label(label)
+                .w_full()
+                .disabled(disabled),
+        )
 }
 
 pub(super) fn render_confirm(

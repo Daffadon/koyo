@@ -19,7 +19,14 @@ fn loading_state(palette: &Palette) -> AnyElement {
         .min_h(px(0.0))
         .items_center()
         .justify_center()
+        .gap_2()
         .child(Spinner::new().with_size(Size::Large).color(palette.muted))
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Loading rows..."),
+        )
         .into_any_element()
 }
 
@@ -399,6 +406,8 @@ pub(super) fn render(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::ChevronLeft)
+                                .accessibility_label("Previous page")
+                                .tooltip("Previous page")
                                 .disabled(loading || !connected || offset == 0)
                                 .when(loading || !connected || offset == 0, |this| {
                                     this.text_color(palette.foreground)
@@ -417,6 +426,8 @@ pub(super) fn render(
                                 .ghost()
                                 .compact()
                                 .icon(IconName::ChevronRight)
+                                .accessibility_label("Next page")
+                                .tooltip("Next page")
                                 .disabled(
                                     loading
                                         || !connected

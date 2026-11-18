@@ -40,6 +40,7 @@ pub(super) fn render_filter_bar(
                     }))
                     .child(
                         Input::new(&table.filter_input)
+                            .aria_label("Filter table rows")
                             .w_full()
                             .cleanable(true)
                             .prefix(

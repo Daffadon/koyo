@@ -8,7 +8,7 @@ use koyo_core::models::{GridRow, TablePage, TableSort};
 use std::rc::Rc;
 
 use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
-use super::super::widgets::value_text;
+use super::super::widgets::{control_focus, is_activation_key, keyboard_row, value_text};
 use super::{CELL_WIDTH, page_scroll_handle};
 use crate::app::*;
 
@@ -64,9 +64,29 @@ pub(super) fn render_grid(
                         .border_r_1()
                         .border_color(palette.muted.opacity(0.35))
                         .overflow_hidden()
+                        .aria_label(format!(
+                            "{} column{}",
+                            column.name,
+                            if sortable {
+                                ", press Enter to sort"
+                            } else {
+                                ""
+                            }
+                        ))
                         .when(sortable, |this| this.cursor_pointer())
                         .when(!sortable, |this| this.opacity(0.65))
                         .hover(|style| style.bg(palette.panel_alt))
+                        .track_focus(&control_focus(tab_id, format!("thead-{column_index}"), cx))
+                        .tab_stop(true)
+                        .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if is_activation_key(event) && sortable {
+                                let resized = this.take_column_resized(tab_id);
+                                if !resized {
+                                    this.request_sort(tab_id, column_index, cx);
+                                }
+                            }
+                        }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let resized = this.take_column_resized(tab_id);
                             if sortable && !resized {
@@ -127,6 +147,36 @@ pub(super) fn render_grid(
                                 .w(px(6.0))
                                 .occlude()
                                 .cursor(CursorStyle::ResizeLeftRight)
+                                .aria_label(format!("Resize column {}", column.name))
+                                .track_focus(&control_focus(
+                                    tab_id,
+                                    format!("column-resize-{column_index}"),
+                                    cx,
+                                ))
+                                .tab_stop(true)
+                                .focus(|style| style.bg(palette.accent_soft))
+                                .on_key_down(cx.listener(
+                                    move |this, event: &KeyDownEvent, _, cx| {
+                                        match event.keystroke.key.as_str() {
+                                            "left" => this.nudge_column_width(
+                                                tab_id,
+                                                column_index,
+                                                -16.0,
+                                                cx,
+                                            ),
+                                            "right" => this.nudge_column_width(
+                                                tab_id,
+                                                column_index,
+                                                16.0,
+                                                cx,
+                                            ),
+                                            _ if is_activation_key(event) => {
+                                                this.autosize_column(tab_id, column_index, cx);
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                ))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -277,6 +327,7 @@ fn render_data_row(
     let copy_row_text = Rc::new(row_copy_text(page, staged, row_index));
 
     let row_text_for_rail = Rc::clone(&copy_row_text);
+    let row_text_for_keyboard = Rc::clone(&row_text_for_rail);
     let mut row_view = h_flex()
         .relative()
         .id(SharedString::from(format!(
@@ -304,7 +355,9 @@ fn render_data_row(
             && !row.truncated.get(column_index).copied().unwrap_or(false);
         let copy_value = value.clone().unwrap_or_default();
         let copy_row = Rc::clone(&copy_row_text);
-        row_view = row_view.child(
+        let keyboard_copy = copy_value.clone();
+        let keyboard_can_edit = can_edit;
+        let cell = keyboard_row(
             div()
                 .id(SharedString::from(format!(
                     "cell-{row_index}-{column_index}"
@@ -321,6 +374,11 @@ fn render_data_row(
                 .border_color(palette.border)
                 .overflow_hidden()
                 .text_ellipsis()
+                .aria_label(format!(
+                    "Table cell row {} column {}",
+                    row_index + 1,
+                    column_index + 1
+                ))
                 .when(can_edit, |this| {
                     this.cursor_pointer()
                         .hover(|style| style.bg(palette.panel_alt))
@@ -330,21 +388,32 @@ fn render_data_row(
                         this.open_cell_editor(tab_id, row_index, column_index, window, cx);
                     }
                 }))
-                .context_menu(move |menu, _, _| {
-                    let cell = copy_value.clone();
-                    let row = copy_row.clone();
-                    menu.item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
-                    }))
-                    .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(row.to_string()));
-                    }))
-                })
                 .child(value_text(&value, &palette)),
+            tab_id,
+            format!("table-cell-{row_index}-{column_index}"),
+            &palette,
+            cx,
+            move |this, window, cx| {
+                if keyboard_can_edit {
+                    this.open_cell_editor(tab_id, row_index, column_index, window, cx);
+                } else {
+                    this.copy_to_clipboard(keyboard_copy.clone(), "Copied cell.", cx);
+                }
+            },
         );
+        row_view = row_view.child(cell.context_menu(move |menu, _, _| {
+            let cell = copy_value.clone();
+            let row = copy_row.clone();
+            menu.item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
+            }))
+            .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(row.to_string()));
+            }))
+        }));
     }
 
-    row_view = row_view.child(
+    row_view = row_view.child(keyboard_row(
         div()
             .id(SharedString::from(format!(
                 "table-row-rail-{tab_id}-{row_index}"
@@ -363,13 +432,21 @@ fn render_data_row(
             .text_color(palette.muted)
             .border_r_1()
             .border_color(palette.border)
+            .aria_label(format!("Copy row {}", page.offset as usize + row_index + 1))
             .cursor_pointer()
             .hover(|style| style.bg(palette.panel_alt))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
             }))
             .child((page.offset as usize + row_index + 1).to_string()),
-    );
+        tab_id,
+        format!("table-row-rail-{row_index}"),
+        &palette,
+        cx,
+        move |this, _, cx| {
+            this.copy_to_clipboard(row_text_for_keyboard.to_string(), "Copied row.", cx);
+        },
+    ));
 
     row_view.into_any_element()
 }
