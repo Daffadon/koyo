@@ -1,8 +1,9 @@
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use koyo_core::models::{ColumnInfo, ForeignKeyInfo, TablePage};
+use koyo_core::models::{ColumnInfo, Engine, ForeignKeyInfo, TablePage};
 
 use crate::app::*;
 
@@ -466,12 +467,99 @@ fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> An
     panel.into_any_element()
 }
 
-pub(super) fn render_diagram(
+fn ddl_panel(
     tab_id: u64,
+    engine: Engine,
     table: &TableTab,
     page: Option<&TablePage>,
     palette: &Palette,
     mono: &SharedString,
+    cx: &mut Context<KoyoApp>,
+) -> AnyElement {
+    let columns = page.map(|page| page.columns.as_slice()).unwrap_or(&[]);
+    let ddl = table_ddl(
+        engine,
+        &table.schema,
+        &table.table,
+        columns,
+        &table.foreign_keys,
+    );
+    let ddl_for_copy = ddl.clone();
+    v_flex()
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(palette.border)
+        .bg(palette.background)
+        .overflow_hidden()
+        .child(
+            h_flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(
+                    v_flex()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Create table"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(palette.muted)
+                                .child("DDL from current metadata"),
+                        ),
+                )
+                .child(
+                    Button::new(("copy-table-ddl", tab_id))
+                        .ghost()
+                        .compact()
+                        .icon(IconName::Copy)
+                        .accessibility_label("Copy CREATE TABLE DDL")
+                        .tooltip("Copy CREATE TABLE DDL")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.copy_to_clipboard(
+                                ddl_for_copy.clone(),
+                                "Copied CREATE TABLE DDL.",
+                                cx,
+                            );
+                        })),
+                ),
+        )
+        .child(
+            v_flex()
+                .id(("table-ddl", tab_id))
+                .w_full()
+                .max_h(px(300.0))
+                .overflow_y_scroll()
+                .p_3()
+                .gap_0p5()
+                .children(ddl.lines().map(|line| {
+                    div()
+                        .whitespace_nowrap()
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(palette.foreground)
+                        .child(line.to_string())
+                })),
+        )
+        .into_any_element()
+}
+
+pub(super) fn render_diagram(
+    tab_id: u64,
+    table: &TableTab,
+    page: Option<&TablePage>,
+    engine: Engine,
+    palette: &Palette,
+    mono: &SharedString,
+    cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     v_flex()
         .id(("table-diagram", tab_id))
@@ -495,6 +583,7 @@ pub(super) fn render_diagram(
                         .child(indexes_panel(table, palette, mono)),
                 ),
         )
+        .child(ddl_panel(tab_id, engine, table, page, palette, mono, cx))
         .child(
             div()
                 .text_xs()

@@ -395,7 +395,13 @@ pub(super) fn render(
             .min_h(px(0.0))
             .child(toolbar)
             .child(diagram::render_diagram(
-                tab_id, table, page_ref, palette, &mono,
+                tab_id,
+                table,
+                page_ref,
+                engine.unwrap_or(koyo_core::models::Engine::Postgres),
+                palette,
+                &mono,
+                cx,
             ))
             .into_any_element();
     }

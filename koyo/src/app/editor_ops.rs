@@ -69,10 +69,25 @@ pub(crate) fn toggle_comment(text: &str, selection: Range<usize>) -> EditorEdit 
         };
     }
     let selected = &lines[first..last];
-    let uncomment = selected
+    let non_empty = selected
         .iter()
         .filter(|line| !line.trim().is_empty())
-        .all(|line| commented(line));
+        .collect::<Vec<_>>();
+    // An empty line must get a comment marker; vacuous `all` would pick
+    // uncomment and leave the line unchanged.
+    let uncomment = !non_empty.is_empty() && non_empty.iter().all(|line| commented(line));
+    let first_line = lines[first].clone();
+    let first_indent = first_line.len() - first_line.trim_start().len();
+    let first_commented = commented(&first_line);
+    let removed_prefix = if uncomment && first_commented {
+        if first_line[first_indent + 2..].starts_with(' ') {
+            3
+        } else {
+            2
+        }
+    } else {
+        0
+    };
     for line in &mut lines[first..last] {
         let indent = line.len() - line.trim_start().len();
         if uncomment {
@@ -90,6 +105,17 @@ pub(crate) fn toggle_comment(text: &str, selection: Range<usize>) -> EditorEdit 
     let block = block_span(&lines, first, last);
     let selection = if selection.is_empty() {
         let column = caret_in_line(text, selection.start);
+        let column = if uncomment {
+            if removed_prefix > 0 && column >= first_indent + removed_prefix {
+                column - removed_prefix
+            } else {
+                column.min(first_indent)
+            }
+        } else if column >= first_indent {
+            column + 3
+        } else {
+            column
+        };
         let cursor = cursor_after(&lines, first, column);
         cursor..cursor
     } else {
@@ -206,6 +232,18 @@ mod tests {
         assert_eq!(edit.text, "-- SELECT 1;\n  -- SELECT 2;\n");
         let edit = toggle_comment(&edit.text, 0..edit.text.len());
         assert_eq!(edit.text, "SELECT 1;\n  SELECT 2;\n");
+    }
+
+    #[test]
+    fn comments_an_empty_line_or_empty_document() {
+        let edit = toggle_comment("", 0..0);
+        assert_eq!(edit.text, "-- ");
+        assert_eq!(edit.selection, 3..3);
+
+        let text = "one\n\ntwo";
+        let edit = toggle_comment(text, 4..4);
+        assert_eq!(edit.text, "one\n-- \ntwo");
+        assert_eq!(edit.selection, 7..7);
     }
 
     #[test]

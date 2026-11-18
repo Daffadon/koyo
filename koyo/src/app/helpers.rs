@@ -2,8 +2,8 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::*;
 use koyo_core::common::ensure_filter_operator;
 use koyo_core::models::{
-    ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, QueryResultSet, TableFilter,
-    TablePage,
+    ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, ForeignKeyInfo,
+    QueryResultSet, TableFilter, TablePage,
 };
 
 use super::state::{ConnectionDialog, ExportScope, QueryTab, Tab};
@@ -74,6 +74,85 @@ pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
         })
         .collect::<String>();
     format!("{name}.csv")
+}
+
+fn quote_sql_identifier(engine: Engine, name: &str) -> String {
+    match engine {
+        Engine::Mysql | Engine::Mariadb => format!("`{}`", name.replace('`', "``")),
+        Engine::SqlServer => format!("[{}]", name.replace(']', "]]")),
+        _ => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
+/// Best-effort CREATE TABLE from the loaded column and foreign-key metadata.
+/// Defaults, checks, and generated expressions are not available here.
+pub(crate) fn table_ddl(
+    engine: Engine,
+    schema: &str,
+    table: &str,
+    columns: &[ColumnInfo],
+    foreign_keys: &[ForeignKeyInfo],
+) -> String {
+    let quote = |name: &str| quote_sql_identifier(engine, name);
+    let relation = if schema.is_empty() {
+        quote(table)
+    } else {
+        format!("{}.{}", quote(schema), quote(table))
+    };
+    let mut lines = vec![
+        "-- Generated from current metadata.".to_string(),
+        "-- Defaults, checks, and generated expressions are not included.".to_string(),
+        format!("CREATE TABLE {relation} ("),
+    ];
+    for (index, column) in columns.iter().enumerate() {
+        let mut line = format!("    {} {}", quote(&column.name), column.data_type);
+        if !column.nullable || column.primary_key {
+            line.push_str(" NOT NULL");
+        }
+        if index + 1 < columns.len()
+            || !foreign_keys.is_empty()
+            || columns.iter().any(|c| c.primary_key)
+        {
+            line.push(',');
+        }
+        lines.push(line);
+    }
+    let primary = columns
+        .iter()
+        .filter(|column| column.primary_key)
+        .map(|column| quote(&column.name))
+        .collect::<Vec<_>>();
+    if !primary.is_empty() {
+        lines.push(format!("    PRIMARY KEY ({})", primary.join(", ")));
+    }
+    let outgoing = foreign_keys
+        .iter()
+        .filter(|fk| fk.schema == schema && fk.table == table)
+        .collect::<Vec<_>>();
+    for (index, fk) in outgoing.iter().enumerate() {
+        let constraint = if fk.constraint_name.is_empty() {
+            String::new()
+        } else {
+            format!("CONSTRAINT {} ", quote(&fk.constraint_name))
+        };
+        let referenced = if fk.referenced_schema.is_empty() {
+            quote(&fk.referenced_table)
+        } else {
+            format!(
+                "{}.{}",
+                quote(&fk.referenced_schema),
+                quote(&fk.referenced_table)
+            )
+        };
+        let comma = if index + 1 < outgoing.len() { "," } else { "" };
+        lines.push(format!(
+            "    {constraint}FOREIGN KEY ({}) REFERENCES {referenced} ({}){comma}",
+            quote(&fk.column),
+            quote(&fk.referenced_column)
+        ));
+    }
+    lines.push(");".to_string());
+    lines.join("\n")
 }
 
 pub(crate) fn default_export_path(file_name: &str) -> String {
@@ -500,9 +579,24 @@ mod tests {
 
     use super::{
         default_export_path, parse_filter_input, resolve_export_pages, results_as_csv,
-        results_as_json, table_csv_file_name, table_page_as_csv,
+        results_as_json, table_csv_file_name, table_ddl, table_page_as_csv,
     };
     use crate::app::ExportScope;
+    use koyo_core::models::{Engine, ForeignKeyInfo};
+
+    fn ddl_column(name: &str, data_type: &str, primary_key: bool) -> ColumnInfo {
+        ColumnInfo {
+            name: name.into(),
+            data_type: data_type.into(),
+            filter_type: data_type.into(),
+            filter_kind: FilterKind::Other,
+            sortable: true,
+            nullable: !primary_key,
+            primary_key,
+            generated: false,
+            identity: false,
+        }
+    }
 
     #[test]
     fn csv_quotes_commas_quotes_newlines_and_nulls() {
@@ -586,6 +680,58 @@ mod tests {
     fn table_export_file_name_stays_a_file_name() {
         assert_eq!(table_csv_file_name("main", "people"), "main.people.csv");
         assert_eq!(table_csv_file_name("a/b", "c\\d"), "a_b.c_d.csv");
+    }
+
+    #[test]
+    fn table_ddl_includes_columns_primary_key_and_foreign_key() {
+        let columns = vec![
+            ddl_column("id", "integer", true),
+            ddl_column("owner_id", "integer", false),
+            ddl_column("name", "text", false),
+        ];
+        let foreign_keys = vec![ForeignKeyInfo {
+            schema: "public".into(),
+            table: "orders".into(),
+            column: "owner_id".into(),
+            referenced_schema: "public".into(),
+            referenced_table: "users".into(),
+            referenced_column: "id".into(),
+            constraint_name: "orders_owner_fk".into(),
+        }];
+        let ddl = table_ddl(
+            Engine::Postgres,
+            "public",
+            "orders",
+            &columns,
+            &foreign_keys,
+        );
+        assert!(ddl.contains("CREATE TABLE \"public\".\"orders\" ("));
+        assert!(ddl.contains("\"id\" integer NOT NULL"));
+        assert!(ddl.contains("PRIMARY KEY (\"id\")"));
+        assert!(ddl.contains(
+            "CONSTRAINT \"orders_owner_fk\" FOREIGN KEY (\"owner_id\") REFERENCES \"public\".\"users\" (\"id\")"
+        ));
+
+        let incoming = vec![ForeignKeyInfo {
+            schema: "public".into(),
+            table: "users".into(),
+            column: "id".into(),
+            referenced_schema: "public".into(),
+            referenced_table: "orders".into(),
+            referenced_column: "owner_id".into(),
+            constraint_name: "users_orders_fk".into(),
+        }];
+        let ddl = table_ddl(Engine::Postgres, "public", "orders", &columns, &incoming);
+        assert!(!ddl.contains("FOREIGN KEY"));
+        assert!(!ddl.contains(",\n);"));
+    }
+
+    #[test]
+    fn table_ddl_quotes_mysql_identifiers_with_backticks() {
+        let columns = vec![ddl_column("id", "bigint", true)];
+        let ddl = table_ddl(Engine::Mysql, "app", "items", &columns, &[]);
+        assert!(ddl.contains("CREATE TABLE `app`.`items` ("));
+        assert!(ddl.contains("`id` bigint NOT NULL"));
     }
 
     #[test]

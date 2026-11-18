@@ -768,7 +768,10 @@ impl KoyoApp {
         let provider: Rc<dyn gpui_kit::base::input::CompletionProvider> =
             Rc::new(SqlCompletionProvider::new(completion.clone()));
         editor.update(cx, |editor, _| {
-            editor.lsp_mut().completion_provider = Some(provider);
+            let lsp = editor.lsp_mut();
+            lsp.completion_provider = Some(provider);
+            // Keep the popup from covering the neighboring split pane.
+            lsp.completion_menu.max_width = px(240.0);
         });
 
         let title = query_tab_title(profile.as_ref());
