@@ -167,7 +167,7 @@ pub(super) fn render(
         .border_color(palette.border)
         .bg(palette.panel)
         .child(
-            Button::new("table-mode-data")
+            Button::new(("table-mode-data", tab_id))
                 .when(mode == TableMode::Data, |this| this.primary())
                 .when(mode != TableMode::Data, |this| this.ghost())
                 .compact()
@@ -178,7 +178,7 @@ pub(super) fn render(
                 })),
         )
         .child(
-            Button::new("table-mode-diagram")
+            Button::new(("table-mode-diagram", tab_id))
                 .when(mode == TableMode::Diagram, |this| this.primary())
                 .when(mode != TableMode::Diagram, |this| this.ghost())
                 .compact()
@@ -225,7 +225,7 @@ pub(super) fn render(
             )
         })
         .child(
-            Button::new("cancel-table")
+            Button::new(("cancel-table", tab_id))
                 .secondary()
                 .compact()
                 .icon(IconName::Square)
@@ -237,7 +237,7 @@ pub(super) fn render(
                 })),
         )
         .child(
-            Button::new("discard-changes")
+            Button::new(("discard-changes", tab_id))
                 .secondary()
                 .compact()
                 .icon(IconName::Close)
@@ -251,7 +251,7 @@ pub(super) fn render(
                 })),
         )
         .child(
-            Button::new("apply-changes")
+            Button::new(("apply-changes", tab_id))
                 .primary()
                 .compact()
                 .icon(IconName::Check)
@@ -265,8 +265,8 @@ pub(super) fn render(
                 })),
         )
         .child(button_tooltip(
-            "tooltip-download-table",
-            Button::new("download-table")
+            ("tooltip-download-table", tab_id),
+            Button::new(("download-table", tab_id))
                 .ghost()
                 .compact()
                 .icon(IconName::ArrowDown)
@@ -282,8 +282,8 @@ pub(super) fn render(
             "Download table as CSV",
         ))
         .child(button_tooltip(
-            "tooltip-refresh-table",
-            Button::new("refresh-table")
+            ("tooltip-refresh-table", tab_id),
+            Button::new(("refresh-table", tab_id))
                 .ghost()
                 .compact()
                 .icon(IconName::RefreshCw)
@@ -298,7 +298,7 @@ pub(super) fn render(
         ))
         .when(editable, |this| {
             this.child(
-                Button::new("add-row")
+                Button::new(("add-row", tab_id))
                     .secondary()
                     .compact()
                     .icon(IconName::Plus)
@@ -345,8 +345,8 @@ pub(super) fn render(
                                         .child(title),
                                 )
                                 .child(button_tooltip(
-                                    "tooltip-copy-table-name",
-                                    Button::new("copy-table-name")
+                                    ("tooltip-copy-table-name", tab_id),
+                                    Button::new(("copy-table-name", tab_id))
                                         .ghost()
                                         .compact()
                                         .icon(IconName::Copy)
@@ -368,7 +368,7 @@ pub(super) fn render(
                                 .child(div().text_xs().text_color(palette.muted).child(subtitle))
                                 .when(!connected, |this| {
                                     this.child(
-                                        Button::new("table-reconnect")
+                                        Button::new(("table-reconnect", tab_id))
                                             .link()
                                             .compact()
                                             .label(reconnect_label)
@@ -475,7 +475,7 @@ pub(super) fn render(
                                 .child(format!("Page {page_number} of {total_pages}")),
                         )
                         .child(
-                            Button::new("prev-page")
+                            Button::new(("prev-page", tab_id))
                                 .ghost()
                                 .compact()
                                 .icon(IconName::ChevronLeft)
@@ -495,7 +495,7 @@ pub(super) fn render(
                                 })),
                         )
                         .child(
-                            Button::new("next-page")
+                            Button::new(("next-page", tab_id))
                                 .ghost()
                                 .compact()
                                 .icon(IconName::ChevronRight)

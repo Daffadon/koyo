@@ -33,7 +33,9 @@ pub(super) fn result_json(
         .min_w(px(width))
         .children(lines.iter().enumerate().map(|(line_index, line)| {
             div()
-                .id(("result-json-line", line_index))
+                .id(SharedString::from(format!(
+                    "result-json-line-{tab_id}-{result_index}-{line_index}"
+                )))
                 .flex_shrink_0()
                 .h(px(JSON_LINE_HEIGHT))
                 .px_4()
@@ -48,7 +50,9 @@ pub(super) fn result_json(
         .into_any_element();
 
     div()
-        .id(("result-json-body", tab_id))
+        .id(SharedString::from(format!(
+            "result-json-body-{tab_id}-{result_index}"
+        )))
         .flex()
         .flex_col()
         .flex_1()

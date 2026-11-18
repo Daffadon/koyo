@@ -51,7 +51,7 @@ pub(super) fn render_filter_bar(
                     ),
             )
             .child(
-                Button::new("apply-filter")
+                Button::new(("apply-filter", tab_id))
                     .primary()
                     .compact()
                     .label("Apply")
@@ -62,8 +62,8 @@ pub(super) fn render_filter_bar(
                     })),
             )
             .child(button_tooltip(
-                "tooltip-clear-filter",
-                Button::new("clear-filters")
+                ("tooltip-clear-filter", tab_id),
+                Button::new(("clear-filters", tab_id))
                     .ghost()
                     .compact()
                     .icon(IconName::Close)

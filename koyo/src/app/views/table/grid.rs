@@ -49,7 +49,7 @@ pub(super) fn render_grid(
                     let sortable = column.sortable && !header_locked && connected;
                     let active_sort = sort.as_ref().filter(|sort| sort.column == column.name);
                     h_flex()
-                        .id(SharedString::from(format!("thead-{column_index}")))
+                        .id(SharedString::from(format!("thead-{tab_id}-{column_index}")))
                         .relative()
                         .w(px(column_widths
                             .get(column_index)
@@ -76,7 +76,11 @@ pub(super) fn render_grid(
                         .when(sortable, |this| this.cursor_pointer())
                         .when(!sortable, |this| this.opacity(0.65))
                         .hover(|style| style.bg(palette.panel_alt))
-                        .track_focus(&control_focus(tab_id, format!("thead-{column_index}"), cx))
+                        .track_focus(&control_focus(
+                            tab_id,
+                            format!("thead-{tab_id}-{column_index}"),
+                            cx,
+                        ))
                         .tab_stop(true)
                         .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
                         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {

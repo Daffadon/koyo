@@ -92,7 +92,7 @@ pub(super) fn render(
         .get(active_result)
         .map(Vec::as_slice)
         .unwrap_or(&[]);
-    let run_button = Button::new("run-query")
+    let run_button = Button::new(("run-query", tab_id))
         .primary()
         // Constant label: changing it between "Run query" and "Running"
         // resized the toolbar on every execution.
@@ -453,7 +453,7 @@ pub(super) fn render(
                         .items_center()
                         .gap_2()
                         .child(if cancel_supported {
-                            Button::new("cancel-query")
+                            Button::new(("cancel-query", tab_id))
                                 .secondary()
                                 .compact()
                                 .icon(IconName::Square)
@@ -503,7 +503,7 @@ pub(super) fn render(
                         "Connect a database to run SQL."
                     })
                     .child(
-                        Button::new("query-reconnect")
+                        Button::new(("query-reconnect", tab_id))
                             .link()
                             .compact()
                             .label(if tab.profile.is_some() {

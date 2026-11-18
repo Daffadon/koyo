@@ -39,7 +39,9 @@ pub(super) fn result_grid(
         .children(result.columns.iter().enumerate().map(|(index, column)| {
             let column_width = widths.get(index).copied().unwrap_or(RESULT_COLUMN_WIDTH);
             h_flex()
-                .id(SharedString::from(format!("result-head-{index}")))
+                .id(SharedString::from(format!(
+                    "result-head-{tab_id}-{result_index}-{index}"
+                )))
                 .relative()
                 .w(px(column_width))
                 .flex_shrink_0()
