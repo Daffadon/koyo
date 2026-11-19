@@ -260,8 +260,8 @@ pub(super) fn render(
                 .when(!has_staged || loading || !connected, |this| {
                     this.text_color(palette.foreground)
                 })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.apply_changes(tab_id, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.apply_changes(tab_id, window, cx);
                 })),
         )
         .child(button_tooltip(

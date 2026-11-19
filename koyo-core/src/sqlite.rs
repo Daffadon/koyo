@@ -1248,6 +1248,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletes_one_row_using_original_values() {
+        let session = memory_session();
+        let page = load_page(&session, "main", "items", 0, 100, &[], None, true)
+            .await
+            .expect("load page");
+        let row = page
+            .rows
+            .iter()
+            .find(|row| row.values[1].as_deref() == Some("Bob"))
+            .expect("find row with NULL note");
+
+        apply_changes(
+            &session,
+            "main",
+            "items",
+            vec![GridChange::Delete {
+                key: row.key.clone(),
+                version: String::new(),
+                original: row.values.clone(),
+                truncated: Vec::new(),
+            }],
+        )
+        .await
+        .expect("apply delete");
+
+        let page = load_page(&session, "main", "items", 0, 100, &[], None, true)
+            .await
+            .expect("reload page");
+        assert_eq!(page.rows.len(), 2);
+        assert!(
+            page.rows
+                .iter()
+                .all(|row| row.values[1].as_deref() != Some("Bob"))
+        );
+    }
+
+    #[tokio::test]
     async fn updates_rows_with_whole_real_and_blob_values() {
         let connection = Connection::open_in_memory().expect("open in-memory sqlite");
         connection

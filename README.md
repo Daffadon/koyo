@@ -37,10 +37,10 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Download table rows as CSV from the current page, a page range, or every page. All-page exports use the current filter and sort and stream page by page through the existing table session.
 - Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
 - Foreign-key diagram for the open table.
-- Tables with primary keys support staged inserts and updates. Apply the batch in one transaction.
+- Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
 - Stale-row checks roll back the batch when a row changed after it was loaded.
 - Keyless tables and views are read-only.
-- Right-click a table cell to copy its value or the row; click a row number to copy the row.
+- Right-click a table cell to copy its value, copy the row, or mark the row for deletion. Click a row number to copy the row.
 
 ### Connections and workspace
 

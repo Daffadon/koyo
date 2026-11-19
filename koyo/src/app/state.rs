@@ -44,6 +44,12 @@ pub(crate) enum StagedChange {
         original: Vec<Option<String>>,
         truncated: Vec<bool>,
     },
+    Delete {
+        key: Vec<Option<String>>,
+        version: String,
+        original: Vec<Option<String>>,
+        truncated: Vec<bool>,
+    },
 }
 
 pub(crate) enum TabBody {

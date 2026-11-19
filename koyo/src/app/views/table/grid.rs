@@ -243,6 +243,7 @@ pub(super) fn render_grid(
                 &staged,
                 row_index,
                 editable,
+                connected,
                 palette,
                 &mono,
                 column_widths.as_slice(),
@@ -261,6 +262,7 @@ fn render_virtual_row(
     staged: &[StagedChange],
     row_index: usize,
     editable: bool,
+    connected: bool,
     palette: Palette,
     mono: &SharedString,
     column_widths: &[f32],
@@ -275,6 +277,7 @@ fn render_virtual_row(
             row_index,
             row,
             editable,
+            connected,
             palette,
             mono,
             column_widths,
@@ -313,6 +316,7 @@ fn render_data_row(
     row_index: usize,
     row: &GridRow,
     editable: bool,
+    connected: bool,
     palette: Palette,
     mono: &SharedString,
     column_widths: &[f32],
@@ -320,6 +324,12 @@ fn render_data_row(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let key = &row.key;
+    let deleted = staged.iter().any(|change| match change {
+        StagedChange::Delete {
+            key: staged_key, ..
+        } => staged_key == key,
+        _ => false,
+    });
     let update_values = staged.iter().find_map(|change| match change {
         StagedChange::Update {
             key: staged_key,
@@ -329,6 +339,7 @@ fn render_data_row(
         _ => None,
     });
     let copy_row_text = Rc::new(row_copy_text(page, staged, row_index));
+    let app = cx.entity();
 
     let row_text_for_rail = Rc::clone(&copy_row_text);
     let row_text_for_keyboard = Rc::clone(&row_text_for_rail);
@@ -342,8 +353,14 @@ fn render_data_row(
         .border_b_1()
         .border_color(palette.border)
         .font_family(mono.clone())
-        .when(update_values.is_some(), |this| this.bg(palette.accent_soft))
-        .when(update_values.is_none(), |this| {
+        .when(deleted, |this| {
+            this.bg(palette.danger.opacity(0.1))
+                .text_color(palette.danger)
+        })
+        .when(!deleted && update_values.is_some(), |this| {
+            this.bg(palette.accent_soft)
+        })
+        .when(!deleted && update_values.is_none(), |this| {
             // Quiet row wash; the stronger cell hover still wins over it.
             this.hover(|style| style.bg(palette.panel))
         })
@@ -354,6 +371,7 @@ fn render_data_row(
             .and_then(|values| values.get(&column.name).cloned())
             .unwrap_or_else(|| row.values[column_index].clone());
         let can_edit = editable
+            && !deleted
             && !column.generated
             && !column.identity
             && !row.truncated.get(column_index).copied().unwrap_or(false);
@@ -405,15 +423,29 @@ fn render_data_row(
                 }
             },
         );
+        let menu_app = app.clone();
         row_view = row_view.child(cell.context_menu(move |menu, _, _| {
             let cell = copy_value.clone();
             let row = copy_row.clone();
-            menu.item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
-            }))
-            .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(row.to_string()));
-            }))
+            let menu_app = menu_app.clone();
+            let mut menu = menu
+                .item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(cell.clone()));
+                }))
+                .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(row.to_string()));
+                }));
+            if editable && connected {
+                menu = menu.separator().item(
+                    PopupMenuItem::new(if deleted { "Restore row" } else { "Delete row" })
+                        .on_click(move |_, _, cx| {
+                            menu_app.update(cx, |this, cx| {
+                                this.toggle_row_delete(tab_id, row_index, cx);
+                            });
+                        }),
+                );
+            }
+            menu
         }));
     }
 
@@ -436,13 +468,24 @@ fn render_data_row(
             .text_color(palette.muted)
             .border_r_1()
             .border_color(palette.border)
-            .aria_label(format!("Copy row {}", page.offset as usize + row_index + 1))
+            .aria_label(format!(
+                "{} row {}",
+                if deleted { "Deleted" } else { "Copy" },
+                page.offset as usize + row_index + 1
+            ))
+            .when(deleted, |this| {
+                this.bg(palette.danger.opacity(0.1))
+                    .text_color(palette.danger)
+            })
             .cursor_pointer()
             .hover(|style| style.bg(palette.panel_alt))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
             }))
-            .child((page.offset as usize + row_index + 1).to_string()),
+            .child((page.offset as usize + row_index + 1).to_string())
+            .when(deleted, |this| {
+                this.child(gpui_kit::component::Icon::new(IconName::Delete).with_size(Size::Small))
+            }),
         tab_id,
         format!("table-row-rail-{row_index}"),
         &palette,

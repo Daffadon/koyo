@@ -700,7 +700,37 @@ impl KoyoApp {
         );
     }
 
-    pub(crate) fn apply_changes(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+    pub(crate) fn apply_changes(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &self.tabs[index].body else {
+            return;
+        };
+        let deletes = table
+            .staged
+            .iter()
+            .filter(|change| matches!(change, StagedChange::Delete { .. }))
+            .count();
+        if deletes > 0 {
+            self.confirm(
+                window,
+                cx,
+                "Delete staged rows?",
+                "Apply permanently deletes the marked rows. Other staged edits are applied in the same transaction.",
+                move |this, cx| this.commit_staged_changes(tab_id, cx),
+            );
+        } else {
+            self.commit_staged_changes(tab_id, cx);
+        }
+    }
+
+    fn commit_staged_changes(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
@@ -735,6 +765,17 @@ impl KoyoApp {
                     key,
                     version,
                     values,
+                    original,
+                    truncated,
+                },
+                StagedChange::Delete {
+                    key,
+                    version,
+                    original,
+                    truncated,
+                } => GridChange::Delete {
+                    key,
+                    version,
                     original,
                     truncated,
                 },
@@ -776,6 +817,7 @@ impl KoyoApp {
                 match result {
                     Ok(summary) => {
                         table.staged.clear();
+                        table.total_rows_cache = None;
                         this.tabs[index].notice = format!(
                             "{} staged {} applied.",
                             summary.applied,
@@ -813,6 +855,63 @@ impl KoyoApp {
         if let TabBody::Table(table) = &mut self.tabs[index].body {
             table.staged.clear();
         }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_row_delete(
+        &mut self,
+        tab_id: u64,
+        row_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let connected = self.tabs[index].connection.is_some();
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        if !connected || table.loading {
+            return;
+        }
+        let Some((row, key_truncated)) =
+            table
+                .page
+                .as_ref()
+                .filter(|page| page.editable)
+                .and_then(|page| {
+                    let row = page.rows.get(row_index)?;
+                    let key_truncated = page.columns.iter().enumerate().any(|(index, column)| {
+                        column.primary_key && row.truncated.get(index).copied().unwrap_or(false)
+                    });
+                    Some((row.clone(), key_truncated))
+                })
+        else {
+            return;
+        };
+        if key_truncated {
+            this_notice(
+                &mut self.tabs[index],
+                "The primary key was truncated for display. Filter the row before deleting it.",
+            );
+            cx.notify();
+            return;
+        }
+        let deleted = stage_row_delete(
+            &mut table.staged,
+            row.key,
+            row.version,
+            row.values,
+            row.truncated,
+        );
+        this_notice(
+            &mut self.tabs[index],
+            if deleted {
+                "Row marked for deletion. Apply changes to delete it."
+            } else {
+                "Row deletion undone."
+            },
+        );
         cx.notify();
     }
 
@@ -1127,6 +1226,30 @@ async fn export_table_csv(
     Ok((rows, truncated))
 }
 
+fn stage_row_delete(
+    staged: &mut Vec<StagedChange>,
+    key: Vec<Option<String>>,
+    version: String,
+    original: Vec<Option<String>>,
+    truncated: Vec<bool>,
+) -> bool {
+    if let Some(index) = staged
+        .iter()
+        .position(|change| matches!(change, StagedChange::Delete { key: staged_key, .. } if staged_key == &key))
+    {
+        staged.remove(index);
+        return false;
+    }
+    staged.retain(|change| !matches!(change, StagedChange::Update { key: staged_key, .. } if staged_key == &key));
+    staged.push(StagedChange::Delete {
+        key,
+        version,
+        original,
+        truncated,
+    });
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1137,7 +1260,9 @@ mod tests {
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
 
-    use super::export_table_csv;
+    use super::{export_table_csv, stage_row_delete};
+    use crate::app::StagedChange;
+    use std::collections::BTreeMap;
 
     #[tokio::test]
     async fn exports_every_page_with_one_header() {
@@ -1200,5 +1325,35 @@ mod tests {
 
         let _ = fs::remove_file(database_path);
         let _ = fs::remove_file(csv_path);
+    }
+
+    #[test]
+    fn delete_supersedes_update_and_toggles() {
+        let key = vec![Some("7".to_string())];
+        let mut staged = vec![StagedChange::Update {
+            key: key.clone(),
+            version: "v1".into(),
+            values: BTreeMap::from([("name".to_string(), Some("changed".to_string()))]),
+            original: vec![Some("7".to_string()), Some("old".to_string())],
+            truncated: vec![false, false],
+        }];
+
+        assert!(stage_row_delete(
+            &mut staged,
+            key.clone(),
+            "v1".into(),
+            vec![Some("7".to_string()), Some("old".to_string())],
+            vec![false, false],
+        ));
+        assert!(matches!(staged.as_slice(), [StagedChange::Delete { .. }]));
+
+        assert!(!stage_row_delete(
+            &mut staged,
+            key,
+            "v1".into(),
+            vec![Some("7".to_string()), Some("old".to_string())],
+            vec![false, false],
+        ));
+        assert!(staged.is_empty());
     }
 }
