@@ -352,7 +352,7 @@ pub(super) fn render(
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.refresh_current_table(tab_id, window, cx);
                 })),
-            "Refresh table",
+            "Refresh table (F5)",
         ))
         .when(editable, |this| {
             this.child(

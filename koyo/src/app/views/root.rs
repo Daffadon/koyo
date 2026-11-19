@@ -6,8 +6,8 @@ use gpui_kit::{CursorStyle, InteractiveElement};
 use super::{connection, query, table, widgets};
 use crate::app::*;
 use crate::{
-    AcceptCompletion, DeleteLine, DuplicateLine, MoveLineDown, MoveLineUp, RunQuery, ToggleAi,
-    ToggleComment, ToggleSidebar,
+    AcceptCompletion, DeleteLine, DuplicateLine, MoveLineDown, MoveLineUp, RefreshTable, RunQuery,
+    ToggleAi, ToggleComment, ToggleSidebar,
 };
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
@@ -185,6 +185,9 @@ impl Render for KoyoApp {
             }))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
                 this.run_active_query(cx);
+            }))
+            .on_action(cx.listener(|this, _: &RefreshTable, window, cx| {
+                this.refresh_active_table(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.toggle_sidebar(cx);

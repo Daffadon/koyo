@@ -33,6 +33,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 ### Table browser and data editing
 
 - Explore tables, views, functions, triggers, and engine metadata grouped by schema.
+- Press **F5** to refresh the active table.
 - Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
 - Download table rows as CSV from the current page, a page range, or every page. All-page exports use the current filter and sort and stream page by page through the existing table session.
 - Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.

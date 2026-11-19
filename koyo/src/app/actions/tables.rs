@@ -1271,6 +1271,17 @@ impl KoyoApp {
         }
     }
 
+    pub(crate) fn refresh_active_table(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.focused_index().and_then(|index| self.tabs.get(index)) else {
+            return;
+        };
+        if !matches!(tab.body, TabBody::Table(_)) {
+            return;
+        }
+        let tab_id = tab.id;
+        self.refresh_current_table(tab_id, window, cx);
+    }
+
     pub(crate) fn refresh_current_table(
         &mut self,
         tab_id: u64,
