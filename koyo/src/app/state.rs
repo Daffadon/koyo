@@ -7,7 +7,7 @@ use gpui_kit::component::input::{EditorState, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
-    ConnectionInfo, ConnectionProfile, Engine, ForeignKeyInfo, MetadataGroup, QueryOutput,
+    ConnectionInfo, ConnectionProfile, Engine, ForeignKeyInfo, GridRow, MetadataGroup, QueryOutput,
     SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use koyo_core::{ProfileStore, SessionManager};
@@ -102,6 +102,12 @@ pub(crate) enum TableMode {
     Diagram,
 }
 
+pub(crate) fn key_is_truncated(page: &TablePage, row: &GridRow) -> bool {
+    page.columns.iter().enumerate().any(|(index, column)| {
+        column.primary_key && row.truncated.get(index).copied().unwrap_or(false)
+    })
+}
+
 pub(crate) struct TableTab {
     pub(crate) schema: String,
     pub(crate) table: String,
@@ -116,6 +122,7 @@ pub(crate) struct TableTab {
     pub(crate) filters: Vec<TableFilter>,
     pub(crate) sort: Option<TableSort>,
     pub(crate) staged: Vec<StagedChange>,
+    pub(crate) selected_keys: BTreeSet<Vec<Option<String>>>,
     pub(crate) loading: bool,
     pub(crate) cancelling: bool,
     pub(crate) operation_id: Option<Uuid>,

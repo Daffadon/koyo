@@ -114,6 +114,8 @@ pub(super) fn render(
     let loading = table.loading;
     let cancelling = table.cancelling;
     let staged: Rc<Vec<StagedChange>> = Rc::new(table.staged.clone());
+    let selected_keys = Rc::new(table.selected_keys.clone());
+    let selected_count = table.selected_keys.len();
     let page: Option<Rc<TablePage>> = table.page.clone().map(Rc::new);
     let sort = table.sort.clone();
     let engine = tab.engine();
@@ -195,6 +197,62 @@ pub(super) fn render(
         .items_center()
         .justify_end()
         .gap_2()
+        .when(
+            selected_count == 0
+                && editable
+                && connected
+                && !loading
+                && page.as_ref().is_some_and(|page| !page.rows.is_empty()),
+            |this| {
+                this.child(
+                    Button::new(("select-all-rows", tab_id))
+                        .ghost()
+                        .compact()
+                        .icon(IconName::Check)
+                        .label("Select all")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_all_rows_selected(tab_id, true, cx);
+                        })),
+                )
+            },
+        )
+        .when(selected_count > 0, |this| {
+            this.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .bg(palette.panel_alt)
+                    .text_xs()
+                    .text_color(palette.foreground)
+                    .whitespace_nowrap()
+                    .child(format!("{selected_count} selected")),
+            )
+            .child(
+                Button::new(("delete-selected", tab_id))
+                    .secondary()
+                    .compact()
+                    .icon(IconName::Delete)
+                    .label("Delete selected")
+                    .disabled(loading || !connected || !editable)
+                    .when(loading || !connected || !editable, |this| {
+                        this.text_color(palette.foreground)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.delete_selected_rows(tab_id, cx);
+                    })),
+            )
+            .child(
+                Button::new(("clear-selection", tab_id))
+                    .ghost()
+                    .compact()
+                    .icon(IconName::Close)
+                    .label("Clear")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.clear_row_selection(tab_id, cx);
+                    })),
+            )
+        })
         .when(has_staged, |this| {
             this.child(
                 div()
@@ -429,8 +487,10 @@ pub(super) fn render(
             tab_id,
             Rc::clone(page),
             Rc::clone(&staged),
+            Rc::clone(&selected_keys),
             editable,
             connected,
+            loading,
             &sort,
             &column_widths,
             palette,

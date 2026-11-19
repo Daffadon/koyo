@@ -1,10 +1,12 @@
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable, Size};
+use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use gpui_kit::{CursorStyle, InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{GridRow, TablePage, TableSort};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use super::super::data_grid::{self, ROW_HEIGHT, ROW_RAIL_WIDTH};
@@ -17,8 +19,10 @@ pub(super) fn render_grid(
     tab_id: u64,
     page: Rc<TablePage>,
     staged: Rc<Vec<StagedChange>>,
+    selected_keys: Rc<BTreeSet<Vec<Option<String>>>>,
     editable: bool,
     connected: bool,
+    loading: bool,
     sort: &Option<TableSort>,
     column_widths: &[f32],
     palette: &Palette,
@@ -241,9 +245,11 @@ pub(super) fn render_grid(
                 tab_id,
                 &page,
                 &staged,
+                &selected_keys,
                 row_index,
                 editable,
                 connected,
+                loading,
                 palette,
                 &mono,
                 column_widths.as_slice(),
@@ -260,9 +266,11 @@ fn render_virtual_row(
     tab_id: u64,
     page: &TablePage,
     staged: &[StagedChange],
+    selected_keys: &BTreeSet<Vec<Option<String>>>,
     row_index: usize,
     editable: bool,
     connected: bool,
+    loading: bool,
     palette: Palette,
     mono: &SharedString,
     column_widths: &[f32],
@@ -274,10 +282,12 @@ fn render_virtual_row(
             tab_id,
             page,
             staged,
+            selected_keys,
             row_index,
             row,
             editable,
             connected,
+            loading,
             palette,
             mono,
             column_widths,
@@ -313,10 +323,12 @@ fn render_data_row(
     tab_id: u64,
     page: &TablePage,
     staged: &[StagedChange],
+    selected_keys: &BTreeSet<Vec<Option<String>>>,
     row_index: usize,
     row: &GridRow,
     editable: bool,
     connected: bool,
+    loading: bool,
     palette: Palette,
     mono: &SharedString,
     column_widths: &[f32],
@@ -324,6 +336,7 @@ fn render_data_row(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let key = &row.key;
+    let selected = selected_keys.contains(key);
     let deleted = staged.iter().any(|change| match change {
         StagedChange::Delete {
             key: staged_key, ..
@@ -357,10 +370,10 @@ fn render_data_row(
             this.bg(palette.danger.opacity(0.1))
                 .text_color(palette.danger)
         })
-        .when(!deleted && update_values.is_some(), |this| {
+        .when(!deleted && (selected || update_values.is_some()), |this| {
             this.bg(palette.accent_soft)
         })
-        .when(!deleted && update_values.is_none(), |this| {
+        .when(!deleted && !selected && update_values.is_none(), |this| {
             // Quiet row wash; the stronger cell hover still wins over it.
             this.hover(|style| style.bg(palette.panel))
         })
@@ -449,6 +462,25 @@ fn render_data_row(
         }));
     }
 
+    let key_truncated = key_is_truncated(page, row);
+    let selectable = editable && connected && !loading && !deleted && !key_truncated;
+    let app = cx.entity();
+    let selection = Checkbox::new(SharedString::from(format!(
+        "select-row-{tab_id}-{row_index}"
+    )))
+    .checked(selected)
+    .with_size(Size::XSmall)
+    .disabled(!selectable)
+    .accessibility_label(format!(
+        "Select row {}",
+        page.offset as usize + row_index + 1
+    ))
+    .on_change(move |checked, _, cx| {
+        app.update(cx, |this, cx| {
+            this.set_row_selected(tab_id, row_index, *checked, cx);
+        });
+    });
+    let row_number = page.offset as usize + row_index + 1;
     row_view = row_view.child(keyboard_row(
         div()
             .id(SharedString::from(format!(
@@ -461,7 +493,7 @@ fn render_data_row(
             .w(px(ROW_RAIL_WIDTH))
             .flex()
             .items_center()
-            .justify_end()
+            .justify_between()
             .px_1p5()
             .bg(palette.background)
             .text_xs()
@@ -471,21 +503,34 @@ fn render_data_row(
             .aria_label(format!(
                 "{} row {}",
                 if deleted { "Deleted" } else { "Copy" },
-                page.offset as usize + row_index + 1
+                row_number
             ))
+            .when(selected, |this| this.bg(palette.accent_soft))
             .when(deleted, |this| {
                 this.bg(palette.danger.opacity(0.1))
                     .text_color(palette.danger)
             })
-            .cursor_pointer()
-            .hover(|style| style.bg(palette.panel_alt))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
-            }))
-            .child((page.offset as usize + row_index + 1).to_string())
-            .when(deleted, |this| {
-                this.child(gpui_kit::component::Icon::new(IconName::Delete).with_size(Size::Small))
-            }),
+            .child(selection)
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "table-row-number-{tab_id}-{row_index}"
+                    )))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(palette.foreground))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy_to_clipboard(row_text_for_rail.to_string(), "Copied row.", cx);
+                    }))
+                    .child(row_number.to_string())
+                    .when(deleted, |this| {
+                        this.child(
+                            gpui_kit::component::Icon::new(IconName::Delete).with_size(Size::Small),
+                        )
+                    }),
+            ),
         tab_id,
         format!("table-row-rail-{row_index}"),
         &palette,

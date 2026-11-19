@@ -1064,6 +1064,7 @@ impl KoyoApp {
                 filters: Vec::new(),
                 sort: None,
                 staged: Vec::new(),
+                selected_keys: BTreeSet::new(),
                 loading: true,
                 cancelling: false,
                 operation_id: None,
@@ -1284,6 +1285,7 @@ impl KoyoApp {
                 table.cancelling = false;
                 table.operation_id = None;
                 table.staged.clear();
+                table.selected_keys.clear();
             }
         }
         self.status = "Disconnected.".into();
@@ -1603,6 +1605,7 @@ impl KoyoApp {
                 table.page = None;
                 table.total_rows_cache = None;
                 table.staged.clear();
+                table.selected_keys.clear();
                 table.loading = false;
                 table.operation_id = None;
                 table.foreign_keys.clear();

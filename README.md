@@ -38,6 +38,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
 - Foreign-key diagram for the open table.
 - Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
+- Tick row checkboxes to select rows on the page. **Select all** selects every deletable row; **Delete selected** stages them together.
 - Stale-row checks roll back the batch when a row changed after it was loaded.
 - Keyless tables and views are read-only.
 - Right-click a table cell to copy its value, copy the row, or mark the row for deletion. Click a row number to copy the row.

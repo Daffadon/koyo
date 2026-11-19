@@ -328,6 +328,7 @@ impl KoyoApp {
                                 table.page = None;
                                 table.total_rows_cache = None;
                                 table.staged.clear();
+                                table.selected_keys.clear();
                                 table.loading = false;
                                 table.operation_id = None;
                                 table.foreign_keys.clear();

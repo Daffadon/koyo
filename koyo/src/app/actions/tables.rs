@@ -238,6 +238,7 @@ impl KoyoApp {
                     table_tab.page = None;
                     table_tab.total_rows_cache = None;
                     table_tab.staged.clear();
+                    table_tab.selected_keys.clear();
                     table_tab.loading = false;
                     table_tab.operation_id = None;
                     table_tab.foreign_keys.clear();
@@ -333,6 +334,7 @@ impl KoyoApp {
                             table.total_rows_cache = Some(total);
                         }
                         table.page = Some(page);
+                        table.selected_keys.clear();
                         table.filters = filters;
                         table.sort = sort;
                         None
@@ -817,6 +819,7 @@ impl KoyoApp {
                 match result {
                     Ok(summary) => {
                         table.staged.clear();
+                        table.selected_keys.clear();
                         table.total_rows_cache = None;
                         this.tabs[index].notice = format!(
                             "{} staged {} applied.",
@@ -834,6 +837,7 @@ impl KoyoApp {
                             );
                         } else if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
                             table.staged.clear();
+                            table.selected_keys.clear();
                             this.tabs[index].notice = "Commit result could not be confirmed. Page reloaded; verify data before retrying."
                                 .into();
                             this.load_page(tab_id, offset, filters, sort, cx);
@@ -854,6 +858,149 @@ impl KoyoApp {
         self.tabs[index].notice.clear();
         if let TabBody::Table(table) = &mut self.tabs[index].body {
             table.staged.clear();
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn set_row_selected(
+        &mut self,
+        tab_id: u64,
+        row_index: usize,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let connected = self.tabs[index].connection.is_some();
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        if !connected || table.loading {
+            return;
+        }
+        let Some((row, key_truncated)) =
+            table
+                .page
+                .as_ref()
+                .filter(|page| page.editable)
+                .and_then(|page| {
+                    let row = page.rows.get(row_index)?;
+                    Some((row.clone(), key_is_truncated(page, row)))
+                })
+        else {
+            return;
+        };
+        let already_deleted = table
+            .staged
+            .iter()
+            .any(|change| matches!(change, StagedChange::Delete { key, .. } if key == &row.key));
+        if key_truncated || already_deleted {
+            return;
+        }
+        if selected {
+            table.selected_keys.insert(row.key);
+        } else {
+            table.selected_keys.remove(&row.key);
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn set_all_rows_selected(
+        &mut self,
+        tab_id: u64,
+        selected: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let connected = self.tabs[index].connection.is_some();
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        if !connected || table.loading {
+            return;
+        }
+        table.selected_keys.clear();
+        if !selected {
+            cx.notify();
+            return;
+        }
+        let Some(page) = table.page.as_ref().filter(|page| page.editable) else {
+            return;
+        };
+        for row in &page.rows {
+            let already_deleted = table.staged.iter().any(
+                |change| matches!(change, StagedChange::Delete { key, .. } if key == &row.key),
+            );
+            if !already_deleted && !key_is_truncated(page, row) {
+                table.selected_keys.insert(row.key.clone());
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn delete_selected_rows(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let connected = self.tabs[index].connection.is_some();
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        if !connected || table.loading || table.selected_keys.is_empty() {
+            return;
+        }
+        let Some(page) = table.page.as_ref().filter(|page| page.editable) else {
+            return;
+        };
+        let rows = page.rows.clone();
+        let mut staged = 0usize;
+        let mut skipped = 0usize;
+        for row in rows {
+            if !table.selected_keys.contains(&row.key) {
+                continue;
+            }
+            if key_is_truncated(page, &row) {
+                skipped += 1;
+                continue;
+            }
+            if stage_row_delete_change(
+                &mut table.staged,
+                row.key,
+                row.version,
+                row.values,
+                row.truncated,
+            ) {
+                staged += 1;
+            }
+        }
+        table.selected_keys.clear();
+        this_notice(
+            &mut self.tabs[index],
+            &if skipped > 0 {
+                format!(
+                    "{staged} row{} marked for deletion; {skipped} skipped because the primary key was truncated.",
+                    if staged == 1 { "" } else { "s" }
+                )
+            } else {
+                format!(
+                    "{staged} row{} marked for deletion. Apply changes to delete {}.",
+                    if staged == 1 { "" } else { "s" },
+                    if staged == 1 { "it" } else { "them" }
+                )
+            },
+        );
+        cx.notify();
+    }
+
+    pub(crate) fn clear_row_selection(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        if let TabBody::Table(table) = &mut self.tabs[index].body {
+            table.selected_keys.clear();
         }
         cx.notify();
     }
@@ -899,11 +1046,14 @@ impl KoyoApp {
         }
         let deleted = stage_row_delete(
             &mut table.staged,
-            row.key,
+            row.key.clone(),
             row.version,
             row.values,
             row.truncated,
         );
+        if deleted {
+            table.selected_keys.remove(&row.key);
+        }
         this_notice(
             &mut self.tabs[index],
             if deleted {
@@ -1226,6 +1376,29 @@ async fn export_table_csv(
     Ok((rows, truncated))
 }
 
+fn stage_row_delete_change(
+    staged: &mut Vec<StagedChange>,
+    key: Vec<Option<String>>,
+    version: String,
+    original: Vec<Option<String>>,
+    truncated: Vec<bool>,
+) -> bool {
+    if staged
+        .iter()
+        .any(|change| matches!(change, StagedChange::Delete { key: staged_key, .. } if staged_key == &key))
+    {
+        return false;
+    }
+    staged.retain(|change| !matches!(change, StagedChange::Update { key: staged_key, .. } if staged_key == &key));
+    staged.push(StagedChange::Delete {
+        key,
+        version,
+        original,
+        truncated,
+    });
+    true
+}
+
 fn stage_row_delete(
     staged: &mut Vec<StagedChange>,
     key: Vec<Option<String>>,
@@ -1240,13 +1413,7 @@ fn stage_row_delete(
         staged.remove(index);
         return false;
     }
-    staged.retain(|change| !matches!(change, StagedChange::Update { key: staged_key, .. } if staged_key == &key));
-    staged.push(StagedChange::Delete {
-        key,
-        version,
-        original,
-        truncated,
-    });
+    stage_row_delete_change(staged, key, version, original, truncated);
     true
 }
 
@@ -1260,7 +1427,7 @@ mod tests {
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
 
-    use super::{export_table_csv, stage_row_delete};
+    use super::{export_table_csv, stage_row_delete, stage_row_delete_change};
     use crate::app::StagedChange;
     use std::collections::BTreeMap;
 
@@ -1349,11 +1516,27 @@ mod tests {
 
         assert!(!stage_row_delete(
             &mut staged,
-            key,
+            key.clone(),
             "v1".into(),
             vec![Some("7".to_string()), Some("old".to_string())],
             vec![false, false],
         ));
         assert!(staged.is_empty());
+
+        assert!(stage_row_delete_change(
+            &mut staged,
+            key.clone(),
+            "v1".into(),
+            vec![Some("7".to_string()), Some("old".to_string())],
+            vec![false, false],
+        ));
+        assert!(!stage_row_delete_change(
+            &mut staged,
+            key,
+            "v1".into(),
+            vec![Some("7".to_string()), Some("old".to_string())],
+            vec![false, false],
+        ));
+        assert!(matches!(staged.as_slice(), [StagedChange::Delete { .. }]));
     }
 }
