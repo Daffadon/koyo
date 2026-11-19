@@ -1430,13 +1430,14 @@ impl KoyoApp {
                 Pane::Primary => &mut self.primary_tabs,
                 Pane::Secondary => &mut self.secondary_tabs,
             };
+            let closed_position = ids.iter().position(|id| *id == tab_id).unwrap_or(0);
             ids.retain(|id| *id != tab_id);
             let active = match pane {
                 Pane::Primary => &mut self.primary_active,
                 Pane::Secondary => &mut self.secondary_active,
             };
             if *active == tab_id {
-                *active = ids.first().copied().unwrap_or(0);
+                *active = neighbor_after_close(ids, closed_position);
             }
         }
         self.tabs.remove(index);
@@ -1448,6 +1449,9 @@ impl KoyoApp {
         }
         if let Some(pane) = pane {
             self.reveal_active_tab(pane);
+        }
+        if let Some(active) = self.pane_active_id(self.focus) {
+            self.auto_connect_tab(active, cx);
         }
         self.persist_state(cx);
         cx.notify();
@@ -1575,14 +1579,21 @@ impl KoyoApp {
         let Some(profile_id) = tab.profile.as_ref().map(|profile| profile.id) else {
             return false;
         };
-        let Some(connection) = self
+        let connection = self
             .tabs
             .iter()
             .filter(|candidate| candidate.id != tab_id)
             .filter_map(|candidate| candidate.connection.as_ref())
             .find(|connection| connection.profile.id == profile_id)
             .cloned()
-        else {
+            .or_else(|| {
+                let parked = self
+                    .parked_connections
+                    .iter()
+                    .position(|parked| parked.profile.id == profile_id)?;
+                Some(self.parked_connections.remove(parked).connection)
+            });
+        let Some(connection) = connection else {
             return false;
         };
 
@@ -1616,9 +1627,8 @@ impl KoyoApp {
         }
         if is_table {
             self.load_page(tab_id, 0, Vec::new(), None, cx);
-        } else {
-            self.load_tables(tab_id, cx);
         }
+        self.load_tables(tab_id, cx);
         true
     }
 
@@ -1640,9 +1650,21 @@ impl KoyoApp {
     }
 }
 
+fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
+    remaining
+        .get(closed_position)
+        .copied()
+        .or_else(|| {
+            closed_position
+                .checked_sub(1)
+                .and_then(|index| remaining.get(index).copied())
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::KoyoApp;
+    use super::{KoyoApp, neighbor_after_close};
     use uuid::Uuid;
 
     #[test]
@@ -1659,5 +1681,12 @@ mod tests {
             Some(1)
         ));
         assert!(!KoyoApp::session_is_used(tabs, Uuid::new_v4(), None));
+    }
+
+    #[test]
+    fn closing_a_tab_selects_its_right_neighbor_then_left_neighbor() {
+        assert_eq!(neighbor_after_close(&[10, 30], 1), 30);
+        assert_eq!(neighbor_after_close(&[10, 20], 2), 20);
+        assert_eq!(neighbor_after_close(&[], 0), 0);
     }
 }
