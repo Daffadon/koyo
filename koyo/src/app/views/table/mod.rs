@@ -196,6 +196,7 @@ pub(super) fn render(
         h_flex()
             .w_full()
             .items_center()
+            .justify_end()
             .gap_2()
             .child(
                 div()
