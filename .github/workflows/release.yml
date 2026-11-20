@@ -209,6 +209,49 @@ jobs:
       attestations: write
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREVIOUS=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$PREVIOUS" ]; then
+            RANGE="$PREVIOUS..$GITHUB_REF_NAME"
+            TITLE="Changes since $PREVIOUS"
+          else
+            RANGE="$GITHUB_REF_NAME"
+            TITLE="Changes"
+          fi
+          CHANGES=$(git log --no-merges --invert-grep \
+            --grep='^chore(release): bump version' \
+            --pretty=format:'- %s (`%h`) — %an' "$RANGE")
+          CONTRIBUTORS=$(git log --no-merges --invert-grep \
+            --grep='^chore(release): bump version' \
+            --pretty=format:'%an' "$RANGE" | sort -fu)
+          {
+            echo "## $TITLE"
+            echo
+            if [ -n "$CHANGES" ]; then echo "$CHANGES"; else echo "- No changes."; fi
+            echo
+            echo
+            echo "## Contributors"
+            echo
+            if [ -n "$CONTRIBUTORS" ]; then echo "$CONTRIBUTORS" | sed 's/^/- /'; else echo "- None."; fi
+            echo
+            echo
+            echo "## Installation"
+            echo
+            echo "Koyo desktop builds for Windows, macOS, and Linux."
+            echo
+            echo "Linux requires libxkbcommon, libxkbcommon-x11, X11, Wayland, and fontconfig runtime libraries."
+            echo "These builds are unsigned. Verify downloads with SHA256SUMS. Build provenance is attached and can be checked with `gh attestation verify <archive> --repo $GITHUB_REPOSITORY`. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn."
+          } > release-notes.md
+
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -231,9 +274,5 @@ jobs:
           draft: true
           prerelease: false
           name: Koyo ${{ github.ref_name }}
-          body: |
-            Koyo desktop builds for Windows, macOS, and Linux.
-
-            Linux requires libxkbcommon, libxkbcommon-x11, X11, Wayland, and fontconfig runtime libraries.
-            These builds are unsigned. Verify downloads with SHA256SUMS. Build provenance is attached and can be checked with `gh attestation verify <archive> --repo ${{ github.repository }}`. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn.
+          body_path: release-notes.md
           files: artifacts/*
