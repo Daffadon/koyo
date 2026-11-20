@@ -478,6 +478,17 @@ pub(super) fn render(
                                 .text_color(palette.muted)
                                 .child("Ctrl / ⌘ + Enter to run"),
                         )
+                        .child(
+                            Button::new(("format-sql", tab_id))
+                                .secondary()
+                                .compact()
+                                .label("Format")
+                                .tooltip("Format SQL; selection formats alone")
+                                .tooltip_show_delay(std::time::Duration::from_millis(120))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.format_query(tab_id, window, cx);
+                                })),
+                        )
                         .child(run_button),
                 ),
         )

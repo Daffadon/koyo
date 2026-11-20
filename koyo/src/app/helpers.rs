@@ -5,6 +5,7 @@ use koyo_core::models::{
     ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, ForeignKeyInfo,
     QueryResultSet, TableFilter, TablePage,
 };
+use sqlformat::{Dialect as SqlDialect, FormatOptions, QueryParams};
 
 use super::state::{ConnectionDialog, ExportScope, QueryTab, Tab};
 
@@ -25,6 +26,22 @@ pub(crate) fn query_tab_title(profile: Option<&ConnectionProfile>) -> SharedStri
     } else {
         format!("SQL-{database}").into()
     }
+}
+
+pub(crate) fn format_sql(engine: Engine, sql: &str) -> String {
+    let dialect = match engine {
+        Engine::Postgres => SqlDialect::PostgreSql,
+        Engine::SqlServer => SqlDialect::SQLServer,
+        _ => SqlDialect::Generic,
+    };
+    let options = FormatOptions {
+        uppercase: Some(true),
+        dialect,
+        ..Default::default()
+    };
+    sqlformat::format(sql, &QueryParams::None, &options)
+        .trim_end()
+        .to_string()
 }
 
 pub(crate) fn starter_sql(engine: Engine) -> String {
@@ -715,9 +732,9 @@ mod tests {
     use koyo_core::models::{ColumnInfo, FilterKind, FilterOperator, QueryResultSet};
 
     use super::{
-        default_export_path, filter_suggestions, insert_filter_suggestion, parse_filter_input,
-        resolve_export_pages, results_as_csv, results_as_json, table_csv_file_name, table_ddl,
-        table_page_as_csv,
+        default_export_path, filter_suggestions, format_sql, insert_filter_suggestion,
+        parse_filter_input, resolve_export_pages, results_as_csv, results_as_json,
+        table_csv_file_name, table_ddl, table_page_as_csv,
     };
     use crate::app::ExportScope;
     use koyo_core::models::{Engine, ForeignKeyInfo};
@@ -949,6 +966,15 @@ mod tests {
         let (value, cursor) = insert_filter_suggestion("name co", 7, "contains ");
         assert_eq!(value, "name contains ");
         assert_eq!(cursor, value.len());
+    }
+
+    #[test]
+    fn formats_sql_with_uppercase_and_two_space_indent() {
+        let formatted = format_sql(Engine::Sqlite, "select id, name from users where id = 1");
+        assert_eq!(
+            formatted,
+            "SELECT\n  id,\n  name\nFROM\n  users\nWHERE\n  id = 1"
+        );
     }
 
     #[test]

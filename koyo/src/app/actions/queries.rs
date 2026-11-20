@@ -26,6 +26,65 @@ impl KoyoApp {
         self.run_query(tab_id, cx);
     }
 
+    pub(crate) fn format_query(
+        &mut self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let engine = self.tabs[index]
+            .engine()
+            .unwrap_or(koyo_core::models::Engine::Sqlite);
+        let TabBody::Query(query) = &mut self.tabs[index].body else {
+            return;
+        };
+        let (value, range, cursor) = {
+            let editor = query.editor.read(cx);
+            (
+                editor.value().to_string(),
+                editor.selected_range(),
+                editor.cursor(),
+            )
+        };
+        if value.trim().is_empty() {
+            return;
+        }
+        let (source, selected) = if range.is_empty() {
+            (value.as_str(), false)
+        } else {
+            (&value[range.clone()], true)
+        };
+        if source.trim().is_empty() {
+            return;
+        }
+        let formatted = format_sql(engine, source);
+        if formatted == source {
+            return;
+        }
+        let (next, selection) = if selected {
+            let start = range.start;
+            let end = range.end;
+            let mut next = String::with_capacity(value.len() + formatted.len());
+            next.push_str(&value[..start]);
+            next.push_str(&formatted);
+            next.push_str(&value[end..]);
+            let end = start + formatted.len();
+            (next, start..end)
+        } else {
+            let cursor = formatted.floor_char_boundary(cursor.min(formatted.len()));
+            let next = formatted;
+            let selection = cursor..cursor;
+            (next, selection)
+        };
+        query.editor.update(cx, |editor, cx| {
+            editor.set_value(next, window, cx);
+            editor.set_selected_range(selection, cx);
+        });
+    }
+
     pub(crate) fn run_query(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
