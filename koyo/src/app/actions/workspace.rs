@@ -1632,6 +1632,34 @@ impl KoyoApp {
         true
     }
 
+    /// Attach a newly connected session to every restored tab that expects the
+    /// same profile. This keeps both split panes on one session after reconnect.
+    pub(crate) fn attach_profile_session(
+        &mut self,
+        profile_id: Uuid,
+        source_tab_id: u64,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        let tabs = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.id != source_tab_id
+                    && tab.connection.is_none()
+                    && !tab.connecting
+                    && tab.auto_connect
+                    && tab
+                        .profile
+                        .as_ref()
+                        .is_some_and(|profile| profile.id == profile_id)
+            })
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        tabs.into_iter()
+            .filter(|tab_id| self.auto_connect_tab(*tab_id, cx))
+            .count()
+    }
+
     pub(crate) fn apply_pending_starters(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for tab in &mut self.tabs {
             if let Some(text) = tab.pending_starter.take() {

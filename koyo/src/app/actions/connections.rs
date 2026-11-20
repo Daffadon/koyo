@@ -340,7 +340,9 @@ impl KoyoApp {
                         }
                         // A restored tab may be visible while the user
                         // reconnects from another tab. Adopt the new session
-                        // immediately instead of waiting for another click.
+                        // immediately in every pane instead of waiting for a
+                        // click in each one.
+                        this.attach_profile_session(info.profile.id, tab_id, cx);
                         if let Some(active) = this.pane_active_id(this.focus) {
                             this.auto_connect_tab(active, cx);
                         }

@@ -51,6 +51,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Create, edit, delete, and search profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
 - Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next selected tab reuses it. Closing a tab selects its right neighbor, or its left neighbor at the end of the strip. Explicit disconnect, profile deletion, or app exit closes it.
+- Reconnecting a profile attaches the new session to restored tabs with the same profile in both split panes.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
