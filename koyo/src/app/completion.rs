@@ -110,7 +110,7 @@ impl CompletionProvider for SqlCompletionProvider {
             .rsplit_once('.')
             .map(|(qualifier, _)| clean_identifier(qualifier));
         let query = token.rsplit('.').next().unwrap_or(token);
-        let starts_with = |value: &str| starts_with_ignore_case(value, query);
+        let matches = |value: &str| contains_ignore_case(value, query);
 
         // Parse the whole statement, not just text before the cursor: a
         // qualified reference on an earlier line still needs the FROM alias
@@ -132,7 +132,7 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualifier.is_none() {
             for keyword in SQL_KEYWORDS {
-                if starts_with(keyword) {
+                if matches(keyword) {
                     push_item(
                         &mut items,
                         &mut seen,
@@ -153,7 +153,7 @@ impl CompletionProvider for SqlCompletionProvider {
         let adding_alias = adding_table_alias(&refs);
         if qualifier.is_none() && !adding_alias {
             for alias in refs.iter().filter_map(|table_ref| table_ref.alias.as_ref()) {
-                if starts_with(alias) {
+                if matches(alias) {
                     let table = refs
                         .iter()
                         .find(|table_ref| table_ref.alias.as_deref() == Some(alias))
@@ -177,7 +177,7 @@ impl CompletionProvider for SqlCompletionProvider {
             && let Some(last) = refs.last()
         {
             for alias in suggest_aliases(last, &refs) {
-                if starts_with(&alias) {
+                if matches(&alias) {
                     push_item(
                         &mut items,
                         &mut seen,
@@ -194,7 +194,7 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualifier.is_none() && !show_context_columns {
             for schema in &catalog.schemas {
-                if starts_with(schema) {
+                if matches(schema) {
                     push_item(
                         &mut items,
                         &mut seen,
@@ -212,7 +212,7 @@ impl CompletionProvider for SqlCompletionProvider {
         if qualified_ref.is_none() && !show_context_columns {
             for (schema, table) in &catalog.tables {
                 let qualified = format!("{schema}.{table}");
-                if starts_with(table) || starts_with(&qualified) {
+                if matches(table) || matches(&qualified) {
                     push_item(
                         &mut items,
                         &mut seen,
@@ -254,7 +254,7 @@ impl CompletionProvider for SqlCompletionProvider {
                         continue;
                     }
                 }
-                if starts_with(column) {
+                if matches(column) {
                     let detail = format!("{schema}.{table}");
                     let text_edit = qualified_ref.as_ref().map(|_| {
                         CompletionTextEdit::Edit(TextEdit {
@@ -575,13 +575,14 @@ fn position_for_offset(text: &str, offset: usize) -> Position {
     Position::new(line, character)
 }
 
-fn starts_with_ignore_case(value: &str, prefix: &str) -> bool {
-    let mut value_chars = value.chars();
-    prefix.chars().all(|prefix_char| {
-        value_chars
-            .next()
-            .is_some_and(|value_char| value_char.eq_ignore_ascii_case(&prefix_char))
-    })
+fn contains_ignore_case(value: &str, query: &str) -> bool {
+    let value = value.as_bytes();
+    let query = query.as_bytes();
+    query.is_empty()
+        || (query.len() <= value.len()
+            && value
+                .windows(query.len())
+                .any(|window| window.eq_ignore_ascii_case(query)))
 }
 
 fn push_item(
@@ -850,5 +851,13 @@ mod tests {
         }];
         assert!(suggest_aliases(&refs[0], &refs).is_empty());
         assert_eq!(default_alias("order_items"), "oi");
+    }
+
+    #[test]
+    fn completion_matches_inside_identifiers() {
+        assert!(contains_ignore_case("maintenances_to_items", "items"));
+        assert!(contains_ignore_case("INNER JOIN", "join"));
+        assert!(!contains_ignore_case("maintenances", "items"));
+        assert!(contains_ignore_case("anything", ""));
     }
 }
