@@ -18,6 +18,7 @@ actions!(
     koyo,
     [
         AcceptCompletion,
+        CompleteFilter,
         DeleteLine,
         DuplicateLine,
         MoveLineDown,
@@ -131,6 +132,7 @@ fn main() {
             Theme::change(ThemeMode::Dark, None, cx);
             cx.bind_keys([
                 KeyBinding::new("tab", AcceptCompletion, Some("Input && mode == editor")),
+                KeyBinding::new("tab", CompleteFilter, Some("TableFilter")),
                 KeyBinding::new("ctrl-/", ToggleComment, Some("Input && mode == editor")),
                 KeyBinding::new("cmd-/", ToggleComment, Some("Input && mode == editor")),
                 KeyBinding::new(

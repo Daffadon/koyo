@@ -1168,6 +1168,69 @@ impl KoyoApp {
         self.load_page(tab_id, 0, filters, next, cx);
     }
 
+    pub(crate) fn complete_active_filter(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((tab_id, columns, value, cursor)) = self
+            .focused_index()
+            .and_then(|index| self.tabs.get(index))
+            .and_then(|tab| {
+                let TabBody::Table(table) = &tab.body else {
+                    return None;
+                };
+                let page = table.page.as_ref()?;
+                let input = table.filter_input.read(cx);
+                Some((
+                    tab.id,
+                    page.columns.clone(),
+                    input.value().to_string(),
+                    input.cursor(),
+                ))
+            })
+        else {
+            return false;
+        };
+        let Some(suggestion) = filter_suggestions(&columns, &value, cursor)
+            .into_iter()
+            .next()
+        else {
+            return false;
+        };
+        self.complete_filter_input(tab_id, suggestion.insert, window, cx);
+        true
+    }
+
+    pub(crate) fn complete_filter_input(
+        &mut self,
+        tab_id: u64,
+        insert: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Table(table) = &mut self.tabs[index].body else {
+            return;
+        };
+        if table.loading || !table.staged.is_empty() {
+            return;
+        }
+        let (value, cursor) = {
+            let input = table.filter_input.read(cx);
+            (input.value().to_string(), input.cursor())
+        };
+        let (value, cursor) = insert_filter_suggestion(&value, cursor, &insert);
+        table.filter_input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+            input.set_selected_range(cursor..cursor, cx);
+        });
+        table.filter_error.clear();
+        cx.notify();
+    }
+
     pub(crate) fn apply_filter(&mut self, tab_id: u64, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;

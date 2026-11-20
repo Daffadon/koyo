@@ -137,7 +137,8 @@ pub(super) fn render(
     } else {
         "Read-only table without a primary key."
     };
-    let reconnect_label = if tab.profile.is_some() {
+    let reconnect_profile = tab.profile.as_ref().map(|profile| profile.id);
+    let reconnect_label = if reconnect_profile.is_some() {
         "Reconnect"
     } else {
         "Connect"
@@ -191,33 +192,12 @@ pub(super) fn render(
                 })),
         );
 
-    let mut actions = h_flex()
-        .w_full()
-        .flex_wrap()
-        .items_center()
-        .justify_end()
-        .gap_2()
-        .when(
-            selected_count == 0
-                && editable
-                && connected
-                && !loading
-                && page.as_ref().is_some_and(|page| !page.rows.is_empty()),
-            |this| {
-                this.child(
-                    Button::new(("select-all-rows", tab_id))
-                        .ghost()
-                        .compact()
-                        .icon(IconName::Check)
-                        .label("Select all")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_all_rows_selected(tab_id, true, cx);
-                        })),
-                )
-            },
-        )
-        .when(selected_count > 0, |this| {
-            this.child(
+    let selection_bar = (selected_count > 0).then(|| {
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap_2()
+            .child(
                 div()
                     .px_2()
                     .py_1()
@@ -252,7 +232,33 @@ pub(super) fn render(
                         this.clear_row_selection(tab_id, cx);
                     })),
             )
-        })
+    });
+
+    let mut actions = h_flex()
+        .w_full()
+        .flex_wrap()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .when(
+            selected_count == 0
+                && editable
+                && connected
+                && !loading
+                && page.as_ref().is_some_and(|page| !page.rows.is_empty()),
+            |this| {
+                this.child(
+                    Button::new(("select-all-rows", tab_id))
+                        .ghost()
+                        .compact()
+                        .icon(IconName::Check)
+                        .label("Select all")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_all_rows_selected(tab_id, true, cx);
+                        })),
+                )
+            },
+        )
         .when(has_staged, |this| {
             this.child(
                 div()
@@ -361,8 +367,10 @@ pub(super) fn render(
                     .compact()
                     .icon(IconName::Plus)
                     .label("Add row")
-                    .disabled(loading)
-                    .when(loading, |this| this.text_color(palette.foreground))
+                    .disabled(loading || !connected)
+                    .when(loading || !connected, |this| {
+                        this.text_color(palette.foreground)
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.add_row(tab_id, cx);
                     })),
@@ -431,11 +439,20 @@ pub(super) fn render(
                                             .compact()
                                             .label(reconnect_label)
                                             .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_connection_dialog(
-                                                    Some(tab_id),
-                                                    window,
-                                                    cx,
-                                                );
+                                                match reconnect_profile {
+                                                    Some(profile_id) => this.connect_profile(
+                                                        profile_id,
+                                                        Some(tab_id),
+                                                        false,
+                                                        window,
+                                                        cx,
+                                                    ),
+                                                    None => this.open_connection_dialog(
+                                                        Some(tab_id),
+                                                        window,
+                                                        cx,
+                                                    ),
+                                                }
                                             })),
                                     )
                                 }),
@@ -443,6 +460,7 @@ pub(super) fn render(
                 )
                 .child(mode_switch),
         )
+        .when_some(selection_bar, |this, bar| this.child(bar))
         .child(actions);
 
     if mode == TableMode::Diagram {
@@ -464,7 +482,7 @@ pub(super) fn render(
             .into_any_element();
     }
 
-    let filter_bar = filter::render_filter_bar(tab_id, table, palette, cx);
+    let filter_bar = filter::render_filter_bar(tab_id, table, connected, palette, cx);
     let column_widths = columns
         .iter()
         .enumerate()

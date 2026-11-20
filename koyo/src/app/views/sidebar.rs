@@ -88,7 +88,7 @@ impl KoyoApp {
         let search = self.explorer_filter.read(cx).value().trim().to_lowercase();
         let searching = !search.is_empty();
         let history = &self.history;
-        let reconnect_profile = if matches!(tab.body, TabBody::Table(_)) && !live {
+        let reconnect_profile = if !live {
             profile.as_ref().map(|profile| profile.id)
         } else {
             None

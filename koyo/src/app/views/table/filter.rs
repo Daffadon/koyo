@@ -11,10 +11,21 @@ use crate::app::*;
 pub(super) fn render_filter_bar(
     tab_id: u64,
     table: &TableTab,
+    connected: bool,
     palette: &Palette,
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
-    let locked = table.loading || !table.staged.is_empty();
+    let locked = table.loading || !table.staged.is_empty() || !connected;
+    let (filter_value, filter_cursor) = {
+        let input = table.filter_input.read(cx);
+        (input.value().to_string(), input.cursor())
+    };
+    let suggestions = table
+        .page
+        .as_ref()
+        .map(|page| filter_suggestions(&page.columns, &filter_value, filter_cursor))
+        .unwrap_or_default();
+    let show_suggestions = !locked && !filter_value.trim().is_empty() && !suggestions.is_empty();
     let mut bar = v_flex()
         .px_5()
         .py_2()
@@ -32,6 +43,7 @@ pub(super) fn render_filter_bar(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
+                    .key_context("TableFilter")
                     .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if event.keystroke.key == "enter" && !event.keystroke.modifiers.shift {
                             cx.stop_propagation();
@@ -42,6 +54,7 @@ pub(super) fn render_filter_bar(
                         Input::new(&table.filter_input)
                             .aria_label("Filter table rows")
                             .w_full()
+                            .disabled(locked)
                             .cleanable(true)
                             .prefix(
                                 gpui_kit::component::Icon::new(IconName::Search)
@@ -73,6 +86,30 @@ pub(super) fn render_filter_bar(
                 "Clear filter",
             )),
     );
+
+    if show_suggestions {
+        bar = bar.child(
+            h_flex().flex_wrap().items_center().gap_1().children(
+                suggestions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, suggestion)| {
+                        let insert = suggestion.insert;
+                        Button::new(SharedString::from(format!(
+                            "filter-suggestion-{tab_id}-{index}"
+                        )))
+                        .secondary()
+                        .compact()
+                        .label(suggestion.label)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.complete_filter_input(tab_id, insert.clone(), window, cx);
+                            },
+                        ))
+                    }),
+            ),
+        );
+    }
 
     let hint = if !table.filter_error.is_empty() {
         Some((table.filter_error.clone(), palette.danger))
