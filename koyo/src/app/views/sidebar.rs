@@ -722,6 +722,18 @@ impl KoyoApp {
                                 "Manage connections",
                             ))
                             .child(super::widgets::button_tooltip(
+                                "top-tooltip-settings",
+                                Button::new("settings")
+                                    .ghost()
+                                    .compact()
+                                    .icon(IconName::Settings2)
+                                    .accessibility_label("Open settings")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_settings(window, cx);
+                                    })),
+                                "Settings",
+                            ))
+                            .child(super::widgets::button_tooltip(
                                 "top-tooltip-theme",
                                 Button::new("theme-toggle")
                                     .ghost()

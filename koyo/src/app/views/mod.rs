@@ -4,6 +4,7 @@ pub(crate) mod data_grid;
 pub(crate) mod export;
 pub(crate) mod query;
 pub(crate) mod root;
+pub(crate) mod settings;
 pub(crate) mod sidebar;
 pub(crate) mod table;
 pub(crate) mod widgets;

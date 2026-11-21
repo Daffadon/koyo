@@ -4,16 +4,18 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::component::input::{Enter, IndentInline, InputState, TextareaState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
-use koyo_core::models::{ConnectionProfile, Engine};
+use koyo_core::models::{ConnectionInfo, ConnectionProfile, Engine};
 use koyo_core::{ProfileStore, SessionManager};
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use super::ai::restore_ai_threads;
+use super::notifications::ToastCategory;
 use crate::app::completion::{CompletionCatalog, SqlCompletionProvider};
 use crate::app::*;
 
@@ -89,6 +91,7 @@ impl KoyoApp {
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
             focus: Pane::Primary,
             root_focus: cx.focus_handle(),
+            window_handle: window.window_handle(),
             sidebar_open: saved.sidebar_open,
             sidebar_width: saved
                 .sidebar_width
@@ -99,6 +102,9 @@ impl KoyoApp {
             ai_width: saved.ai_width.clamp(MIN_AI_WIDTH, MAX_AI_WIDTH),
             ai_resizing: false,
             ai_settings_open: false,
+            settings_open: false,
+            settings_focus: cx.focus_handle(),
+            notifications: saved.notifications.clone(),
             ai_config_json,
             ai_model,
             ai_config_error,
@@ -174,6 +180,7 @@ impl KoyoApp {
             tab.tables = parked.tables;
             tab.schema_objects = parked.schema_objects;
             tab.metadata_groups = parked.metadata_groups;
+            tab.columns = parked.columns;
             tab.connecting = false;
         }
         let id = tab.id;
@@ -223,7 +230,6 @@ impl KoyoApp {
                 match saved_tab {
                     TabSnapshot::Query { sql, .. } => {
                         let mut tab = self.make_query_tab(profile, window, cx);
-                        tab.auto_connect = true;
                         if let TabBody::Query(query) = &mut tab.body {
                             query.editor.update(cx, |editor, cx| {
                                 editor.set_value(sql.clone(), window, cx);
@@ -241,7 +247,6 @@ impl KoyoApp {
                         };
                         let mut tab =
                             self.make_table_tab(profile, schema.clone(), table.clone(), window, cx);
-                        tab.auto_connect = true;
                         tab.connecting = false;
                         tab.notice = "Restored tab. Reconnect to load rows.".into();
                         if let TabBody::Table(table) = &mut tab.body {
@@ -324,6 +329,7 @@ impl KoyoApp {
             split_ratio: self.split_ratio,
             history: self.history.clone(),
             workspace: self.workspace_snapshot(cx),
+            notifications: self.notifications.clone(),
         }
     }
 
@@ -600,6 +606,7 @@ impl KoyoApp {
         let tables = source.tables.clone();
         let schema_objects = source.schema_objects.clone();
         let metadata_groups = source.metadata_groups.clone();
+        let columns = source.columns.clone();
         let expanded = source.expanded.clone();
         let title = source.title.clone();
         let body = match &source.body {
@@ -682,6 +689,7 @@ impl KoyoApp {
         tab.tables = tables;
         tab.schema_objects = schema_objects;
         tab.metadata_groups = metadata_groups;
+        tab.columns = columns;
         tab.expanded = expanded;
         tab.connecting = false;
         tab.notice.clear();
@@ -783,11 +791,11 @@ impl KoyoApp {
             tables: Vec::new(),
             schema_objects: Vec::new(),
             metadata_groups: Vec::new(),
+            columns: Vec::new(),
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: false,
             catalog_loading: false,
-            auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,
             body: TabBody::Query(QueryTab {
@@ -1043,11 +1051,11 @@ impl KoyoApp {
             tables: Vec::new(),
             schema_objects: Vec::new(),
             metadata_groups: Vec::new(),
+            columns: Vec::new(),
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: true,
             catalog_loading: false,
-            auto_connect: false,
             catalog_generation: 0,
             pending_starter: None,
             body: TabBody::Table(TableTab {
@@ -1180,6 +1188,145 @@ impl KoyoApp {
         }
     }
 
+    fn tab_catalog(&self, index: usize) -> CatalogSnapshot {
+        let tab = &self.tabs[index];
+        CatalogSnapshot {
+            tables: tab.tables.clone(),
+            schema_objects: tab.schema_objects.clone(),
+            metadata_groups: tab.metadata_groups.clone(),
+            columns: tab.columns.clone(),
+        }
+    }
+
+    /// One live session per profile is reused across panes. A reconnect from
+    /// any tab should attach the same connection to every disconnected tab for
+    /// that profile, including the explorer's source tab.
+    pub(crate) fn connection_for_profile(
+        &mut self,
+        profile_id: Uuid,
+    ) -> Option<(ConnectionInfo, CatalogSnapshot)> {
+        if let Some((index, tab)) = self.tabs.iter().enumerate().find(|(_, tab)| {
+            tab.connection
+                .as_ref()
+                .is_some_and(|connection| connection.profile.id == profile_id)
+        }) {
+            let connection = tab.connection.clone()?;
+            return Some((connection, self.tab_catalog(index)));
+        }
+        let parked = self
+            .parked_connections
+            .iter()
+            .position(|parked| parked.profile.id == profile_id)?;
+        let parked = self.parked_connections.remove(parked);
+        Some((
+            parked.connection,
+            CatalogSnapshot {
+                tables: parked.tables,
+                schema_objects: parked.schema_objects,
+                metadata_groups: parked.metadata_groups,
+                columns: parked.columns,
+            },
+        ))
+    }
+
+    pub(crate) fn profile_is_connecting(&self, profile_id: Uuid) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.connecting
+                && tab
+                    .profile
+                    .as_ref()
+                    .is_some_and(|profile| profile.id == profile_id)
+        })
+    }
+
+    pub(crate) fn attach_connection_to_tab(
+        &mut self,
+        tab_id: u64,
+        connection: ConnectionInfo,
+        catalog: CatalogSnapshot,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(index) = self.tab_index(tab_id) else {
+            return false;
+        };
+        if self.tabs[index].connection.is_some() {
+            return false;
+        }
+        let discarded_staged = self.tabs[index]
+            .body
+            .table()
+            .is_some_and(|table| !table.staged.is_empty());
+        let profile = connection.profile.clone();
+        self.tabs[index].connection = Some(connection);
+        self.tabs[index].connecting = false;
+        self.tabs[index].profile = Some(profile);
+        self.tabs[index].notice.clear();
+        self.tabs[index].tables = catalog.tables.clone();
+        self.tabs[index].schema_objects = catalog.schema_objects.clone();
+        self.tabs[index].metadata_groups = catalog.metadata_groups.clone();
+        self.tabs[index].columns = catalog.columns.clone();
+        let mut table_view = None;
+        match &mut self.tabs[index].body {
+            TabBody::Query(query) => {
+                query.completion.borrow_mut().replace(
+                    &catalog.tables,
+                    &catalog.schema_objects,
+                    &catalog.columns,
+                );
+                query.error.clear();
+                query.output = None;
+                query.duration_ms = None;
+                query.running = false;
+                query.cancelling = false;
+                query.operation_id = None;
+                query.pending_run = false;
+                query.active_result = 0;
+            }
+            TabBody::Table(table) => {
+                table_view = Some((
+                    table.page.as_ref().map(|page| page.offset).unwrap_or(0),
+                    table.filters.clone(),
+                    table.sort.clone(),
+                ));
+                table.page = None;
+                table.total_rows_cache = None;
+                table.staged.clear();
+                table.selected_keys.clear();
+                table.loading = false;
+                table.operation_id = None;
+                table.foreign_keys.clear();
+                table.foreign_keys_loading = false;
+                table.indexes.clear();
+                table.diagram_metadata_loaded = false;
+            }
+        }
+        if discarded_staged {
+            self.tabs[index].notice =
+                "Reconnected. Staged edits from the previous session were discarded.".into();
+        }
+        if self
+            .cell_edit
+            .as_ref()
+            .is_some_and(|edit| edit.tab_id == tab_id)
+        {
+            self.cell_edit = None;
+        }
+        if self
+            .export
+            .as_ref()
+            .is_some_and(|dialog| dialog.tab_id == tab_id)
+        {
+            self.export = None;
+        }
+        if self.dialog.as_ref().and_then(|dialog| dialog.target_tab) == Some(tab_id) {
+            self.dialog = None;
+        }
+        if let Some((offset, filters, sort)) = table_view {
+            self.load_page(tab_id, offset, filters, sort, cx);
+        }
+        true
+    }
+
     /// An engine-reported dead session. Stop pending work, mark every tab on
     /// that session disconnected, and keep local staged edits for a retry.
     pub(crate) fn mark_connection_lost(
@@ -1198,8 +1345,36 @@ impl KoyoApp {
             })
             .map(|tab| tab.id)
             .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.parked_connections
+                .retain(|parked| parked.connection.session_id != session_id);
+            self.disconnect_session(session_id);
+            return;
+        }
+        let profile_key = ids
+            .iter()
+            .find_map(|tab_id| {
+                let index = self.tab_index(*tab_id)?;
+                let profile = self.tabs[index].profile.as_ref()?;
+                Some(profile.id.to_string())
+            })
+            .unwrap_or_else(|| session_id.to_string());
         self.parked_connections
             .retain(|parked| parked.connection.session_id != session_id);
+        if self
+            .cell_edit
+            .as_ref()
+            .is_some_and(|edit| ids.contains(&edit.tab_id))
+        {
+            self.cell_edit = None;
+        }
+        if self
+            .export
+            .as_ref()
+            .is_some_and(|dialog| ids.contains(&dialog.tab_id))
+        {
+            self.export = None;
+        }
         for tab_id in ids {
             let Some(index) = self.tab_index(tab_id) else {
                 continue;
@@ -1207,7 +1382,6 @@ impl KoyoApp {
             self.tabs[index].connection = None;
             self.tabs[index].connecting = false;
             self.tabs[index].catalog_loading = false;
-            self.tabs[index].auto_connect = false;
             self.tabs[index].notice = notice.to_string();
             match &mut self.tabs[index].body {
                 TabBody::Query(query) => {
@@ -1227,13 +1401,26 @@ impl KoyoApp {
         }
         self.disconnect_session(session_id);
         self.status = notice.to_string();
+        self.push_toast(
+            ToastCategory::Connections,
+            profile_key,
+            Notification::error(
+                "Open tabs on this session are disconnected. Reconnect to continue.",
+            )
+            .title("Connection lost")
+            .autohide(false),
+            cx,
+        );
         cx.notify();
     }
 
+    /// Disconnect every tab sharing one session. Closing one tab must not
+    /// leave another pane on a half-alive connection.
     pub(crate) fn disconnect_tabs_for_session(
         &mut self,
         session_id: Uuid,
         notice: &str,
+        warning: bool,
         cx: &mut Context<Self>,
     ) {
         let ids = self
@@ -1246,49 +1433,69 @@ impl KoyoApp {
             })
             .map(|tab| tab.id)
             .collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.parked_connections
+                .retain(|parked| parked.connection.session_id != session_id);
+            self.disconnect_session(session_id);
+            return;
+        }
         self.parked_connections
             .retain(|parked| parked.connection.session_id != session_id);
-        for tab_id in &ids {
-            self.disconnect_now(*tab_id, cx);
+        if self
+            .cell_edit
+            .as_ref()
+            .is_some_and(|edit| ids.contains(&edit.tab_id))
+        {
+            self.cell_edit = None;
+        }
+        if self
+            .export
+            .as_ref()
+            .is_some_and(|dialog| ids.contains(&dialog.tab_id))
+        {
+            self.export = None;
         }
         for tab_id in ids {
-            if let Some(index) = self.tab_index(tab_id) {
-                self.tabs[index].notice = notice.to_string();
+            let Some(index) = self.tab_index(tab_id) else {
+                continue;
+            };
+            self.tabs[index].connection = None;
+            self.tabs[index].connecting = false;
+            self.tabs[index].catalog_loading = false;
+            self.tabs[index].notice = notice.to_string();
+            match &mut self.tabs[index].body {
+                TabBody::Query(query) => {
+                    query.running = false;
+                    query.cancelling = false;
+                    query.operation_id = None;
+                    query.pending_run = false;
+                }
+                TabBody::Table(table) => {
+                    table.loading = false;
+                    table.cancelling = false;
+                    table.operation_id = None;
+                    table.foreign_keys_loading = false;
+                    table.exporting = false;
+                    table.staged.clear();
+                    table.selected_keys.clear();
+                }
             }
         }
+        self.disconnect_session(session_id);
         self.status = notice.to_string();
-        cx.notify();
-    }
-
-    pub(crate) fn disconnect_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
+        let toast = if warning {
+            Notification::warning(notice.to_string())
+                .title("Session closed")
+                .autohide(false)
+        } else {
+            Notification::info(notice.to_string()).title("Disconnected")
         };
-        if let Some(connection) = self.tabs[index].connection.take() {
-            if !self.session_in_use(connection.session_id, Some(tab_id)) {
-                self.parked_connections
-                    .retain(|parked| parked.connection.session_id != connection.session_id);
-                self.disconnect_session(connection.session_id);
-            }
-        }
-        self.tabs[index].connecting = false;
-        self.tabs[index].auto_connect = false;
-        self.tabs[index].notice = "Disconnected. Reconnect when needed.".into();
-        match &mut self.tabs[index].body {
-            TabBody::Query(query) => {
-                query.running = false;
-                query.cancelling = false;
-                query.operation_id = None;
-            }
-            TabBody::Table(table) => {
-                table.loading = false;
-                table.cancelling = false;
-                table.operation_id = None;
-                table.staged.clear();
-                table.selected_keys.clear();
-            }
-        }
-        self.status = "Disconnected.".into();
+        self.push_toast(
+            ToastCategory::Connections,
+            session_id.to_string(),
+            toast,
+            cx,
+        );
         cx.notify();
     }
 
@@ -1301,20 +1508,37 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
-        let needs_confirm = match &self.tabs[index].body {
-            TabBody::Query(query) => query.running,
-            TabBody::Table(table) => !table.staged.is_empty(),
+        let Some(connection) = self.tabs[index].connection.clone() else {
+            return;
         };
+        let session_id = connection.session_id;
+        let profile_name = connection.profile.name.clone();
+        let needs_confirm = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.session_id == session_id)
+            })
+            .any(|tab| match &tab.body {
+                TabBody::Query(query) => query.running,
+                TabBody::Table(table) => !table.staged.is_empty(),
+            });
+        let notice = format!("Disconnected from {profile_name}. Reconnect from any tab.");
         if needs_confirm {
+            let confirm_notice = notice.clone();
             self.confirm(
                 window,
                 cx,
                 "Disconnect?",
-                "A query is running or edits are staged. Disconnecting discards them.",
-                move |this, cx| this.disconnect_now(tab_id, cx),
+                "A query is running or edits are staged in a tab on this connection. Disconnecting all its tabs discards them.",
+                move |this, cx| {
+                    this.disconnect_tabs_for_session(session_id, &confirm_notice, false, cx);
+                },
             );
         } else {
-            self.disconnect_now(tab_id, cx);
+            self.disconnect_tabs_for_session(session_id, &notice, false, cx);
         }
     }
 
@@ -1326,31 +1550,61 @@ impl KoyoApp {
                 (
                     tab.profile.clone(),
                     tab.connection.clone(),
-                    tab.tables.clone(),
-                    tab.schema_objects.clone(),
-                    tab.metadata_groups.clone(),
+                    CatalogSnapshot {
+                        tables: tab.tables.clone(),
+                        schema_objects: tab.schema_objects.clone(),
+                        metadata_groups: tab.metadata_groups.clone(),
+                        columns: tab.columns.clone(),
+                    },
                 )
             });
-        let (profile, shared, tables, objects, metadata) = source.unwrap_or_default();
-        let shared_connection = shared.is_some();
+        let (profile, mut shared, mut catalog) = source.unwrap_or_default();
+        if shared.is_none()
+            && let Some(profile) = profile.as_ref()
+        {
+            if let Some((connection, live_catalog)) = self.connection_for_profile(profile.id) {
+                shared = Some(connection);
+                catalog = live_catalog;
+            }
+        }
+        let waiting = shared.is_none()
+            && profile
+                .as_ref()
+                .is_some_and(|profile| self.profile_is_connecting(profile.id));
         let mut tab = self.make_query_tab(profile.clone(), window, cx);
-        if let Some(connection) = shared {
+        if let Some(connection) = shared.clone() {
             tab.connection = Some(connection);
             tab.connecting = false;
-            tab.tables = tables;
-            tab.schema_objects = objects;
-            tab.metadata_groups = metadata;
+            tab.tables = catalog.tables.clone();
+            tab.schema_objects = catalog.schema_objects.clone();
+            tab.metadata_groups = catalog.metadata_groups.clone();
+            tab.columns = catalog.columns.clone();
+            if let TabBody::Query(query) = &mut tab.body {
+                query.completion.borrow_mut().replace(
+                    &catalog.tables,
+                    &catalog.schema_objects,
+                    &catalog.columns,
+                );
+            }
+        } else if waiting {
+            tab.notice = "Waiting for the connection to finish.".into();
         }
         let tab_id = self.add_tab(tab, self.focus);
-        if shared_connection {
-            self.load_tables(tab_id, cx);
-        }
-        if profile.is_some()
-            && self.tabs[self.tab_index(tab_id).unwrap()]
-                .connection
-                .is_none()
+        if let Some(connection) = shared {
+            let loading = self.tabs.iter().any(|tab| {
+                tab.catalog_loading
+                    && tab
+                        .connection
+                        .as_ref()
+                        .is_some_and(|current| current.session_id == connection.session_id)
+            });
+            if !loading && catalog.tables.is_empty() {
+                self.load_tables(tab_id, cx);
+            }
+        } else if let Some(profile) = profile
+            && !waiting
         {
-            self.connect_profile(profile.unwrap().id, Some(tab_id), false, window, cx);
+            self.connect_profile(profile.id, Some(tab_id), false, window, cx);
         }
         self.persist_state(cx);
         cx.notify();
@@ -1407,6 +1661,7 @@ impl KoyoApp {
                     tables: self.tabs[index].tables.clone(),
                     schema_objects: self.tabs[index].schema_objects.clone(),
                     metadata_groups: self.tabs[index].metadata_groups.clone(),
+                    columns: self.tabs[index].columns.clone(),
                 });
             }
         }
@@ -1565,81 +1820,56 @@ impl KoyoApp {
         cx.notify();
     }
 
-    /// Restored tabs have no live session. When one is selected after the user
-    /// reconnects a profile, adopt that live session instead of showing the
-    /// reconnect notice again.
+    /// A disconnected tab adopts a live session for its profile. One
+    /// reconnect serves every pane and the shared explorer.
     pub(crate) fn auto_connect_tab(&mut self, tab_id: u64, cx: &mut Context<Self>) -> bool {
         let Some(index) = self.tab_index(tab_id) else {
             return false;
         };
         let tab = &self.tabs[index];
-        if !tab.auto_connect || tab.connection.is_some() || tab.connecting {
+        if tab.connection.is_some() || tab.connecting {
             return false;
         }
         let Some(profile_id) = tab.profile.as_ref().map(|profile| profile.id) else {
             return false;
         };
-        let connection = self
-            .tabs
-            .iter()
-            .filter(|candidate| candidate.id != tab_id)
-            .filter_map(|candidate| candidate.connection.as_ref())
-            .find(|connection| connection.profile.id == profile_id)
-            .cloned()
-            .or_else(|| {
-                let parked = self
-                    .parked_connections
-                    .iter()
-                    .position(|parked| parked.profile.id == profile_id)?;
-                Some(self.parked_connections.remove(parked).connection)
-            });
-        let Some(connection) = connection else {
+        let Some((connection, catalog)) = self.connection_for_profile(profile_id) else {
             return false;
         };
-
-        self.tabs[index].connection = Some(connection.clone());
-        self.tabs[index].connecting = false;
-        self.tabs[index].auto_connect = false;
-        self.tabs[index].profile = Some(connection.profile.clone());
-        self.tabs[index].notice.clear();
-        let is_table = matches!(self.tabs[index].body, TabBody::Table(_));
-        match &mut self.tabs[index].body {
-            TabBody::Query(query) => {
-                query.error.clear();
-                query.output = None;
-                query.running = false;
-                query.cancelling = false;
-                query.operation_id = None;
-                query.active_result = 0;
-            }
-            TabBody::Table(table) => {
-                table.page = None;
-                table.total_rows_cache = None;
-                table.staged.clear();
-                table.selected_keys.clear();
-                table.loading = false;
-                table.operation_id = None;
-                table.foreign_keys.clear();
-                table.foreign_keys_loading = false;
-                table.indexes.clear();
-                table.diagram_metadata_loaded = false;
+        let session_id = connection.session_id;
+        let empty_catalog = catalog.tables.is_empty();
+        let attached = self.attach_connection_to_tab(tab_id, connection, catalog, cx);
+        if attached && empty_catalog {
+            let loading = self.tabs.iter().any(|tab| {
+                tab.catalog_loading
+                    && tab
+                        .connection
+                        .as_ref()
+                        .is_some_and(|current| current.session_id == session_id)
+            });
+            if !loading {
+                self.load_tables(tab_id, cx);
             }
         }
-        if is_table {
-            self.load_page(tab_id, 0, Vec::new(), None, cx);
-        }
-        self.load_tables(tab_id, cx);
-        true
+        attached
     }
 
-    /// Attach a newly connected session to every restored tab that expects the
-    /// same profile. This keeps both split panes on one session after reconnect.
+    /// Attach a newly connected session to every disconnected tab that expects
+    /// the same profile. The source catalog is copied so reconnecting does not
+    /// fetch the schema once per tab.
     pub(crate) fn attach_profile_session(
         &mut self,
         profile_id: Uuid,
         source_tab_id: u64,
         cx: &mut Context<Self>,
     ) -> usize {
+        let Some(source_index) = self.tab_index(source_tab_id) else {
+            return 0;
+        };
+        let Some(connection) = self.tabs[source_index].connection.clone() else {
+            return 0;
+        };
+        let catalog = self.tab_catalog(source_index);
         let tabs = self
             .tabs
             .iter()
@@ -1647,7 +1877,6 @@ impl KoyoApp {
                 tab.id != source_tab_id
                     && tab.connection.is_none()
                     && !tab.connecting
-                    && tab.auto_connect
                     && tab
                         .profile
                         .as_ref()
@@ -1656,7 +1885,9 @@ impl KoyoApp {
             .map(|tab| tab.id)
             .collect::<Vec<_>>();
         tabs.into_iter()
-            .filter(|tab_id| self.auto_connect_tab(*tab_id, cx))
+            .filter(|tab_id| {
+                self.attach_connection_to_tab(*tab_id, connection.clone(), catalog.clone(), cx)
+            })
             .count()
     }
 

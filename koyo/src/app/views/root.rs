@@ -44,6 +44,9 @@ impl Render for KoyoApp {
             .export
             .as_ref()
             .map(|dialog| super::export::render_export(dialog, &palette, cx));
+        let settings = self
+            .settings_open
+            .then(|| super::settings::render_settings(self, &palette, cx));
         let ai = self.ai_open.then(|| {
             let divider = div()
                 .id("ai-divider")
@@ -202,7 +205,8 @@ impl Render for KoyoApp {
             }))
             .when_some(dialog, |this, dialog| this.child(dialog))
             .when_some(cell_edit, |this, editor| this.child(editor))
-            .when_some(confirm, |this, confirm| this.child(confirm))
             .when_some(export, |this, export| this.child(export))
+            .when_some(settings, |this, settings| this.child(settings))
+            .when_some(confirm, |this, confirm| this.child(confirm))
     }
 }

@@ -1,7 +1,6 @@
 use std::ops::Range;
 use std::time::Instant;
 
-use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::EditorState;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
@@ -10,9 +9,8 @@ use koyo_core::database;
 use koyo_core::models::{ConnectionProfile, Engine};
 use uuid::Uuid;
 
+use super::notifications::ToastCategory;
 use crate::app::*;
-
-struct QueryCsvToast;
 
 impl KoyoApp {
     pub(crate) fn run_active_query(&mut self, cx: &mut Context<Self>) {
@@ -154,9 +152,41 @@ impl KoyoApp {
                 }
                 query.operation_id = None;
                 query.running = false;
+                let cancelled = query.cancelling;
                 query.cancelling = false;
-                query.duration_ms = Some(started.elapsed().as_millis());
+                let duration_ms = started.elapsed().as_millis();
+                query.duration_ms = Some(duration_ms);
                 let success = result.is_ok();
+                let toast = match &result {
+                    Ok(output) => {
+                        let returned = output
+                            .result_sets
+                            .iter()
+                            .map(|result| result.rows.len())
+                            .sum::<usize>();
+                        let affected = output.affected_rows.iter().copied().sum::<u64>();
+                        let detail = if returned > 0 {
+                            format!(
+                                "{returned} {} in {duration_ms} ms",
+                                if returned == 1 { "row" } else { "rows" }
+                            )
+                        } else if affected > 0 {
+                            format!(
+                                "{affected} {} affected in {duration_ms} ms",
+                                if affected == 1 { "row" } else { "rows" }
+                            )
+                        } else {
+                            format!("Statement finished in {duration_ms} ms")
+                        };
+                        Some(Notification::success(detail).title("Query complete"))
+                    }
+                    Err(error) if !cancelled && !database::is_connection_lost(error) => Some(
+                        Notification::error("See the tab for details.")
+                            .title("Query failed")
+                            .autohide(false),
+                    ),
+                    Err(_) => None,
+                };
                 let lost = match result {
                     Ok(output) => {
                         query.output = Some(output);
@@ -173,10 +203,11 @@ impl KoyoApp {
                         }
                     }
                 };
-                let duration_ms = started.elapsed().as_millis();
                 this.record_query_history(history_sql, history_profile, success, duration_ms, cx);
                 if let Some(error) = lost {
                     this.mark_connection_lost(session_id, &format!("Connection lost: {error}"), cx);
+                } else if let Some(toast) = toast {
+                    this.push_toast(ToastCategory::Queries, tab_id.to_string(), toast, cx);
                 }
                 cx.notify();
             },
@@ -237,6 +268,7 @@ impl KoyoApp {
                             this.disconnect_tabs_for_session(
                                 connection.session_id,
                                 "SQL Server cancelled the statement by closing its session. Reconnect to continue.",
+                                true,
                                 cx,
                             );
                         } else {
@@ -330,7 +362,7 @@ impl KoyoApp {
     pub(crate) fn download_active_result(
         &mut self,
         tab_id: u64,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(index) = self.tab_index(tab_id) else {
@@ -370,16 +402,27 @@ impl KoyoApp {
         match std::fs::write(&path, csv) {
             Ok(()) => {
                 let message = format!("Downloaded active result to {}.{suffix}", path.display());
-                self.tabs[index].notice = message.clone();
-                window.push_notification(Notification::success(message).title("CSV ready"), cx);
+                self.tabs[index].notice = message;
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("CSV");
+                self.push_toast(
+                    ToastCategory::Exports,
+                    tab_id.to_string(),
+                    Notification::success(format!("Saved {file_name}.")).title("CSV ready"),
+                    cx,
+                );
             }
             Err(error) => {
                 let message = format!("CSV download failed: {error}");
                 self.tabs[index].notice = message.clone();
-                window.push_notification(
-                    Notification::error(message)
+                self.push_toast(
+                    ToastCategory::Exports,
+                    tab_id.to_string(),
+                    Notification::error("Export failed. See the tab for details.")
                         .title("CSV failed")
-                        .id::<QueryCsvToast>(),
+                        .autohide(false),
                     cx,
                 );
             }

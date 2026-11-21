@@ -38,7 +38,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads.
 - Filter input suggests matching columns and valid operators as you type. Press **Tab** to accept, or click a suggestion. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
 - Download table rows as CSV from the current page, a page range, or every page. All-page exports use the current filter and sort and stream page by page through the existing table session.
-- Opening a table already open for the same profile focuses its existing tab, including staged edits and filters.
+- Opening a table in a pane reuses that pane's tab for the same table, including staged edits and filters. If the table is already open in the other pane, Koyo opens a second tab in the focused pane, like editor groups.
 - Foreign-key diagram for the open table.
 - Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
 - Tick row checkboxes to select rows on the page. **Select all** selects every deletable row; **Delete selected** stages them together.
@@ -51,19 +51,20 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Six engines with an engine-first connection flow and per-engine profile forms.
 - Create, edit, delete, and search profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
-- Tabs opened in a pane share that pane's live session. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next selected tab reuses it. Closing a tab selects its right neighbor, or its left neighbor at the end of the strip. Explicit disconnect, profile deletion, or app exit closes it.
-- Reconnecting a profile attaches the new session to restored tabs with the same profile in both split panes.
+- Tabs for one connection share a live session across panes. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session; the next selected tab reuses it. Closing a tab selects its right neighbor, or its left neighbor at the end of the strip. Explicit disconnect closes every tab on that session.
+- Reconnecting once attaches the new session to every disconnected tab for that profile in both panes, including the shared explorer. The schema catalog is fetched once and shared.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
-- Theme, sidebar state and width, split layout, active tabs, and open tabs restore on launch. Restored tabs start disconnected and reconnect on demand.
+- Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
+- Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.
 - Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
 
 ### AI assistant
 
 - Collapsible chat panel on the right side. Drag its divider to resize; the width, active thread, and thread transcripts restore on launch.
-- Toggle the left sidebar with **Ctrl+B** or **Cmd+B**; toggle the AI panel with **Ctrl+Alt+B** or **Cmd+Alt+B**.
+- Toggle the left sidebar with **Ctrl+B** or **Cmd+B**; toggle the AI panel with **Ctrl+Alt+B** or **Cmd+Alt+B**. Open Settings from the gear in the sidebar header.
 - Multiple chat threads with previous, next, new, and delete actions. Thread titles come from the first message.
 - Responses stream into the transcript and render Markdown, including fenced code blocks. **Stop** cancels the active stream.
 - **Compact context** asks the provider to summarize the current thread and replaces it with a system summary, keeping the next request small. Long threads are split into chunks and merged.
@@ -166,7 +167,7 @@ koyo/src/
   main.rs                  application startup, window, shortcuts
   app.rs                   module wiring and shared re-exports
   app/state.rs             tabs, panes, dialogs, staged edits, app state
-  app/settings.rs          persisted theme, AI config, workspace, and history
+  app/settings.rs          persisted theme, AI config, workspace, history, and notifications
   app/theme.rs             palette and light-theme adjustment
   app/helpers.rs           labels, starter SQL, filters, form defaults, CSV
   app/ai.rs                OpenAI-compatible chat-completions client and config
@@ -177,10 +178,13 @@ koyo/src/
     queries.rs             run, cancel, history, result selection and resize
     tables.rs              paging, filtering, sorting, refresh, apply/discard
     editing.rs             cell editing, inserts, staged changes
+    notifications.rs       notification preference gate and toast IDs
+    settings.rs            settings dialog actions
     ai.rs                  AI threads, provider settings, streaming, compacting
   app/views/               GPUI rendering only
     root.rs                root frame and overlays
     sidebar.rs             explorer, connection summary, query history
+    settings.rs            notification preferences dialog
     ai.rs                  AI chat threads, markdown, stop, compact, provider settings
     workspace.rs           tab bars, panes, status bar
     connection.rs          engine picker and connection dialog

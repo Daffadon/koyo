@@ -70,6 +70,7 @@ pub(super) fn render(
     };
     let tab_id = tab.id;
     let connected = tab.connection.is_some();
+    let reconnect_profile = tab.profile.as_ref().map(|profile| profile.id);
     let engine = tab.engine();
     let mono = cx.theme().mono_font_family.clone();
     let running = query.running;
@@ -522,9 +523,18 @@ pub(super) fn render(
                             } else {
                                 "Connect"
                             })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_connection_dialog(Some(tab_id), window, cx);
-                            })),
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| match reconnect_profile {
+                                    Some(profile_id) => this.connect_profile(
+                                        profile_id,
+                                        Some(tab_id),
+                                        false,
+                                        window,
+                                        cx,
+                                    ),
+                                    None => this.open_connection_dialog(Some(tab_id), window, cx),
+                                },
+                            )),
                     ),
             )
         })

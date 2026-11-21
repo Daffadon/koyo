@@ -36,6 +36,30 @@ pub(crate) struct PersistedState {
     pub(crate) split_ratio: f32,
     pub(crate) history: Vec<QueryHistoryEntry>,
     pub(crate) workspace: WorkspaceSnapshot,
+    #[serde(default)]
+    pub(crate) notifications: NotificationPreferences,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct NotificationPreferences {
+    pub(crate) enabled: bool,
+    pub(crate) connections: bool,
+    pub(crate) queries: bool,
+    pub(crate) data: bool,
+    pub(crate) exports: bool,
+}
+
+impl Default for NotificationPreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            connections: true,
+            queries: false,
+            data: true,
+            exports: true,
+        }
+    }
 }
 
 impl Default for PersistedState {
@@ -55,6 +79,7 @@ impl Default for PersistedState {
             split_ratio: 0.5,
             history: Vec::new(),
             workspace: WorkspaceSnapshot::default(),
+            notifications: NotificationPreferences::default(),
         }
     }
 }
@@ -287,8 +312,8 @@ fn default_next_ai_thread_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AiMessage, AiThread, PersistedState, QueryHistoryEntry, SettingsStore, StateSaveQueue,
-        TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker,
+        AiMessage, AiThread, NotificationPreferences, PersistedState, QueryHistoryEntry,
+        SettingsStore, StateSaveQueue, TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker,
     };
     use std::sync::Arc;
 
@@ -319,6 +344,13 @@ mod tests {
                 duration_ms: 3,
                 at: 42,
             }],
+            notifications: NotificationPreferences {
+                enabled: true,
+                connections: false,
+                queries: true,
+                data: false,
+                exports: true,
+            },
             workspace: WorkspaceSnapshot {
                 split: Some("horizontal".into()),
                 primary: vec![TabSnapshot::Query {
@@ -355,6 +387,11 @@ mod tests {
         assert_eq!(decoded.next_ai_thread_id, 8);
         assert_eq!(decoded.history.len(), 1);
         assert_eq!(decoded.history[0].sql, "select 1");
+        assert!(decoded.notifications.enabled);
+        assert!(!decoded.notifications.connections);
+        assert!(decoded.notifications.queries);
+        assert!(!decoded.notifications.data);
+        assert!(decoded.notifications.exports);
         assert_eq!(decoded.workspace.secondary.len(), 1);
         assert!(decoded.workspace.focus_secondary);
     }
@@ -373,6 +410,34 @@ mod tests {
         assert_eq!(state.ai_active_thread, 0);
         assert_eq!(state.next_ai_thread_id, 1);
         assert_eq!(state.split_ratio, 0.5);
+        assert!(state.notifications.enabled);
+        assert!(state.notifications.connections);
+        assert!(!state.notifications.queries);
+        assert!(state.notifications.data);
+        assert!(state.notifications.exports);
+    }
+
+    #[test]
+    fn legacy_state_without_notifications_uses_defaults() {
+        let state: PersistedState =
+            serde_json::from_str(r#"{"theme":"light","sidebar_open":false}"#)
+                .expect("legacy state");
+        assert!(state.notifications.enabled);
+        assert!(state.notifications.connections);
+        assert!(!state.notifications.queries);
+        assert!(state.notifications.data);
+        assert!(state.notifications.exports);
+    }
+
+    #[test]
+    fn partial_notification_preferences_use_defaults() {
+        let state: PersistedState = serde_json::from_str(r#"{"notifications":{"queries":true}}"#)
+            .expect("partial preferences");
+        assert!(state.notifications.enabled);
+        assert!(state.notifications.connections);
+        assert!(state.notifications.queries);
+        assert!(state.notifications.data);
+        assert!(state.notifications.exports);
     }
 
     #[test]
@@ -388,6 +453,8 @@ mod tests {
         state.ai_config_json =
             r#"{"base_url":"https://example.test/v1","api_key":"ai_secret_value","model":"test"}"#
                 .into();
+        state.notifications.queries = true;
+        state.notifications.exports = false;
         state.history.push(QueryHistoryEntry {
             sql: "select secret_value".into(),
             profile_id: None,
@@ -417,6 +484,8 @@ mod tests {
         assert!(!loaded.sidebar_open);
         assert!(loaded.ai_open);
         assert!(loaded.ai_config_json.contains("ai_secret_value"));
+        assert!(loaded.notifications.queries);
+        assert!(!loaded.notifications.exports);
         assert_eq!(loaded.history.len(), 1);
         assert_eq!(loaded.history[0].sql, "select secret_value");
         let _ = std::fs::remove_dir_all(directory);

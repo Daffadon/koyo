@@ -5,22 +5,40 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::component::WindowExt;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::SessionManager;
 use koyo_core::database;
-use koyo_core::models::{GridChange, TableFilter, TableSort};
+use koyo_core::models::{ColumnCatalogEntry, GridChange, TableFilter, TableSort};
 use uuid::Uuid;
 
+use super::notifications::ToastCategory;
 use crate::app::*;
-
-struct TableCsvToast;
 
 /// A dead TCP session can otherwise leave a page load spinning forever.
 const TABLE_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn table_tab_to_focus(
+    candidates: &[(u64, Pane, Option<uuid::Uuid>, &str, &str)],
+    pane: Pane,
+    profile_id: uuid::Uuid,
+    schema: &str,
+    table: &str,
+) -> Option<u64> {
+    candidates
+        .iter()
+        .find(
+            |(_, candidate_pane, profile, candidate_schema, candidate_table)| {
+                *candidate_pane == pane
+                    && *profile == Some(profile_id)
+                    && *candidate_schema == schema
+                    && *candidate_table == table
+            },
+        )
+        .map(|(id, _, _, _, _)| *id)
+}
 
 impl KoyoApp {
     pub(crate) fn open_table(
@@ -40,22 +58,51 @@ impl KoyoApp {
                     tab.tables.clone(),
                     tab.schema_objects.clone(),
                     tab.metadata_groups.clone(),
+                    tab.columns.clone(),
                     tab.expanded.clone(),
                 )
             });
-        let Some((Some(profile), shared, tables, objects, metadata, expanded)) = source else {
+        let Some((Some(profile), shared, tables, objects, metadata, columns, expanded)) = source
+        else {
             self.status = "Open a connection before browsing tables.".into();
             cx.notify();
             return;
         };
-        if self.focus_existing_table(profile.id, &schema, &table, shared.clone(), window, cx) {
+        let target_pane = self.focus;
+        let catalog = CatalogSnapshot {
+            tables,
+            schema_objects: objects,
+            metadata_groups: metadata,
+            columns,
+        };
+        if self.focus_existing_table(
+            target_pane,
+            profile.id,
+            &schema,
+            &table,
+            shared.clone(),
+            catalog.clone(),
+            window,
+            cx,
+        ) {
             return;
         }
+
+        // Prefer any live session for this profile, not just the sidebar tab.
+        let (shared, catalog) = match shared {
+            Some(connection) => (Some(connection), catalog),
+            None => match self.connection_for_profile(profile.id) {
+                Some((connection, catalog)) => (Some(connection), catalog),
+                None => (None, catalog),
+            },
+        };
+
         let mut tab =
             self.make_table_tab(profile.clone(), schema.clone(), table.clone(), window, cx);
-        tab.tables = tables;
-        tab.schema_objects = objects;
-        tab.metadata_groups = metadata;
+        tab.tables = catalog.tables.clone();
+        tab.schema_objects = catalog.schema_objects.clone();
+        tab.metadata_groups = catalog.metadata_groups.clone();
+        tab.columns = catalog.columns.clone();
         tab.expanded = expanded;
         if let Some(connection) = shared {
             tab.connection = Some(connection);
@@ -63,13 +110,39 @@ impl KoyoApp {
             if let TabBody::Table(table_tab) = &mut tab.body {
                 table_tab.loading = false;
             }
-            let tab_id = self.add_tab(tab, self.focus);
+            let tab_id = self.add_tab(tab, target_pane);
+            self.attach_profile_session(profile.id, tab_id, cx);
+            let needs_catalog = self.tabs[self.tab_index(tab_id).expect("tab exists")]
+                .tables
+                .is_empty()
+                && !self.tabs.iter().any(|tab| {
+                    tab.catalog_loading
+                        && tab
+                            .connection
+                            .as_ref()
+                            .is_some_and(|connection| connection.profile.id == profile.id)
+                });
+            if needs_catalog {
+                self.load_tables(tab_id, cx);
+            }
             self.persist_state(cx);
             cx.notify();
             self.load_page(tab_id, 0, Vec::new(), None, cx);
             return;
         }
-        let tab_id = self.add_tab(tab, self.focus);
+        if self.profile_is_connecting(profile.id) {
+            tab.connecting = false;
+            tab.notice = "Waiting for the connection to finish.".into();
+            if let TabBody::Table(table_tab) = &mut tab.body {
+                table_tab.loading = false;
+            }
+            self.add_tab(tab, target_pane);
+            self.persist_state(cx);
+            cx.notify();
+            return;
+        }
+
+        let tab_id = self.add_tab(tab, target_pane);
         let operation_id = Uuid::new_v4();
         if let Some(index) = self.tab_index(tab_id)
             && let TabBody::Table(table_tab) = &mut self.tabs[index].body
@@ -82,6 +155,7 @@ impl KoyoApp {
         let manager = self.manager.clone();
         let store = self.store.clone();
         let profile_for_task = profile.clone();
+        let profile_name = profile.name.clone();
         let schema_for_task = schema.clone();
         let table_for_task = table.clone();
         self.spawn_task(
@@ -113,6 +187,13 @@ impl KoyoApp {
                         catalog_errors.push(error);
                         Vec::new()
                     });
+                let columns: Vec<ColumnCatalogEntry> =
+                    database::list_column_catalog(&manager, info.session_id)
+                        .await
+                        .unwrap_or_else(|error| {
+                            catalog_errors.push(error);
+                            Vec::new()
+                        });
                 let page = database::load_table_page(
                     &manager,
                     info.session_id,
@@ -127,17 +208,25 @@ impl KoyoApp {
                 )
                 .await;
                 let catalog_error = (!catalog_errors.is_empty()).then(|| catalog_errors.join("; "));
-                Ok::<_, String>((info, tables, objects, metadata, page, catalog_error))
+                Ok::<_, String>((
+                    info,
+                    tables,
+                    objects,
+                    metadata,
+                    columns,
+                    page,
+                    catalog_error,
+                ))
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
-                    if let Ok((info, _, _, _, _, _)) = &result {
+                    if let Ok((info, _, _, _, _, _, _)) = &result {
                         this.disconnect_session(info.session_id);
                     }
                     return;
                 };
                 match result {
-                    Ok((info, tables, objects, metadata, page, catalog_error)) => {
+                    Ok((info, tables, objects, metadata, columns, page, catalog_error)) => {
                         let operation_matches = this.tabs[index]
                             .body
                             .table()
@@ -146,12 +235,13 @@ impl KoyoApp {
                             this.disconnect_session(info.session_id);
                             return;
                         }
-                        this.tabs[index].connection = Some(info);
+                        this.tabs[index].connection = Some(info.clone());
                         this.tabs[index].profile = Some(profile.clone());
                         this.tabs[index].connecting = false;
                         this.tabs[index].tables = tables;
                         this.tabs[index].schema_objects = objects;
                         this.tabs[index].metadata_groups = metadata;
+                        this.tabs[index].columns = columns;
                         if let Some(error) = catalog_error {
                             this.tabs[index].notice = error;
                         }
@@ -166,6 +256,23 @@ impl KoyoApp {
                                 Err(error) => this.tabs[index].notice = error,
                             }
                         }
+                        let attached = this.attach_profile_session(info.profile.id, tab_id, cx);
+                        let message = if attached == 0 {
+                            format!("Connected to {}.", info.profile.name)
+                        } else {
+                            format!(
+                                "Connected to {}. Reconnected {} other {}.",
+                                info.profile.name,
+                                attached,
+                                if attached == 1 { "tab" } else { "tabs" }
+                            )
+                        };
+                        this.push_toast(
+                            ToastCategory::Connections,
+                            info.profile.id.to_string(),
+                            Notification::success(message).title("Connected"),
+                            cx,
+                        );
                     }
                     Err(error) => {
                         this.tabs[index].connecting = false;
@@ -176,6 +283,16 @@ impl KoyoApp {
                                 table_tab.operation_id = None;
                             }
                         }
+                        this.push_toast(
+                            ToastCategory::Connections,
+                            profile.id.to_string(),
+                            Notification::error(format!(
+                                "Could not connect to {profile_name}. Check the profile and try again."
+                            ))
+                            .title("Connection failed")
+                            .autohide(false),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
@@ -185,35 +302,37 @@ impl KoyoApp {
 
     fn focus_existing_table(
         &mut self,
+        pane: Pane,
         profile_id: uuid::Uuid,
         schema: &str,
         table: &str,
         connection: Option<koyo_core::models::ConnectionInfo>,
+        catalog: CatalogSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some((pane, tab_id)) = self.tabs.iter().find_map(|tab| {
-            if !tab
-                .profile
-                .as_ref()
-                .is_some_and(|profile| profile.id == profile_id)
-            {
-                return None;
-            }
-            let TabBody::Table(open) = &tab.body else {
-                return None;
-            };
-            if open.schema != schema || open.table != table {
-                return None;
-            }
-            if self.primary_tabs.contains(&tab.id) {
-                Some((Pane::Primary, tab.id))
-            } else if self.secondary_tabs.contains(&tab.id) {
-                Some((Pane::Secondary, tab.id))
-            } else {
-                None
-            }
-        }) else {
+        let candidates = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let open = tab.body.table()?;
+                let pane = if self.primary_tabs.contains(&tab.id) {
+                    Pane::Primary
+                } else if self.secondary_tabs.contains(&tab.id) {
+                    Pane::Secondary
+                } else {
+                    return None;
+                };
+                Some((
+                    tab.id,
+                    pane,
+                    tab.profile.as_ref().map(|profile| profile.id),
+                    open.schema.as_str(),
+                    open.table.as_str(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let Some(tab_id) = table_tab_to_focus(&candidates, pane, profile_id, schema, table) else {
             return false;
         };
         let Some(order) = self.pane_tab_ids(pane).iter().position(|id| *id == tab_id) else {
@@ -224,16 +343,15 @@ impl KoyoApp {
         let needs_connect = self.tabs[index].connection.is_none() && !self.tabs[index].connecting;
         self.status = format!("Focused {schema}.{table}.");
         if needs_connect {
-            // Restored tabs have no session after an app restart. Opening the
-            // same table again must reconnect instead of leaving the restored
-            // tab stuck on its reconnect notice. Reuse the sidebar session
-            // when it is already live so the user does not need the password
-            // again.
             if let Some(connection) = connection {
                 self.tabs[index].connection = Some(connection.clone());
                 self.tabs[index].connecting = false;
                 self.tabs[index].profile = Some(connection.profile.clone());
                 self.tabs[index].notice.clear();
+                self.tabs[index].tables = catalog.tables.clone();
+                self.tabs[index].schema_objects = catalog.schema_objects.clone();
+                self.tabs[index].metadata_groups = catalog.metadata_groups.clone();
+                self.tabs[index].columns = catalog.columns.clone();
                 if let TabBody::Table(table_tab) = &mut self.tabs[index].body {
                     table_tab.page = None;
                     table_tab.total_rows_cache = None;
@@ -518,7 +636,7 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn download_table_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn download_table_csv(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = self.export.as_ref() else {
             return;
         };
@@ -618,10 +736,10 @@ impl KoyoApp {
             self.tabs[index].notice = format!("Exporting CSV to {}...", path.display());
         }
         self.export = None;
-        window.push_notification(
-            Notification::info(format!("Exporting {export_title}."))
-                .title("Downloading CSV")
-                .id::<TableCsvToast>(),
+        self.push_toast(
+            ToastCategory::Exports,
+            tab_id.to_string(),
+            Notification::info(format!("Exporting {export_title}.")).title("Downloading CSV"),
             cx,
         );
         cx.notify();
@@ -629,7 +747,6 @@ impl KoyoApp {
         let manager = self.manager.clone();
         let session_id = connection.session_id;
         let path_for_task = path.clone();
-        let window_handle = window.window_handle();
         self.spawn_task(
             cx,
             tab_id,
@@ -666,15 +783,17 @@ impl KoyoApp {
                             if rows == 1 { "row" } else { "rows" },
                             path.display()
                         );
-                        this.tabs[index].notice = message.clone();
-                        let _ = cx.update_window(window_handle, |_, window, cx| {
-                            window.push_notification(
-                                Notification::success(message)
-                                    .title("CSV ready")
-                                    .id::<TableCsvToast>(),
-                                cx,
-                            );
-                        });
+                        this.tabs[index].notice = message;
+                        let file_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("CSV");
+                        this.push_toast(
+                            ToastCategory::Exports,
+                            tab_id.to_string(),
+                            Notification::success(format!("Saved {file_name}.")).title("CSV ready"),
+                            cx,
+                        );
                     }
                     Err(error) => {
                         if database::is_connection_lost(&error) || error.contains("timed out") {
@@ -686,14 +805,14 @@ impl KoyoApp {
                         } else {
                             let message = format!("CSV download failed: {error}");
                             this.tabs[index].notice = message.clone();
-                            let _ = cx.update_window(window_handle, |_, window, cx| {
-                                window.push_notification(
-                                    Notification::error(message)
-                                        .title("CSV failed")
-                                        .id::<TableCsvToast>(),
-                                    cx,
-                                );
-                            });
+                            this.push_toast(
+                                ToastCategory::Exports,
+                                tab_id.to_string(),
+                                Notification::error("Export failed. See the tab for details.")
+                                    .title("CSV failed")
+                                    .autohide(false),
+                                cx,
+                            );
                         }
                     }
                 }
@@ -821,10 +940,17 @@ impl KoyoApp {
                         table.staged.clear();
                         table.selected_keys.clear();
                         table.total_rows_cache = None;
-                        this.tabs[index].notice = format!(
+                        let message = format!(
                             "{} staged {} applied.",
                             summary.applied,
                             if summary.applied == 1 { "change" } else { "changes" }
+                        );
+                        this.tabs[index].notice = message.clone();
+                        this.push_toast(
+                            ToastCategory::Data,
+                            tab_id.to_string(),
+                            Notification::success(message).title("Changes applied"),
+                            cx,
                         );
                         this.load_page(tab_id, offset, filters, sort, cx);
                     }
@@ -838,11 +964,31 @@ impl KoyoApp {
                         } else if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
                             table.staged.clear();
                             table.selected_keys.clear();
-                            this.tabs[index].notice = "Commit result could not be confirmed. Page reloaded; verify data before retrying."
-                                .into();
+                            let message = "Commit result could not be confirmed. Page reloaded; verify data before retrying.";
+                            this.tabs[index].notice = message.into();
+                            this.push_toast(
+                                ToastCategory::Data,
+                                tab_id.to_string(),
+                                Notification::warning(
+                                    "Verify the data before retrying.",
+                                )
+                                .title("Commit unconfirmed")
+                                .autohide(false),
+                                cx,
+                            );
                             this.load_page(tab_id, offset, filters, sort, cx);
                         } else {
-                            this.tabs[index].notice = error;
+                            this.tabs[index].notice = error.clone();
+                            this.push_toast(
+                                ToastCategory::Data,
+                                tab_id.to_string(),
+                                Notification::error(
+                                    "No changes were applied. See the tab for details.",
+                                )
+                                .title("Save failed")
+                                .autohide(false),
+                                cx,
+                            );
                         }
                     }
                 }
@@ -1501,9 +1647,38 @@ mod tests {
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
 
-    use super::{export_table_csv, stage_row_delete, stage_row_delete_change};
-    use crate::app::StagedChange;
+    use super::{export_table_csv, stage_row_delete, stage_row_delete_change, table_tab_to_focus};
+    use crate::app::{Pane, StagedChange};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn table_focus_is_scoped_to_one_pane() {
+        let profile = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let candidates = [
+            (1, Pane::Primary, Some(profile), "main", "users"),
+            (2, Pane::Secondary, Some(profile), "main", "users"),
+            (3, Pane::Primary, Some(profile), "main", "orders"),
+            (4, Pane::Primary, Some(other), "main", "users"),
+        ];
+
+        assert_eq!(
+            table_tab_to_focus(&candidates, Pane::Primary, profile, "main", "users"),
+            Some(1)
+        );
+        assert_eq!(
+            table_tab_to_focus(&candidates, Pane::Secondary, profile, "main", "users"),
+            Some(2)
+        );
+        assert_eq!(
+            table_tab_to_focus(&candidates, Pane::Primary, profile, "main", "missing"),
+            None
+        );
+        assert_eq!(
+            table_tab_to_focus(&candidates, Pane::Primary, other, "main", "missing"),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn exports_every_page_with_one_header() {

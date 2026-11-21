@@ -7,14 +7,15 @@ use gpui_kit::component::input::{EditorState, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::{
-    ConnectionInfo, ConnectionProfile, Engine, ForeignKeyInfo, GridRow, MetadataGroup, QueryOutput,
-    SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
+    ColumnCatalogEntry, ConnectionInfo, ConnectionProfile, Engine, ForeignKeyInfo, GridRow,
+    MetadataGroup, QueryOutput, SchemaObject, TableFilter, TableIndexInfo, TablePage, TableSort,
+    TableSummary,
 };
 use koyo_core::{ProfileStore, SessionManager};
 
 use super::ai::AiThread;
 use super::completion::CompletionCatalog;
-use super::settings::{QueryHistoryEntry, StateSaveQueue};
+use super::settings::{NotificationPreferences, QueryHistoryEntry, StateSaveQueue};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -145,6 +146,15 @@ pub(crate) struct LiveConnection {
     pub(crate) tables: Vec<TableSummary>,
     pub(crate) schema_objects: Vec<SchemaObject>,
     pub(crate) metadata_groups: Vec<MetadataGroup>,
+    pub(crate) columns: Vec<ColumnCatalogEntry>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct CatalogSnapshot {
+    pub(crate) tables: Vec<TableSummary>,
+    pub(crate) schema_objects: Vec<SchemaObject>,
+    pub(crate) metadata_groups: Vec<MetadataGroup>,
+    pub(crate) columns: Vec<ColumnCatalogEntry>,
 }
 
 pub(crate) struct Tab {
@@ -155,12 +165,11 @@ pub(crate) struct Tab {
     pub(crate) tables: Vec<TableSummary>,
     pub(crate) schema_objects: Vec<SchemaObject>,
     pub(crate) metadata_groups: Vec<MetadataGroup>,
+    pub(crate) columns: Vec<ColumnCatalogEntry>,
     pub(crate) expanded: BTreeSet<String>,
     pub(crate) notice: String,
     pub(crate) connecting: bool,
     pub(crate) catalog_loading: bool,
-    /// Restored tabs may adopt an already-live session when selected.
-    pub(crate) auto_connect: bool,
     pub(crate) catalog_generation: u64,
     pub(crate) pending_starter: Option<SharedString>,
     pub(crate) body: TabBody,
@@ -265,6 +274,7 @@ pub(crate) struct KoyoApp {
     pub(crate) split_ratio: f32,
     pub(crate) focus: Pane,
     pub(crate) root_focus: FocusHandle,
+    pub(crate) window_handle: gpui_kit::AnyWindowHandle,
     pub(crate) sidebar_open: bool,
     pub(crate) sidebar_width: f32,
     pub(crate) sidebar_resizing: bool,
@@ -275,6 +285,9 @@ pub(crate) struct KoyoApp {
     pub(crate) ai_width: f32,
     pub(crate) ai_resizing: bool,
     pub(crate) ai_settings_open: bool,
+    pub(crate) settings_open: bool,
+    pub(crate) settings_focus: FocusHandle,
+    pub(crate) notifications: NotificationPreferences,
     pub(crate) ai_config_json: String,
     pub(crate) ai_model: String,
     pub(crate) ai_config_error: String,

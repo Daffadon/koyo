@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::ProfileInput;
@@ -10,6 +11,7 @@ use koyo_core::models::{
 };
 use uuid::Uuid;
 
+use super::notifications::ToastCategory;
 use crate::app::*;
 
 impl ConnectionDialog {
@@ -60,7 +62,21 @@ impl KoyoApp {
             return;
         };
         let session_id = connection.session_id;
-        self.tabs[index].catalog_loading = true;
+        let ids = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.session_id == session_id)
+            })
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        for tab_id in &ids {
+            if let Some(index) = self.tab_index(*tab_id) {
+                self.tabs[index].catalog_loading = true;
+            }
+        }
         self.tabs[index].catalog_generation = self.tabs[index].catalog_generation.wrapping_add(1);
         let generation = self.tabs[index].catalog_generation;
         let manager = self.manager.clone();
@@ -78,33 +94,71 @@ impl KoyoApp {
                 Ok::<_, String>((tables, objects, metadata, columns))
             },
             move |this, cx, result| {
-                let Some(index) = this.tab_index(tab_id) else {
-                    return;
-                };
-                if this.tabs[index].catalog_generation != generation
-                    || this.tabs[index]
+                if let Some(index) = this.tab_index(tab_id)
+                    && this.tabs[index].catalog_generation != generation
+                {
+                    let source_moved = this.tabs[index]
                         .connection
                         .as_ref()
                         .map(|connection| connection.session_id)
-                        != Some(session_id)
-                {
+                        != Some(session_id);
+                    if source_moved {
+                        let ids = this
+                            .tabs
+                            .iter()
+                            .filter(|tab| {
+                                tab.connection
+                                    .as_ref()
+                                    .is_some_and(|connection| connection.session_id == session_id)
+                            })
+                            .map(|tab| tab.id)
+                            .collect::<Vec<_>>();
+                        for tab_id in ids {
+                            if let Some(index) = this.tab_index(tab_id) {
+                                this.tabs[index].catalog_loading = false;
+                            }
+                        }
+                    }
                     return;
                 }
-                this.tabs[index].catalog_loading = false;
+                let ids = this
+                    .tabs
+                    .iter()
+                    .filter(|tab| {
+                        tab.connection
+                            .as_ref()
+                            .is_some_and(|connection| connection.session_id == session_id)
+                    })
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>();
+                for tab_id in &ids {
+                    if let Some(index) = this.tab_index(*tab_id) {
+                        this.tabs[index].catalog_loading = false;
+                    }
+                }
                 match result {
                     Ok((tables, objects, metadata, columns)) => {
-                        if let TabBody::Query(query) = &mut this.tabs[index].body {
-                            query
-                                .completion
-                                .borrow_mut()
-                                .replace(&tables, &objects, &columns);
+                        let object_count = objects.len();
+                        for same_session_id in ids {
+                            let Some(index) = this.tab_index(same_session_id) else {
+                                continue;
+                            };
+                            if same_session_id == tab_id {
+                                this.tabs[index].expanded.clear();
+                            }
+                            this.tabs[index].tables = tables.clone();
+                            this.tabs[index].schema_objects = objects.clone();
+                            this.tabs[index].metadata_groups = metadata.clone();
+                            this.tabs[index].columns = columns.clone();
+                            if let TabBody::Query(query) = &mut this.tabs[index].body {
+                                query.completion.borrow_mut().replace(
+                                    &tables,
+                                    &objects,
+                                    &columns,
+                                );
+                            }
                         }
-                        // The explorer starts closed; expand all is an explicit action.
-                        this.tabs[index].expanded.clear();
-                        this.tabs[index].tables = tables;
-                        this.tabs[index].schema_objects = objects;
-                        this.tabs[index].metadata_groups = metadata;
-                        this.status = format!("{} objects.", this.tabs[index].schema_objects.len());
+                        this.status = format!("{object_count} objects.");
                     }
                     Err(error) => {
                         if database::is_connection_lost(&error) {
@@ -114,7 +168,11 @@ impl KoyoApp {
                                 cx,
                             );
                         } else {
-                            this.tabs[index].notice = error;
+                            for tab_id in ids {
+                                if let Some(index) = this.tab_index(tab_id) {
+                                    this.tabs[index].notice = error.clone();
+                                }
+                            }
                         }
                     }
                 }
@@ -229,6 +287,68 @@ impl KoyoApp {
             return;
         }
 
+        if !from_dialog
+            && self.tabs[index].connection.is_none()
+            && let Some((connection, catalog)) = self.connection_for_profile(profile.id)
+        {
+            let run_pending = matches!(
+                &self.tabs[index].body,
+                TabBody::Query(query) if query.pending_run
+            );
+            self.attach_connection_to_tab(tab_id, connection.clone(), catalog, cx);
+            if adopt_sidebar {
+                self.sidebar_tab = Some(tab_id);
+            }
+            if let TabBody::Query(query) = &mut self.tabs[index].body {
+                query.pending_run = false;
+            }
+            let attached = self.attach_profile_session(profile.id, tab_id, cx);
+            let message = if attached == 0 {
+                format!("Connected to {}.", connection.profile.name)
+            } else {
+                format!(
+                    "Connected to {}. Reconnected {} other {}.",
+                    connection.profile.name,
+                    attached,
+                    if attached == 1 { "tab" } else { "tabs" }
+                )
+            };
+            self.status = format!("Connected to {}.", connection.profile.name);
+            self.push_toast(
+                ToastCategory::Connections,
+                profile.id.to_string(),
+                Notification::success(message).title("Connected"),
+                cx,
+            );
+            if run_pending {
+                self.run_query(tab_id, cx);
+            }
+            if from_dialog {
+                self.dialog = None;
+            }
+            self.persist_state(cx);
+            cx.notify();
+            return;
+        }
+
+        if self.profile_is_connecting(profile.id) {
+            self.tabs[index].connecting = false;
+            if let TabBody::Query(query) = &mut self.tabs[index].body {
+                query.pending_run = false;
+            }
+            self.tabs[index].notice =
+                "Waiting for the connection to finish. Run the query again when connected.".into();
+            self.status = "Waiting for the connection to finish.".into();
+            if from_dialog && let Some(dialog) = self.dialog.as_mut() {
+                dialog.busy = false;
+                dialog.error =
+                    "A connection for this profile is already starting. This tab will join it."
+                        .into();
+            }
+            cx.notify();
+            return;
+        }
+
         let previous_profile = self.tabs[index].profile.clone();
         self.tabs[index].connecting = true;
         self.tabs[index].notice = if self.tabs[index].connection.is_some() {
@@ -245,6 +365,7 @@ impl KoyoApp {
         let manager = self.manager.clone();
         let store = self.store.clone();
         let profile_for_task = profile.clone();
+        let profile_name = profile.name.clone();
         self.spawn_task(
             cx,
             tab_id,
@@ -278,9 +399,12 @@ impl KoyoApp {
                                 );
                             }
                         }
+                        let discarded_staged = this.tabs[index]
+                            .body
+                            .table()
+                            .is_some_and(|table| !table.staged.is_empty());
                         this.tabs[index].profile = Some(info.profile.clone());
                         this.tabs[index].connecting = false;
-                        this.tabs[index].auto_connect = false;
                         this.tabs[index].notice.clear();
                         if matches!(this.tabs[index].body, TabBody::Query(_)) {
                             this.tabs[index].title = query_tab_title(Some(&info.profile));
@@ -338,14 +462,30 @@ impl KoyoApp {
                                 this.load_page(tab_id, offset, filters, sort, cx);
                             }
                         }
+                        if discarded_staged {
+                            this.tabs[index].notice = "Reconnected. Staged edits from the previous session were discarded.".into();
+                        }
                         // A restored tab may be visible while the user
                         // reconnects from another tab. Adopt the new session
                         // immediately in every pane instead of waiting for a
                         // click in each one.
-                        this.attach_profile_session(info.profile.id, tab_id, cx);
-                        if let Some(active) = this.pane_active_id(this.focus) {
-                            this.auto_connect_tab(active, cx);
-                        }
+                        let attached = this.attach_profile_session(info.profile.id, tab_id, cx);
+                        let message = if attached == 0 {
+                            format!("Connected to {}.", info.profile.name)
+                        } else {
+                            format!(
+                                "Connected to {}. Reconnected {} other {}.",
+                                info.profile.name,
+                                attached,
+                                if attached == 1 { "tab" } else { "tabs" }
+                            )
+                        };
+                        this.push_toast(
+                            ToastCategory::Connections,
+                            info.profile.id.to_string(),
+                            Notification::success(message).title("Connected"),
+                            cx,
+                        );
                         if run_pending {
                             this.run_query(tab_id, cx);
                         }
@@ -354,12 +494,57 @@ impl KoyoApp {
                         }
                     }
                     Err(error) => {
-                        this.tabs[index].connecting = false;
-                        if let TabBody::Query(query) = &mut this.tabs[index].body {
-                            query.pending_run = false;
+                        let waiting = this
+                            .tabs
+                            .iter()
+                            .filter(|tab| {
+                                tab.connection.is_none()
+                                    && tab
+                                        .profile
+                                        .as_ref()
+                                        .is_some_and(|profile| profile.id == profile_id)
+                            })
+                            .map(|tab| tab.id)
+                            .collect::<Vec<_>>();
+                        let dialog_target = this
+                            .dialog
+                            .as_ref()
+                            .and_then(|dialog| dialog.target_tab);
+                        let targets_dialog =
+                            dialog_target.is_some_and(|id| waiting.contains(&id));
+                        for waiting_id in waiting {
+                            let Some(waiting_index) = this.tab_index(waiting_id) else {
+                                continue;
+                            };
+                            this.tabs[waiting_index].connecting = false;
+                            this.tabs[waiting_index].notice = error.clone();
+                            if let TabBody::Query(query) = &mut this.tabs[waiting_index].body {
+                                query.pending_run = false;
+                            }
                         }
-                        this.tabs[index].notice = error.clone();
+                        if targets_dialog
+                            && let Some(dialog) = this.dialog.as_mut()
+                        {
+                            dialog.busy = false;
+                            dialog.error = format!("Could not connect: {error}");
+                        }
+                        if let Some(index) = this.tab_index(tab_id) {
+                            this.tabs[index].connecting = false;
+                            this.tabs[index].notice = error.clone();
+                        }
                         this.status = error.clone();
+                        if !from_dialog {
+                            this.push_toast(
+                                ToastCategory::Connections,
+                                profile_id.to_string(),
+                                Notification::error(format!(
+                                    "Could not connect to {profile_name}. Check the profile and try again."
+                                ))
+                                .title("Connection failed")
+                                .autohide(false),
+                                cx,
+                            );
+                        }
                         if from_dialog {
                             if let Some(dialog) = this.dialog.as_mut() {
                                 dialog.busy = false;
