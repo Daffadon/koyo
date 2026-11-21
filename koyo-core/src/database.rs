@@ -13,7 +13,6 @@ use crate::{
     sqlite::{self, SqliteSession},
 };
 use futures_util::TryStreamExt;
-use mysql_async::prelude::Queryable as _;
 use rustls_tokio_postgres::{MakeRustlsConnect, config_platform_verifier};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -359,20 +358,8 @@ pub async fn ping(manager: &SessionManager, session_id: Uuid) -> Result<(), Stri
                 .map(|_| ())
                 .map_err(|error| error.to_string()),
             DbSession::Sqlite(sqlite_session) => sqlite::ping(sqlite_session).await,
-            DbSession::Mysql(mysql_session) => mysql_session
-                .conn
-                .query_drop("SELECT 1")
-                .await
-                .map_err(|error| error.to_string()),
-            DbSession::Mssql(mssql_session) => mssql_session
-                .client
-                .query("SELECT 1", &[])
-                .await
-                .map_err(|error| error.to_string())?
-                .into_results()
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
+            DbSession::Mysql(mysql_session) => mysql::ping(mysql_session).await,
+            DbSession::Mssql(mssql_session) => mssql::ping(mssql_session).await,
             DbSession::Oracle(oracle_session) => oracle::ping(oracle_session).await,
         }
     };
@@ -2400,9 +2387,37 @@ mod connection_loss_tests {
 
 #[cfg(test)]
 mod session_cleanup_tests {
-    use super::{SessionManager, connect, disconnect, run_sql};
+    use super::{SessionManager, connect, disconnect, ping, run_sql};
     use crate::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
+
+    #[tokio::test]
+    async fn ping_reports_an_open_session() {
+        let path = std::env::temp_dir().join(format!("koyo-ping-{}.db", Uuid::new_v4()));
+        let manager = SessionManager::default();
+        let profile = ConnectionProfile {
+            id: Uuid::new_v4(),
+            name: "ping test".into(),
+            engine: Engine::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: String::new(),
+            username: String::new(),
+            ssl_mode: SslMode::Disable,
+            sqlite_path: path.display().to_string(),
+        };
+        let connection = connect(&manager, &profile, "")
+            .await
+            .expect("connect sqlite");
+        ping(&manager, connection.session_id)
+            .await
+            .expect("ping sqlite session");
+        disconnect(&manager, connection.session_id)
+            .await
+            .expect("disconnect");
+        assert!(ping(&manager, connection.session_id).await.is_err());
+        let _ = std::fs::remove_file(path);
+    }
 
     #[tokio::test]
     async fn disconnect_removes_the_session_entry() {

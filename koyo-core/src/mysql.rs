@@ -59,6 +59,14 @@ pub async fn connect(
     ))
 }
 
+pub async fn ping(session: &mut MysqlSession) -> Result<(), String> {
+    session
+        .conn
+        .query_drop("SELECT 1")
+        .await
+        .map_err(|error| error.to_string())
+}
+
 pub async fn list_tables(session: &mut MysqlSession) -> Result<Vec<TableSummary>, String> {
     let sql = format!(
         "SELECT t.TABLE_SCHEMA, t.TABLE_NAME,
@@ -1013,6 +1021,7 @@ mod tests {
         let profile = test_profile(engine, port);
         let (mut session, _version, _user, _opts) =
             connect(&profile, "koyo").await.expect("connect");
+        ping(&mut session).await.expect("ping");
 
         let tables = list_tables(&mut session).await.expect("list tables");
         assert!(tables.iter().any(|table| table.name == "users"));

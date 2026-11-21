@@ -28,8 +28,11 @@ pub(crate) const MAX_COLUMN_WIDTH: f32 = 640.0;
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
 pub(crate) const MIN_SIDEBAR_WIDTH: f32 = 220.0;
 pub(crate) const MAX_SIDEBAR_WIDTH: f32 = 520.0;
-pub(crate) const MAX_PARKED_CONNECTIONS: usize = 4;
-pub(crate) const PARKED_CONNECTION_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const DEFAULT_IDLE_POOL_SIZE: usize = 4;
+pub(crate) const MAX_IDLE_POOL_SIZE: usize = 8;
+pub(crate) const DEFAULT_IDLE_POOL_TTL_SECS: u64 = 300;
+pub(crate) const MIN_IDLE_POOL_TTL_SECS: u64 = 30;
+pub(crate) const MAX_IDLE_POOL_TTL_SECS: u64 = 3600;
 pub(crate) const PARKED_CONNECTION_PROBE: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Clone)]
@@ -292,6 +295,8 @@ pub(crate) struct KoyoApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_focus: FocusHandle,
     pub(crate) notifications: NotificationPreferences,
+    pub(crate) idle_pool_size: usize,
+    pub(crate) idle_pool_ttl_secs: u64,
     pub(crate) ai_config_json: String,
     pub(crate) ai_model: String,
     pub(crate) ai_config_error: String,

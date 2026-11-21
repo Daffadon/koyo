@@ -56,7 +56,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
-- The idle pool keeps at most four clean sessions, one per profile, expires them after five minutes, and probes them while parked. Dead pooled sessions are dropped before reuse.
+- The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
 - Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.

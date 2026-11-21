@@ -182,6 +182,105 @@ pub(super) fn render_settings(
                                     &palette,
                                     cx,
                                 )),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_3()
+                                .pt_3()
+                                .border_t_1()
+                                .border_color(palette.border)
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette.muted)
+                                        .child("IDLE CONNECTIONS"),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .child(format!(
+                                            "{} of {} slots in use. Pooled sessions are reused by new tabs and checked every 15 seconds.",
+                                            app.parked_connections.len(),
+                                            app.idle_pool_size
+                                        )),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(86.0))
+                                                .text_xs()
+                                                .text_color(palette.muted)
+                                                .child("Pool size"),
+                                        )
+                                        .children([0usize, 2, 4, 8].into_iter().map(|size| {
+                                            Button::new(("pool-size", size))
+                                                .compact()
+                                                .label(if size == 0 {
+                                                    "Off".to_string()
+                                                } else {
+                                                    size.to_string()
+                                                })
+                                                .when(app.idle_pool_size == size, |this| this.primary())
+                                                .when(app.idle_pool_size != size, |this| this.ghost())
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.set_idle_pool_size(size, cx);
+                                                }))
+                                        })),
+                                )
+                                .child(
+                                    h_flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(86.0))
+                                                .text_xs()
+                                                .text_color(palette.muted)
+                                                .child("Expire after"),
+                                        )
+                                        .children(
+                                            [
+                                                (60u64, "1 min"),
+                                                (300, "5 min"),
+                                                (900, "15 min"),
+                                                (3600, "1 hour"),
+                                            ]
+                                            .into_iter()
+                                            .map(|(seconds, label)| {
+                                                Button::new(format!("pool-ttl-{seconds}"))
+                                                    .compact()
+                                                    .label(label)
+                                                    .when(
+                                                        app.idle_pool_ttl_secs == seconds,
+                                                        |this| this.primary(),
+                                                    )
+                                                    .when(
+                                                        app.idle_pool_ttl_secs != seconds,
+                                                        |this| this.ghost(),
+                                                    )
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.set_idle_pool_ttl_secs(seconds, cx);
+                                                        },
+                                                    ))
+                                            }),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("disconnect-idle")
+                                        .secondary()
+                                        .compact()
+                                        .label("Disconnect idle")
+                                        .disabled(app.parked_connections.is_empty())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.disconnect_idle_connections(cx);
+                                        })),
+                                ),
                         ),
                 )
                 .child(

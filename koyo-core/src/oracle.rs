@@ -1189,6 +1189,7 @@ mod tests {
         };
         let password = std::env::var("KOYO_TEST_ORACLE_PASSWORD").unwrap_or_else(|_| "koyo".into());
         let (session, _version, _user) = connect(&profile, &password).await.expect("connect");
+        ping(&session).await.expect("ping");
         let output = run_sql(&session, "SELECT 1 AS n FROM dual")
             .await
             .expect("select");

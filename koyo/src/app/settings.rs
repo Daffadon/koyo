@@ -5,8 +5,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
 
-use super::DEFAULT_SIDEBAR_WIDTH;
 use super::ai::{AiMessage, AiThread, DEFAULT_AI_CONFIG, DEFAULT_AI_WIDTH};
+use super::{DEFAULT_IDLE_POOL_SIZE, DEFAULT_IDLE_POOL_TTL_SECS, DEFAULT_SIDEBAR_WIDTH};
 
 const STATE_FILE: &str = "state.enc";
 const LEGACY_STATE_FILE: &str = "state.json";
@@ -38,6 +38,10 @@ pub(crate) struct PersistedState {
     pub(crate) workspace: WorkspaceSnapshot,
     #[serde(default)]
     pub(crate) notifications: NotificationPreferences,
+    #[serde(default = "default_idle_pool_size")]
+    pub(crate) idle_pool_size: usize,
+    #[serde(default = "default_idle_pool_ttl_secs")]
+    pub(crate) idle_pool_ttl_secs: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,6 +84,8 @@ impl Default for PersistedState {
             history: Vec::new(),
             workspace: WorkspaceSnapshot::default(),
             notifications: NotificationPreferences::default(),
+            idle_pool_size: default_idle_pool_size(),
+            idle_pool_ttl_secs: default_idle_pool_ttl_secs(),
         }
     }
 }
@@ -305,6 +311,14 @@ fn default_sidebar_width() -> f32 {
     DEFAULT_SIDEBAR_WIDTH
 }
 
+fn default_idle_pool_size() -> usize {
+    DEFAULT_IDLE_POOL_SIZE
+}
+
+fn default_idle_pool_ttl_secs() -> u64 {
+    DEFAULT_IDLE_POOL_TTL_SECS
+}
+
 fn default_next_ai_thread_id() -> u64 {
     1
 }
@@ -351,6 +365,8 @@ mod tests {
                 data: false,
                 exports: true,
             },
+            idle_pool_size: 2,
+            idle_pool_ttl_secs: 900,
             workspace: WorkspaceSnapshot {
                 split: Some("horizontal".into()),
                 primary: vec![TabSnapshot::Query {
@@ -392,6 +408,8 @@ mod tests {
         assert!(decoded.notifications.queries);
         assert!(!decoded.notifications.data);
         assert!(decoded.notifications.exports);
+        assert_eq!(decoded.idle_pool_size, 2);
+        assert_eq!(decoded.idle_pool_ttl_secs, 900);
         assert_eq!(decoded.workspace.secondary.len(), 1);
         assert!(decoded.workspace.focus_secondary);
     }
@@ -415,6 +433,11 @@ mod tests {
         assert!(!state.notifications.queries);
         assert!(state.notifications.data);
         assert!(state.notifications.exports);
+        assert_eq!(state.idle_pool_size, crate::app::DEFAULT_IDLE_POOL_SIZE);
+        assert_eq!(
+            state.idle_pool_ttl_secs,
+            crate::app::DEFAULT_IDLE_POOL_TTL_SECS
+        );
     }
 
     #[test]
@@ -455,6 +478,8 @@ mod tests {
                 .into();
         state.notifications.queries = true;
         state.notifications.exports = false;
+        state.idle_pool_size = 2;
+        state.idle_pool_ttl_secs = 900;
         state.history.push(QueryHistoryEntry {
             sql: "select secret_value".into(),
             profile_id: None,
@@ -486,6 +511,8 @@ mod tests {
         assert!(loaded.ai_config_json.contains("ai_secret_value"));
         assert!(loaded.notifications.queries);
         assert!(!loaded.notifications.exports);
+        assert_eq!(loaded.idle_pool_size, 2);
+        assert_eq!(loaded.idle_pool_ttl_secs, 900);
         assert_eq!(loaded.history.len(), 1);
         assert_eq!(loaded.history[0].sql, "select secret_value");
         let _ = std::fs::remove_dir_all(directory);

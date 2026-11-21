@@ -12,7 +12,7 @@ This intentionally trades transaction isolation between tabs for continuity when
 
 ## Amendment: parked sessions
 
-Closing the last tab that holds a clean session no longer disconnects it. The session is parked in a bounded idle connection pool and reused by the next workspace tab; tab lifetime and connection lifetime are independent. The pool keeps at most four idle sessions and at most one per profile, so a later tab cannot inherit another profile's session state. It expires entries after five minutes and pings parked sessions every fifteen seconds. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
+Closing the last tab that holds a clean session no longer disconnects it. The session is parked in a bounded idle connection pool and reused by the next workspace tab; tab lifetime and connection lifetime are independent. The pool defaults to four idle sessions and at most one per profile, so a later tab cannot inherit another profile's session state. Settings can change the cap and TTL. It expires entries after five minutes by default and pings parked sessions every fifteen seconds. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
 
 ## Amendment: profile groups and reconnect data
 

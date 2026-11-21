@@ -74,6 +74,18 @@ pub async fn connect(
     ))
 }
 
+pub async fn ping(session: &mut MssqlSession) -> Result<(), String> {
+    session
+        .client
+        .query("SELECT 1", &[])
+        .await
+        .map_err(|error| error.to_string())?
+        .into_results()
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 pub async fn list_tables(session: &mut MssqlSession) -> Result<Vec<TableSummary>, String> {
     let rows = session
         .client
@@ -1227,6 +1239,7 @@ mod tests {
             connect(&profile, "Koyo!Passw0rd", Engine::SqlServer)
                 .await
                 .expect("connect");
+        ping(&mut session).await.expect("ping");
 
         let tables = list_tables(&mut session).await.expect("list tables");
         assert!(

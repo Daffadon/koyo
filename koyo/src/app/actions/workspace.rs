@@ -123,6 +123,10 @@ impl KoyoApp {
             settings_open: false,
             settings_focus: cx.focus_handle(),
             notifications: saved.notifications.clone(),
+            idle_pool_size: saved.idle_pool_size.min(MAX_IDLE_POOL_SIZE),
+            idle_pool_ttl_secs: saved
+                .idle_pool_ttl_secs
+                .clamp(MIN_IDLE_POOL_TTL_SECS, MAX_IDLE_POOL_TTL_SECS),
             ai_config_json,
             ai_model,
             ai_config_error,
@@ -190,7 +194,8 @@ impl KoyoApp {
             let Some(parked) = self.parked_connections.pop() else {
                 break None;
             };
-            if parked.parked_at.elapsed() > PARKED_CONNECTION_TTL {
+            if parked.parked_at.elapsed() > std::time::Duration::from_secs(self.idle_pool_ttl_secs)
+            {
                 self.disconnect_session(parked.connection.session_id);
                 continue;
             }
@@ -357,6 +362,8 @@ impl KoyoApp {
             history: self.history.clone(),
             workspace: self.workspace_snapshot(cx),
             notifications: self.notifications.clone(),
+            idle_pool_size: self.idle_pool_size,
+            idle_pool_ttl_secs: self.idle_pool_ttl_secs,
         }
     }
 
@@ -1249,7 +1256,8 @@ impl KoyoApp {
                 parked.profile.id == profile.id && same_connection_target(&parked.profile, profile)
             })?;
             let parked = self.parked_connections.remove(parked);
-            if parked.parked_at.elapsed() > PARKED_CONNECTION_TTL {
+            if parked.parked_at.elapsed() > std::time::Duration::from_secs(self.idle_pool_ttl_secs)
+            {
                 self.disconnect_session(parked.connection.session_id);
                 continue;
             }
@@ -1759,8 +1767,8 @@ impl KoyoApp {
                     else {
                         return false;
                     };
-                    let expired =
-                        this.parked_connections[index].parked_at.elapsed() > PARKED_CONNECTION_TTL;
+                    let expired = this.parked_connections[index].parked_at.elapsed()
+                        > std::time::Duration::from_secs(this.idle_pool_ttl_secs);
                     if alive && !expired {
                         return true;
                     }
@@ -1788,7 +1796,7 @@ impl KoyoApp {
                 TabBody::Query(query) => query.running,
                 TabBody::Table(table) => table.loading,
             };
-            if busy {
+            if busy || self.idle_pool_size == 0 {
                 self.disconnect_session(connection.session_id);
             } else {
                 let profile = self.tabs[index]
@@ -1816,7 +1824,8 @@ impl KoyoApp {
                     columns: self.tabs[index].columns.clone(),
                     parked_at: std::time::Instant::now(),
                 });
-                while self.parked_connections.len() > MAX_PARKED_CONNECTIONS {
+                let limit = self.idle_pool_size.min(MAX_IDLE_POOL_SIZE);
+                while self.parked_connections.len() > limit {
                     let evicted = self.parked_connections.remove(0);
                     self.disconnect_session(evicted.connection.session_id);
                 }
