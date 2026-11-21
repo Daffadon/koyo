@@ -51,11 +51,12 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Six engines with an engine-first connection flow and per-engine profile forms.
 - Create, edit, delete, and search profiles. Profiles contain no passwords.
 - Server passwords live in Windows Credential Manager, macOS Keychain, or Linux Secret Service. SQLite profiles use a database file path.
-- Tabs for one connection share a live session across panes. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session in an idle connection pool; the next selected tab reuses it. Closing a tab selects its right neighbor, or its left neighbor at the end of the strip. Explicit disconnect closes every tab on that session.
-- Reconnecting once attaches the new session to every disconnected tab for that profile in both panes, including the shared explorer. The schema catalog is fetched once and shared.
+- Tabs for one connection share a live session across panes. Splitting duplicates the active tab on the same session, so a split does not reconnect. Closing the last tab parks its session in an idle connection pool; the next selected tab reuses it. Closing a tab selects its right neighbor, or its left neighbor at the end of the strip. Explicit disconnect and connection loss close every session and tab for that profile, not just the clicked tab.
+- Reconnecting once attaches the new session to every disconnected tab with the same profile target in both panes, including the shared explorer. The schema catalog is fetched once and shared. Staged edits survive a same-target reconnect; they are discarded only when the connection target changed.
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
+- The idle pool keeps at most four clean sessions, one per profile, expires them after five minutes, and probes them while parked. Dead pooled sessions are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
 - Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Dark theme and a warm, low-contrast light theme.

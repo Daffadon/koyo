@@ -12,7 +12,11 @@ This intentionally trades transaction isolation between tabs for continuity when
 
 ## Amendment: parked sessions
 
-Closing the last tab that holds a clean session no longer disconnects it. The session is parked in a bounded idle connection pool and reused by the next workspace tab; tab lifetime and connection lifetime are independent. The pool keeps at most four idle sessions and at most one per profile, so a later tab cannot inherit another profile's session state. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
+Closing the last tab that holds a clean session no longer disconnects it. The session is parked in a bounded idle connection pool and reused by the next workspace tab; tab lifetime and connection lifetime are independent. The pool keeps at most four idle sessions and at most one per profile, so a later tab cannot inherit another profile's session state. It expires entries after five minutes and pings parked sessions every fifteen seconds. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
+
+## Amendment: profile groups and reconnect data
+
+Disconnect and connection loss now apply to the whole profile group, not one session ID. A profile may still have separate sessions after an explicit target change or password change, but the UI never leaves one pane live while another is disconnected for the same profile. Reconnect attaches only tabs whose saved connection target matches, and it preserves staged edits for a same-target reconnect. A target change discards staged edits with a per-tab notice.
 
 ## Context
 

@@ -13,6 +13,7 @@ use crate::{
     sqlite::{self, SqliteSession},
 };
 use futures_util::TryStreamExt;
+use mysql_async::prelude::Queryable as _;
 use rustls_tokio_postgres::{MakeRustlsConnect, config_platform_verifier};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -342,6 +343,42 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
         .clear();
     manager.sessions.lock().await.remove(&session_id);
     Ok(())
+}
+
+pub async fn ping(manager: &SessionManager, session_id: Uuid) -> Result<(), String> {
+    let entry = get_session(manager, session_id).await?;
+    let ping = async {
+        let mut session_guard = entry.session.lock().await;
+        let session = session_guard
+            .as_mut()
+            .ok_or_else(|| "Session is no longer connected.".to_string())?;
+        match session {
+            DbSession::Postgres(client) => client
+                .simple_query("SELECT 1")
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            DbSession::Sqlite(sqlite_session) => sqlite::ping(sqlite_session).await,
+            DbSession::Mysql(mysql_session) => mysql_session
+                .conn
+                .query_drop("SELECT 1")
+                .await
+                .map_err(|error| error.to_string()),
+            DbSession::Mssql(mssql_session) => mssql_session
+                .client
+                .query("SELECT 1", &[])
+                .await
+                .map_err(|error| error.to_string())?
+                .into_results()
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            DbSession::Oracle(oracle_session) => oracle::ping(oracle_session).await,
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(2), ping)
+        .await
+        .map_err(|_| "Database ping timed out.".to_string())?
 }
 
 pub async fn cancel_query(

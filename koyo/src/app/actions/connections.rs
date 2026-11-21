@@ -12,6 +12,7 @@ use koyo_core::models::{
 use uuid::Uuid;
 
 use super::notifications::ToastCategory;
+use super::workspace::same_connection_target;
 use crate::app::*;
 
 impl ConnectionDialog {
@@ -77,8 +78,11 @@ impl KoyoApp {
                 self.tabs[index].catalog_loading = true;
             }
         }
-        self.tabs[index].catalog_generation = self.tabs[index].catalog_generation.wrapping_add(1);
-        let generation = self.tabs[index].catalog_generation;
+        let generation = {
+            let generation = self.catalog_generations.entry(session_id).or_insert(0);
+            *generation = generation.wrapping_add(1);
+            *generation
+        };
         let manager = self.manager.clone();
         self.spawn_task(
             cx,
@@ -94,31 +98,7 @@ impl KoyoApp {
                 Ok::<_, String>((tables, objects, metadata, columns))
             },
             move |this, cx, result| {
-                if let Some(index) = this.tab_index(tab_id)
-                    && this.tabs[index].catalog_generation != generation
-                {
-                    let source_moved = this.tabs[index]
-                        .connection
-                        .as_ref()
-                        .map(|connection| connection.session_id)
-                        != Some(session_id);
-                    if source_moved {
-                        let ids = this
-                            .tabs
-                            .iter()
-                            .filter(|tab| {
-                                tab.connection
-                                    .as_ref()
-                                    .is_some_and(|connection| connection.session_id == session_id)
-                            })
-                            .map(|tab| tab.id)
-                            .collect::<Vec<_>>();
-                        for tab_id in ids {
-                            if let Some(index) = this.tab_index(tab_id) {
-                                this.tabs[index].catalog_loading = false;
-                            }
-                        }
-                    }
+                if this.catalog_generations.get(&session_id).copied() != Some(generation) {
                     return;
                 }
                 let ids = this
@@ -287,9 +267,8 @@ impl KoyoApp {
             return;
         }
 
-        if !from_dialog
-            && self.tabs[index].connection.is_none()
-            && let Some((connection, catalog)) = self.connection_for_profile(profile.id)
+        if self.tabs[index].connection.is_none()
+            && let Some((connection, catalog)) = self.connection_for_profile(&profile)
         {
             let run_pending = matches!(
                 &self.tabs[index].body,
@@ -331,7 +310,7 @@ impl KoyoApp {
             return;
         }
 
-        if self.profile_is_connecting(profile.id) {
+        if self.profile_is_connecting(&profile) {
             self.tabs[index].connecting = false;
             if let TabBody::Query(query) = &mut self.tabs[index].body {
                 query.pending_run = false;
@@ -399,7 +378,11 @@ impl KoyoApp {
                                 );
                             }
                         }
-                        let discarded_staged = this.tabs[index]
+                        let preserve_staged = this.tabs[index]
+                            .profile
+                            .as_ref()
+                            .is_some_and(|profile| same_connection_target(profile, &info.profile));
+                        let had_staged = this.tabs[index]
                             .body
                             .table()
                             .is_some_and(|table| !table.staged.is_empty());
@@ -451,7 +434,9 @@ impl KoyoApp {
                                 // against the newly connected server.
                                 table.page = None;
                                 table.total_rows_cache = None;
-                                table.staged.clear();
+                                if !preserve_staged {
+                                    table.staged.clear();
+                                }
                                 table.selected_keys.clear();
                                 table.loading = false;
                                 table.operation_id = None;
@@ -462,8 +447,13 @@ impl KoyoApp {
                                 this.load_page(tab_id, offset, filters, sort, cx);
                             }
                         }
-                        if discarded_staged {
-                            this.tabs[index].notice = "Reconnected. Staged edits from the previous session were discarded.".into();
+                        if had_staged {
+                            this.tabs[index].notice = if preserve_staged {
+                                "Reconnected. Staged edits kept; review before applying.".into()
+                            } else {
+                                "Reconnected. Staged edits discarded because the connection target changed."
+                                    .into()
+                            };
                         }
                         // A restored tab may be visible while the user
                         // reconnects from another tab. Adopt the new session

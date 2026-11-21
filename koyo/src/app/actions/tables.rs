@@ -91,7 +91,7 @@ impl KoyoApp {
         // Prefer any live session for this profile, not just the sidebar tab.
         let (shared, catalog) = match shared {
             Some(connection) => (Some(connection), catalog),
-            None => match self.connection_for_profile(profile.id) {
+            None => match self.connection_for_profile(&profile) {
                 Some((connection, catalog)) => (Some(connection), catalog),
                 None => (None, catalog),
             },
@@ -130,7 +130,7 @@ impl KoyoApp {
             self.load_page(tab_id, 0, Vec::new(), None, cx);
             return;
         }
-        if self.profile_is_connecting(profile.id) {
+        if self.profile_is_connecting(&profile) {
             tab.connecting = false;
             tab.notice = "Waiting for the connection to finish.".into();
             if let TabBody::Table(table_tab) = &mut tab.body {

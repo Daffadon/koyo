@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -29,6 +29,8 @@ pub(crate) const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
 pub(crate) const MIN_SIDEBAR_WIDTH: f32 = 220.0;
 pub(crate) const MAX_SIDEBAR_WIDTH: f32 = 520.0;
 pub(crate) const MAX_PARKED_CONNECTIONS: usize = 4;
+pub(crate) const PARKED_CONNECTION_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+pub(crate) const PARKED_CONNECTION_PROBE: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Clone)]
 pub(crate) struct StagedInsert {
@@ -148,6 +150,7 @@ pub(crate) struct LiveConnection {
     pub(crate) schema_objects: Vec<SchemaObject>,
     pub(crate) metadata_groups: Vec<MetadataGroup>,
     pub(crate) columns: Vec<ColumnCatalogEntry>,
+    pub(crate) parked_at: std::time::Instant,
 }
 
 #[derive(Clone, Default)]
@@ -171,7 +174,6 @@ pub(crate) struct Tab {
     pub(crate) notice: String,
     pub(crate) connecting: bool,
     pub(crate) catalog_loading: bool,
-    pub(crate) catalog_generation: u64,
     pub(crate) pending_starter: Option<SharedString>,
     pub(crate) body: TabBody,
 }
@@ -256,6 +258,7 @@ pub(crate) struct KoyoApp {
     pub(crate) store: ProfileStore,
     pub(crate) save_queue: Arc<StateSaveQueue>,
     pub(crate) history: Vec<QueryHistoryEntry>,
+    pub(crate) catalog_generations: HashMap<Uuid, u64>,
     pub(crate) allow_close: bool,
     pub(crate) persistence_disabled: bool,
     pub(crate) manager: Arc<SessionManager>,

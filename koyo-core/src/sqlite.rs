@@ -44,6 +44,17 @@ pub fn connect(path: &str) -> Result<(SqliteSession, String), String> {
     ))
 }
 
+pub async fn ping(session: &SqliteSession) -> Result<(), String> {
+    let connection = session.connection.clone();
+    blocking(move || {
+        let connection = lock(&connection)?;
+        connection
+            .query_row("SELECT 1", [], |_| Ok(()))
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
 pub async fn list_tables(session: &SqliteSession) -> Result<Vec<TableSummary>, String> {
     let connection = session.connection.clone();
     blocking(move || {
@@ -981,6 +992,11 @@ mod tests {
             connection: Arc::new(Mutex::new(connection)),
             interrupt,
         }
+    }
+
+    #[tokio::test]
+    async fn pings_an_open_connection() {
+        ping(&memory_session()).await.expect("ping sqlite");
     }
 
     #[tokio::test]

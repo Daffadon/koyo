@@ -72,6 +72,18 @@ pub async fn connect(
     .await
 }
 
+pub async fn ping(session: &OracleSession) -> Result<(), String> {
+    let connection = session.connection.clone();
+    blocking(move || {
+        let connection = lock(&connection)?;
+        connection
+            .query_row("SELECT 1 FROM dual", &[])
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    })
+    .await
+}
+
 pub async fn list_tables(session: &OracleSession) -> Result<Vec<TableSummary>, String> {
     let connection = session.connection.clone();
     blocking(move || {
