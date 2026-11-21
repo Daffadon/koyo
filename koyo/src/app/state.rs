@@ -28,6 +28,7 @@ pub(crate) const MAX_COLUMN_WIDTH: f32 = 640.0;
 pub(crate) const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
 pub(crate) const MIN_SIDEBAR_WIDTH: f32 = 220.0;
 pub(crate) const MAX_SIDEBAR_WIDTH: f32 = 520.0;
+pub(crate) const MAX_PARKED_CONNECTIONS: usize = 4;
 
 #[derive(Clone)]
 pub(crate) struct StagedInsert {

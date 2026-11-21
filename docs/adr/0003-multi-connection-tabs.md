@@ -12,7 +12,7 @@ This intentionally trades transaction isolation between tabs for continuity when
 
 ## Amendment: parked sessions
 
-Closing the last tab that holds a clean session no longer disconnects it. The session is parked and reused by the next workspace tab; tab lifetime and connection lifetime are independent. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
+Closing the last tab that holds a clean session no longer disconnects it. The session is parked in a bounded idle connection pool and reused by the next workspace tab; tab lifetime and connection lifetime are independent. The pool keeps at most four idle sessions and at most one per profile, so a later tab cannot inherit another profile's session state. Explicit disconnect, profile deletion, or app exit closes a parked session. Busy sessions are still disconnected when their last tab closes so a closed query cannot continue unattended.
 
 ## Context
 
@@ -29,7 +29,7 @@ A normal connection pool checks out a connection per command. That breaks all of
 - Each workspace tab owns one dedicated database session for its lifetime.
 - A new tab opened from a profile connects a new session, even when another tab already uses the same profile.
 - Closing a tab disconnects its session. There is no connection reuse across tabs.
-- Do not add a connection pool. A pool could only cap tab-owned leases, not reuse them safely; the plain session map is smaller.
+- Do not add a per-command connection pool. Each live tab keeps one dedicated database connection so transactions, temporary tables, session settings, and cancellation stay on one session. Idle connections are pooled after the last holding tab closes.
 - Keep sessions in a Rust map keyed by session ID. Database commands take the session ID.
 - The engine-first connection flow is defined in ADR 0005; its session cap was removed on 2026-11-14.
 - Keep query-active and cancel state per session. Cancelling one tab must not cancel another tab's work.

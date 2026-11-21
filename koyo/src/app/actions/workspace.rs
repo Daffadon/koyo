@@ -1649,11 +1649,16 @@ impl KoyoApp {
                     .profile
                     .clone()
                     .unwrap_or_else(|| connection.profile.clone());
-                // Only one idle session is reusable. Disconnect any older
-                // parked connection instead of keeping invisible sessions.
+                // Idle connections are pooled for reuse. Keep one per profile
+                // so session state cannot leak between two profiles, and cap
+                // the pool so closed tabs cannot leave hidden sessions forever.
                 let previous = std::mem::take(&mut self.parked_connections);
                 for parked in previous {
-                    self.disconnect_session(parked.connection.session_id);
+                    if parked.profile.id == profile.id {
+                        self.disconnect_session(parked.connection.session_id);
+                    } else {
+                        self.parked_connections.push(parked);
+                    }
                 }
                 self.parked_connections.push(LiveConnection {
                     profile,
@@ -1663,6 +1668,10 @@ impl KoyoApp {
                     metadata_groups: self.tabs[index].metadata_groups.clone(),
                     columns: self.tabs[index].columns.clone(),
                 });
+                while self.parked_connections.len() > MAX_PARKED_CONNECTIONS {
+                    let evicted = self.parked_connections.remove(0);
+                    self.disconnect_session(evicted.connection.session_id);
+                }
             }
         }
         self.tabs[index].connection = None;
