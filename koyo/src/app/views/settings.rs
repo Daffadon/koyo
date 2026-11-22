@@ -1,7 +1,7 @@
 use gpui_kit::InteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::{Disableable, Icon, IconName, Size};
+use gpui_kit::component::{Disableable, FocusTrapElement as _, Icon, IconName, Size};
 use gpui_kit::component::{Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -524,6 +524,7 @@ pub(super) fn render_settings(
                 .max_h(relative(0.92))
                 .overflow_hidden()
                 .track_focus(&app.settings_focus)
+                .focus_trap("settings-focus-trap", &app.settings_focus)
                 .rounded_lg()
                 .border_1()
                 .border_color(palette.border)

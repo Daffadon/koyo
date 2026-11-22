@@ -32,6 +32,7 @@ pub(super) fn control_focus(tab_id: u64, key: impl Into<SharedString>, cx: &App)
             .entry((tab_id, key))
             .or_insert_with(|| cx.focus_handle())
             .clone()
+            .tab_stop(true)
     })
 }
 
