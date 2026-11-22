@@ -359,23 +359,27 @@ pub(super) fn empty_state(
     detail: &'static str,
     palette: &Palette,
 ) -> impl IntoElement {
-    v_flex()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .child(
-            gpui_kit::component::Icon::new(IconName::SquareTerminal)
-                .with_size(Size::Large)
-                .text_color(palette.muted),
-        )
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(title),
-        )
-        .child(div().text_xs().text_color(palette.muted).child(detail))
+    v_flex().flex_1().items_center().justify_center().child(
+        v_flex()
+            .items_center()
+            .gap_2()
+            .px_8()
+            .py_6()
+            .rounded_lg()
+            .bg(palette.background.opacity(0.36))
+            .child(
+                gpui_kit::component::Icon::new(IconName::SquareTerminal)
+                    .with_size(Size::Large)
+                    .text_color(palette.muted),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(div().text_xs().text_color(palette.muted).child(detail)),
+    )
 }
 
 pub(super) fn field_label(label: &'static str, palette: &Palette) -> impl IntoElement {
