@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use gpui_kit::component::input::{Enter, IndentInline, InputState, TextareaState};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::component::{ActiveTheme, Theme, ThemeMode};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::database;
@@ -62,6 +61,7 @@ impl KoyoApp {
             status = warning;
         }
         let ai_config_json = saved.ai_config_json.clone();
+        let theme_choice = ThemeChoice::from_persisted(&saved.theme);
         let ai_config_error = AiConfig::parse(&ai_config_json).err().unwrap_or_default();
         let ai_model = AiConfig::parse(&ai_config_json)
             .map(|config| config.model)
@@ -122,6 +122,8 @@ impl KoyoApp {
             ai_settings_open: false,
             settings_open: false,
             settings_focus: cx.focus_handle(),
+            theme_choice,
+            settings_section: SettingsSection::default(),
             notifications: saved.notifications.clone(),
             idle_pool_size: saved.idle_pool_size.min(MAX_IDLE_POOL_SIZE),
             idle_pool_ttl_secs: saved
@@ -157,10 +159,7 @@ impl KoyoApp {
             }
         })
         .detach();
-        if saved.theme == "light" {
-            Theme::change(ThemeMode::Light, None, cx);
-            apply_calm_light_theme(cx);
-        }
+        apply_theme(theme_choice, cx);
         app.restore_workspace(&saved.workspace, window, cx);
         app.ensure_workspace_tab(window, cx);
 
@@ -336,12 +335,7 @@ impl KoyoApp {
 
     fn persisted_state(&mut self, cx: &App) -> PersistedState {
         PersistedState {
-            theme: if cx.theme().is_dark() {
-                "dark"
-            } else {
-                "light"
-            }
-            .into(),
+            theme: self.theme_choice.as_str().into(),
             sidebar_open: self.sidebar_open,
             sidebar_width: self.sidebar_width,
             ai_open: self.ai_open,
@@ -554,16 +548,12 @@ impl KoyoApp {
         }
     }
 
-    pub(crate) fn toggle_theme(&mut self, cx: &mut Context<Self>) {
-        let next = if cx.theme().is_dark() {
-            ThemeMode::Light
-        } else {
-            ThemeMode::Dark
-        };
-        Theme::change(next, None, cx);
-        if !next.is_dark() {
-            apply_calm_light_theme(cx);
+    pub(crate) fn set_theme(&mut self, choice: ThemeChoice, cx: &mut Context<Self>) {
+        if self.theme_choice == choice {
+            return;
         }
+        self.theme_choice = choice;
+        apply_theme(choice, cx);
         self.persist_state(cx);
         cx.notify();
     }

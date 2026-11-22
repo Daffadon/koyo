@@ -15,7 +15,10 @@ use koyo_core::{ProfileStore, SessionManager};
 
 use super::ai::AiThread;
 use super::completion::CompletionCatalog;
-use super::settings::{NotificationPreferences, QueryHistoryEntry, StateSaveQueue};
+use super::settings::{
+    NotificationPreferences, QueryHistoryEntry, SettingsSection, StateSaveQueue,
+};
+use super::theme::ThemeChoice;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -294,6 +297,8 @@ pub(crate) struct KoyoApp {
     pub(crate) ai_settings_open: bool,
     pub(crate) settings_open: bool,
     pub(crate) settings_focus: FocusHandle,
+    pub(crate) theme_choice: ThemeChoice,
+    pub(crate) settings_section: SettingsSection,
     pub(crate) notifications: NotificationPreferences,
     pub(crate) idle_pool_size: usize,
     pub(crate) idle_pool_ttl_secs: u64,

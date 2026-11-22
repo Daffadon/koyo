@@ -58,8 +58,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
 - The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
+- Three themes: Dark, Light, and Kimi no Nawa. Settings groups appearance, notifications, and idle connections in a two-pane dialog.
 - Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
-- Dark theme and a warm, low-contrast light theme.
 - Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
 
 ### AI assistant

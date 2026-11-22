@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use gpui_kit::InteractiveElement;
-use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
@@ -284,7 +283,7 @@ impl KoyoApp {
                             .ml_7()
                             .rounded_md()
                             .when(clickable, |this| this.cursor_pointer())
-                            .when(selected, |this| this.bg(palette.accent_soft))
+                            .when(selected, |this| this.bg(palette.selection))
                             .when(!selected && clickable, |this| {
                                 this.hover(|style| style.bg(palette.panel))
                             })
@@ -683,7 +682,7 @@ impl KoyoApp {
             .w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
-            .bg(palette.sidebar)
+            .bg(palette.sidebar_gradient)
             .child(
                 div()
                     .flex()
@@ -732,25 +731,6 @@ impl KoyoApp {
                                         this.open_settings(window, cx);
                                     })),
                                 "Settings",
-                            ))
-                            .child(super::widgets::button_tooltip(
-                                "top-tooltip-theme",
-                                Button::new("theme-toggle")
-                                    .ghost()
-                                    .compact()
-                                    .icon(if cx.theme().is_dark() {
-                                        IconName::Sun
-                                    } else {
-                                        IconName::Moon
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.toggle_theme(cx);
-                                    })),
-                                if cx.theme().is_dark() {
-                                    "Light theme"
-                                } else {
-                                    "Dark theme"
-                                },
                             ))
                             .child(super::widgets::button_tooltip(
                                 "top-tooltip-collapse-sidebar",

@@ -12,6 +12,34 @@ const STATE_FILE: &str = "state.enc";
 const LEGACY_STATE_FILE: &str = "state.json";
 pub(crate) const HISTORY_LIMIT: usize = 100;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SettingsSection {
+    #[default]
+    Appearance,
+    Notifications,
+    Connections,
+}
+
+impl SettingsSection {
+    pub(crate) const ALL: [Self; 3] = [Self::Appearance, Self::Notifications, Self::Connections];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Appearance => "Appearance",
+            Self::Notifications => "Notifications",
+            Self::Connections => "Connections",
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Appearance => "Pick the palette for the workspace, tables, and chrome.",
+            Self::Notifications => "Choose which events show a toast.",
+            Self::Connections => "Set how long clean sessions wait for reuse.",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct PersistedState {
@@ -327,7 +355,8 @@ fn default_next_ai_thread_id() -> u64 {
 mod tests {
     use super::{
         AiMessage, AiThread, NotificationPreferences, PersistedState, QueryHistoryEntry,
-        SettingsStore, StateSaveQueue, TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker,
+        SettingsSection, SettingsStore, StateSaveQueue, TabSnapshot, WorkspaceSnapshot,
+        spawn_state_save_worker,
     };
     use std::sync::Arc;
 
@@ -567,6 +596,19 @@ mod tests {
 
         assert!(!directory.join("state.json").exists());
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn settings_section_defaults_to_appearance() {
+        assert_eq!(SettingsSection::default(), SettingsSection::Appearance);
+        assert_eq!(
+            SettingsSection::ALL,
+            [
+                SettingsSection::Appearance,
+                SettingsSection::Notifications,
+                SettingsSection::Connections
+            ]
+        );
     }
 
     #[test]

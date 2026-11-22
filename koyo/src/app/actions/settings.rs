@@ -3,7 +3,9 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 
 use super::notifications::ToastCategory;
-use crate::app::{KoyoApp, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MIN_IDLE_POOL_TTL_SECS};
+use crate::app::{
+    KoyoApp, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MIN_IDLE_POOL_TTL_SECS, SettingsSection,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NotificationPreference {
@@ -32,6 +34,17 @@ impl KoyoApp {
         if self.settings_open {
             self.settings_open = false;
             self.root_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_settings_section(
+        &mut self,
+        section: SettingsSection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.settings_section != section {
+            self.settings_section = section;
             cx.notify();
         }
     }

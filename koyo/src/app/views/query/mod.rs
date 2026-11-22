@@ -550,6 +550,7 @@ pub(super) fn render(
                                 div()
                                     .size_full()
                                     .min_h(px(0.0))
+                                    .bg(palette.editor)
                                     .capture_key_down(cx.listener(
                                         move |this, event: &KeyDownEvent, _, cx| {
                                             let modifiers = event.keystroke.modifiers;

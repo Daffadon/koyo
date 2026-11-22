@@ -18,6 +18,8 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+pub(super) const SETTINGS_FOCUS_SCOPE: u64 = u64::MAX;
+
 pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
     matches!(event.keystroke.key.as_str(), "enter" | "space")
 }
@@ -36,7 +38,9 @@ pub(super) fn control_focus(tab_id: u64, key: impl Into<SharedString>, cx: &App)
 pub(super) fn prune_control_focus(app: &KoyoApp) {
     CONTROL_FOCUS.with(|handles| {
         let mut handles = handles.borrow_mut();
-        handles.retain(|(tab_id, _), _| app.tabs.iter().any(|tab| tab.id == *tab_id));
+        handles.retain(|(tab_id, _), _| {
+            *tab_id == SETTINGS_FOCUS_SCOPE || app.tabs.iter().any(|tab| tab.id == *tab_id)
+        });
         if handles.capacity() > handles.len().saturating_mul(4).max(16) {
             handles.shrink_to_fit();
         }
@@ -103,11 +107,13 @@ pub(super) fn top_bar_tooltip(
     tooltip_button(id, button, label, Some(gpui_kit::base::Placement::Top))
 }
 
-/// Brand monogram used in the title bar and sidebar. The mark keeps the
-/// phthalo-green identity in both light and dark themes.
+/// Brand monogram used in the title bar and sidebar. Deep indigo and comet
+/// cyan keep the mark constant across the Dark, Light, and Kimi themes.
 pub(super) fn logo_mark(_palette: &Palette, size: f32) -> impl IntoElement {
-    let green: gpui_kit::Hsla = gpui_kit::rgb(0x123524).into();
-    let cream: gpui_kit::Hsla = gpui_kit::rgb(0xF6F2E7).into();
+    let night: gpui_kit::Hsla = gpui_kit::rgb(0x0B1238).into();
+    let violet: gpui_kit::Hsla = gpui_kit::rgb(0x2A1A5E).into();
+    let cyan: gpui_kit::Hsla = gpui_kit::rgb(0x5FE7FF).into();
+    let edge: gpui_kit::Hsla = gpui_kit::rgb(0x3B4C9E).into();
     div()
         .size(px(size))
         .flex_none()
@@ -115,8 +121,14 @@ pub(super) fn logo_mark(_palette: &Palette, size: f32) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded_md()
-        .bg(green)
-        .text_color(cream)
+        .border_1()
+        .border_color(edge)
+        .bg(linear_gradient(
+            135.0,
+            linear_color_stop(night, 0.0),
+            linear_color_stop(violet, 1.0),
+        ))
+        .text_color(cyan)
         .text_size(px(size * 0.46))
         .font_weight(FontWeight::BOLD)
         .child("KY")

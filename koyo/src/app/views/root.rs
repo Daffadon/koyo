@@ -76,7 +76,7 @@ impl Render for KoyoApp {
         });
 
         let titlebar = TitleBar::new()
-            .bg(palette.sidebar)
+            .bg(palette.sidebar_gradient)
             .border_color(palette.sidebar_border)
             .child(
                 div()
@@ -105,7 +105,7 @@ impl Render for KoyoApp {
             .size_full()
             .track_focus(&self.root_focus)
             .key_context("Koyo")
-            .bg(palette.background)
+            .bg(palette.canvas)
             .text_color(palette.foreground)
             .when(show_custom_titlebar, |this| this.child(titlebar))
             .child(

@@ -281,7 +281,7 @@ impl KoyoApp {
             .min_h(px(0.0))
             .when(split != Some(SplitAxis::Horizontal), |this| this.h_full())
             .when(split == Some(SplitAxis::Horizontal), |this| this.w_full())
-            .bg(palette.background)
+            .bg(palette.canvas)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
