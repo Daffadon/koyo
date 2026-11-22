@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use gpui_kit::component::{ActiveTheme, Theme, ThemeMode, ThemeToken};
 use gpui_kit::*;
@@ -42,7 +42,7 @@ impl ThemeChoice {
         match self {
             Self::Dark => "Black surfaces with the comet action gradient.",
             Self::Light => "Pale twilight surfaces with a twilight blue action color.",
-            Self::Kimi => "Black canvas with twilight color rising from below.",
+            Self::Kimi => "Black canvas with a twilight data-pattern backdrop.",
         }
     }
 
@@ -65,10 +65,16 @@ impl ThemeChoice {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Aurora {
-    pub teal: gpui_kit::Background,
-    pub pink: gpui_kit::Background,
+/// Generated 1920x1080 backdrop: black sky over a wavy digit field.
+static KIMI_AURORA: LazyLock<Arc<gpui_kit::Image>> = LazyLock::new(|| {
+    Arc::new(gpui_kit::Image::from_bytes(
+        gpui_kit::ImageFormat::Png,
+        include_bytes!("../../assets/kimi-aurora.png").to_vec(),
+    ))
+});
+
+pub(crate) fn kimi_aurora() -> gpui_kit::ImageSource {
+    gpui_kit::ImageSource::Image(KIMI_AURORA.clone())
 }
 
 #[derive(Clone, Copy)]
@@ -91,7 +97,6 @@ pub(crate) struct Palette {
     pub sidebar_gradient: gpui_kit::Background,
     pub selection: gpui_kit::Background,
     pub editor: gpui_kit::Background,
-    pub aurora: Option<Aurora>,
 }
 
 pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
@@ -114,23 +119,37 @@ pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
         canvas: match choice {
             ThemeChoice::Dark => gradient(180.0, theme.background, tone(0x0A0A0A)),
             ThemeChoice::Light => gradient(160.0, theme.background, theme.accent),
-            ThemeChoice::Kimi => gradient(180.0, theme.background, theme.accent),
-        },
-        sidebar_gradient: gradient(180.0, theme.sidebar, theme.background),
-        selection: gradient(135.0, theme.accent, theme.background),
-        editor: match choice {
-            ThemeChoice::Dark => gradient(180.0, theme.background, tone(0x0A0A0A)),
-            ThemeChoice::Light => gradient(160.0, theme.secondary, theme.accent),
             ThemeChoice::Kimi => gradient(
                 180.0,
                 tone(0x000000).opacity(0.0),
                 tone(0x000000).opacity(0.0),
             ),
         },
-        aurora: (choice == ThemeChoice::Kimi).then(|| Aurora {
-            teal: gradient(180.0, tone(0x0B5B66).opacity(0.0), tone(0x0B5B66)),
-            pink: gradient(160.0, tone(0x6A1F63).opacity(0.0), tone(0x6A1F63)),
-        }),
+        sidebar_gradient: match choice {
+            ThemeChoice::Kimi => gradient(
+                180.0,
+                tone(0x000000).opacity(0.80),
+                tone(0x000000).opacity(0.55),
+            ),
+            _ => gradient(180.0, theme.sidebar, theme.background),
+        },
+        selection: match choice {
+            ThemeChoice::Kimi => gradient(
+                135.0,
+                tone(0x2A1A5E).opacity(0.92),
+                tone(0x000000).opacity(0.35),
+            ),
+            _ => gradient(135.0, theme.accent, theme.background),
+        },
+        editor: match choice {
+            ThemeChoice::Dark => gradient(180.0, theme.background, tone(0x0A0A0A)),
+            ThemeChoice::Light => gradient(160.0, theme.secondary, theme.accent),
+            ThemeChoice::Kimi => gradient(
+                180.0,
+                tone(0x000000).opacity(0.28),
+                tone(0x000000).opacity(0.28),
+            ),
+        },
     }
 }
 
@@ -547,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             ThemeChoice::Kimi.description(),
-            "Black canvas with twilight color rising from below."
+            "Black canvas with a twilight data-pattern backdrop."
         );
     }
 }

@@ -23,6 +23,18 @@ impl Render for KoyoApp {
         self.apply_pending_starters(window, cx);
 
         let palette = palette(self.theme_choice, cx);
+        let aurora = (self.theme_choice == ThemeChoice::Kimi).then(|| {
+            div()
+                .absolute()
+                .inset_0()
+                .child(img(kimi_aurora()).size_full().object_fit(ObjectFit::Cover))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.10)),
+                )
+        });
         let show_custom_titlebar = !cfg!(target_os = "linux")
             || matches!(window.window_decorations(), Decorations::Client { .. });
         let dialog = if let Some(dialog) = self.dialog.as_ref() {
@@ -100,6 +112,7 @@ impl Render for KoyoApp {
             );
 
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
@@ -107,6 +120,7 @@ impl Render for KoyoApp {
             .key_context("Koyo")
             .bg(palette.canvas)
             .text_color(palette.foreground)
+            .when_some(aurora, |this, aurora| this.child(aurora))
             .when(show_custom_titlebar, |this| this.child(titlebar))
             .child(
                 div()

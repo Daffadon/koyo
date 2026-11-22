@@ -292,10 +292,6 @@ impl KoyoApp {
             .on_drop::<TabDrag>(cx.listener(move |this, drag: &TabDrag, _, cx| {
                 this.move_tab_to_pane(drag.tab_id, pane, cx);
             }))
-            .when_some(palette.aurora, |this, aurora| {
-                this.child(div().absolute().inset_0().bg(aurora.teal).opacity(0.55))
-                    .child(div().absolute().inset_0().bg(aurora.pink).opacity(0.35))
-            })
             .child(
                 h_flex()
                     .w_full()
