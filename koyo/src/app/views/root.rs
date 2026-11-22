@@ -22,7 +22,7 @@ impl Render for KoyoApp {
         widgets::prune_control_focus(self);
         self.apply_pending_starters(window, cx);
 
-        let palette = palette(cx);
+        let palette = palette(self.theme_choice, cx);
         let show_custom_titlebar = !cfg!(target_os = "linux")
             || matches!(window.window_decorations(), Decorations::Client { .. });
         let dialog = if let Some(dialog) = self.dialog.as_ref() {

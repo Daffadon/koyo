@@ -281,6 +281,7 @@ impl KoyoApp {
             .min_h(px(0.0))
             .when(split != Some(SplitAxis::Horizontal), |this| this.h_full())
             .when(split == Some(SplitAxis::Horizontal), |this| this.w_full())
+            .relative()
             .bg(palette.canvas)
             .on_mouse_down(
                 MouseButton::Left,
@@ -291,6 +292,10 @@ impl KoyoApp {
             .on_drop::<TabDrag>(cx.listener(move |this, drag: &TabDrag, _, cx| {
                 this.move_tab_to_pane(drag.tab_id, pane, cx);
             }))
+            .when_some(palette.aurora, |this, aurora| {
+                this.child(div().absolute().inset_0().bg(aurora.teal).opacity(0.55))
+                    .child(div().absolute().inset_0().bg(aurora.pink).opacity(0.35))
+            })
             .child(
                 h_flex()
                     .w_full()

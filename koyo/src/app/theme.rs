@@ -40,29 +40,35 @@ impl ThemeChoice {
 
     pub(crate) fn description(self) -> &'static str {
         match self {
-            Self::Dark => "Deep blue night surfaces with an indigo action color.",
+            Self::Dark => "Black surfaces with the comet action gradient.",
             Self::Light => "Pale twilight surfaces with a twilight blue action color.",
-            Self::Kimi => "Twilight sky, comet cyan, and cloud lilac.",
+            Self::Kimi => "Black canvas with twilight color rising from below.",
         }
     }
 
     pub(crate) fn preview_colors(self) -> [gpui_kit::Hsla; 3] {
         let colors = match self {
-            Self::Dark => [0x0A1030, 0x0C1338, 0x7C9BFF],
+            Self::Dark => [0x050505, 0x080808, 0x5FE7FF],
             Self::Light => [0xF4F2FC, 0xECE9F7, 0x2E55C7],
-            Self::Kimi => [0x060A24, 0x090F32, 0x5FE7FF],
+            Self::Kimi => [0x000000, 0x05050C, 0x5FE7FF],
         };
         colors.map(|hex| gpui_kit::rgb(hex).into())
     }
 
     pub(crate) fn preview_gradient(self) -> [gpui_kit::Hsla; 2] {
         let colors = match self {
-            Self::Dark => [0x7C9BFF, 0xB18CFF],
+            Self::Dark => [0x5FE7FF, 0xA78BFA],
             Self::Light => [0x2E55C7, 0x6B5CE7],
             Self::Kimi => [0x5FE7FF, 0xFF6BD6],
         };
         colors.map(|hex| gpui_kit::rgb(hex).into())
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Aurora {
+    pub teal: gpui_kit::Background,
+    pub pink: gpui_kit::Background,
 }
 
 #[derive(Clone, Copy)]
@@ -85,9 +91,10 @@ pub(crate) struct Palette {
     pub sidebar_gradient: gpui_kit::Background,
     pub selection: gpui_kit::Background,
     pub editor: gpui_kit::Background,
+    pub aurora: Option<Aurora>,
 }
 
-pub(crate) fn palette(cx: &App) -> Palette {
+pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
     let theme = cx.theme();
     Palette {
         background: theme.background,
@@ -104,10 +111,26 @@ pub(crate) fn palette(cx: &App) -> Palette {
         success: theme.success,
         warning: theme.warning,
         danger: theme.danger,
-        canvas: gradient(160.0, theme.background, theme.accent),
+        canvas: match choice {
+            ThemeChoice::Dark => gradient(180.0, theme.background, tone(0x0A0A0A)),
+            ThemeChoice::Light => gradient(160.0, theme.background, theme.accent),
+            ThemeChoice::Kimi => gradient(180.0, theme.background, theme.accent),
+        },
         sidebar_gradient: gradient(180.0, theme.sidebar, theme.background),
         selection: gradient(135.0, theme.accent, theme.background),
-        editor: gradient(160.0, theme.secondary, theme.accent),
+        editor: match choice {
+            ThemeChoice::Dark => gradient(180.0, theme.background, tone(0x0A0A0A)),
+            ThemeChoice::Light => gradient(160.0, theme.secondary, theme.accent),
+            ThemeChoice::Kimi => gradient(
+                180.0,
+                tone(0x000000).opacity(0.0),
+                tone(0x000000).opacity(0.0),
+            ),
+        },
+        aurora: (choice == ThemeChoice::Kimi).then(|| Aurora {
+            teal: gradient(180.0, tone(0x0B5B66).opacity(0.0), tone(0x0B5B66)),
+            pink: gradient(160.0, tone(0x6A1F63).opacity(0.0), tone(0x6A1F63)),
+        }),
     }
 }
 
@@ -138,53 +161,53 @@ fn gradient(angle: f32, from: gpui_kit::Hsla, to: gpui_kit::Hsla) -> gpui_kit::B
 
 fn apply_dark(theme: &mut Theme) {
     let colors = &mut theme.colors;
-    colors.background = tone(0x0A1030);
-    colors.foreground = tone(0xE9ECFF);
-    colors.muted = tone(0x1A224E);
-    colors.muted_foreground = tone(0xA4ADD9);
-    colors.border = tone(0x2A356B);
+    colors.background = tone(0x050505);
+    colors.foreground = tone(0xF2F2F2);
+    colors.muted = tone(0x141414);
+    colors.muted_foreground = tone(0xA8A8A8);
+    colors.border = tone(0x2A2A2A);
 
-    colors.sidebar = tone(0x0C1338);
-    colors.sidebar_border = tone(0x2A356B);
-    colors.sidebar_foreground = tone(0xE9ECFF);
-    colors.sidebar_accent = tone(0x1E285C);
-    colors.sidebar_accent_foreground = tone(0x9CEBFF);
+    colors.sidebar = tone(0x080808);
+    colors.sidebar_border = tone(0x242424);
+    colors.sidebar_foreground = tone(0xF2F2F2);
+    colors.sidebar_accent = tone(0x1E1830);
+    colors.sidebar_accent_foreground = tone(0x8FF0FF);
 
-    colors.secondary = tone(0x111843);
-    colors.secondary_foreground = tone(0xE9ECFF);
-    colors.secondary_hover = tone(0x182052);
-    colors.secondary_active = tone(0x1F295F);
+    colors.secondary = tone(0x101010);
+    colors.secondary_foreground = tone(0xF2F2F2);
+    colors.secondary_hover = tone(0x181818);
+    colors.secondary_active = tone(0x202020);
 
-    colors.primary = tone(0x7C9BFF);
-    colors.primary_hover = tone(0x9DB4FF);
-    colors.primary_active = tone(0x6486F0);
-    colors.primary_foreground = tone(0x07102E);
-    colors.accent = tone(0x1B2454);
-    colors.accent_foreground = tone(0xDDE4FF);
-    colors.input = tone(0x6F7BB8);
-    colors.ring = tone(0x9F8CFF);
-    colors.caret = tone(0x7C9BFF);
+    colors.primary = tone(0x5FE7FF);
+    colors.primary_hover = tone(0x8AF0FF);
+    colors.primary_active = tone(0x35CBE8);
+    colors.primary_foreground = tone(0x04122E);
+    colors.accent = tone(0x1E1830);
+    colors.accent_foreground = tone(0xF3D9FF);
+    colors.input = tone(0x707070);
+    colors.ring = tone(0xA78BFA);
+    colors.caret = tone(0x5FE7FF);
 
-    colors.button = tone(0x141C48);
-    colors.button_hover = tone(0x1B2457);
-    colors.button_active = tone(0x222D66);
-    colors.button_foreground = tone(0xE9ECFF);
-    colors.button_primary = tone(0x7C9BFF);
-    colors.button_primary_hover = tone(0x9DB4FF);
-    colors.button_primary_active = tone(0x6486F0);
-    colors.button_primary_foreground = tone(0x07102E);
-    colors.button_secondary = tone(0x182052);
-    colors.button_secondary_hover = tone(0x1F295F);
-    colors.button_secondary_active = tone(0x263374);
-    colors.button_secondary_foreground = tone(0xDDE4FF);
+    colors.button = tone(0x141414);
+    colors.button_hover = tone(0x1C1C1C);
+    colors.button_active = tone(0x242424);
+    colors.button_foreground = tone(0xF2F2F2);
+    colors.button_primary = tone(0x5FE7FF);
+    colors.button_primary_hover = tone(0x8AF0FF);
+    colors.button_primary_active = tone(0x35CBE8);
+    colors.button_primary_foreground = tone(0x04122E);
+    colors.button_secondary = tone(0x181818);
+    colors.button_secondary_hover = tone(0x202020);
+    colors.button_secondary_active = tone(0x282828);
+    colors.button_secondary_foreground = tone(0xE6E2FF);
 
-    colors.popover = tone(0x0F163D);
-    colors.popover_foreground = tone(0xE9ECFF);
-    colors.list = tone(0x0D153B);
-    colors.list_hover = tone(0x161F4E);
-    colors.list_active = tone(0x1D285F);
-    colors.list_even = tone(0x0F173E);
-    colors.list_head = tone(0x121C49);
+    colors.popover = tone(0x0A0A0A);
+    colors.popover_foreground = tone(0xF2F2F2);
+    colors.list = tone(0x0A0A0A);
+    colors.list_hover = tone(0x181818);
+    colors.list_active = tone(0x242424);
+    colors.list_even = tone(0x0C0C0C);
+    colors.list_head = tone(0x111111);
 
     colors.success = tone(0x6EE7B7);
     colors.success_foreground = tone(0x06251A);
@@ -192,37 +215,37 @@ fn apply_dark(theme: &mut Theme) {
     colors.warning_foreground = tone(0x2A1C00);
     colors.danger = tone(0xFF6B8A);
     colors.danger_foreground = tone(0x2A0710);
-    colors.link = tone(0x9DB4FF);
-    colors.link_hover = tone(0xBDCCFF);
-    colors.link_active = tone(0x7C9BFF);
+    colors.link = tone(0x8CEBFF);
+    colors.link_hover = tone(0xB5F4FF);
+    colors.link_active = tone(0x5FE7FF);
 
-    colors.scrollbar = tone(0x0A1030);
-    colors.scrollbar_thumb = tone(0x2A356B);
-    colors.scrollbar_thumb_hover = tone(0x3B478A);
+    colors.scrollbar = tone(0x050505);
+    colors.scrollbar_thumb = tone(0x2A2A2A);
+    colors.scrollbar_thumb_hover = tone(0x3A3A3A);
 
-    colors.title_bar = tone(0x0C1338);
-    colors.title_bar_border = tone(0x2A356B);
-    colors.status_bar = tone(0x0C1338);
-    colors.status_bar_border = tone(0x2A356B);
-    colors.tab_bar = tone(0x0C1338);
-    colors.tab = tone(0x111843);
-    colors.tab_active = tone(0x1D285F);
-    colors.tab_active_foreground = tone(0xF2EEFF);
-    colors.tab_foreground = tone(0xA4ADD9);
+    colors.title_bar = tone(0x080808);
+    colors.title_bar_border = tone(0x242424);
+    colors.status_bar = tone(0x080808);
+    colors.status_bar_border = tone(0x242424);
+    colors.tab_bar = tone(0x080808);
+    colors.tab = tone(0x101010);
+    colors.tab_active = tone(0x242424);
+    colors.tab_active_foreground = tone(0xF2F2F2);
+    colors.tab_foreground = tone(0xA8A8A8);
 
-    colors.table = tone(0x0D153B);
-    colors.table_hover = tone(0x161F4E);
-    colors.table_active = tone(0x1D285F);
-    colors.table_even = tone(0x0F173E);
-    colors.table_head = tone(0x121C49);
-    colors.table_head_foreground = tone(0xDDE4FF);
-    colors.table_foot = tone(0x0C1338);
-    colors.table_foot_foreground = tone(0xA4ADD9);
-    colors.table_row_border = tone(0x20295A);
+    colors.table = tone(0x0A0A0A);
+    colors.table_hover = tone(0x181818);
+    colors.table_active = tone(0x242424);
+    colors.table_even = tone(0x0C0C0C);
+    colors.table_head = tone(0x111111);
+    colors.table_head_foreground = tone(0xDDDDDD);
+    colors.table_foot = tone(0x080808);
+    colors.table_foot_foreground = tone(0xA8A8A8);
+    colors.table_row_border = tone(0x242424);
 
-    colors.switch = tone(0x2A356B);
-    colors.switch_thumb = tone(0xF2EEFF);
-    colors.selection = tone(0x2A3C8A);
+    colors.switch = tone(0x2A2A2A);
+    colors.switch_thumb = tone(0xF2F2F2);
+    colors.selection = tone(0x3A2A5A);
 
     let primary = colors.primary;
     let primary_hover = colors.primary_hover;
@@ -230,7 +253,7 @@ fn apply_dark(theme: &mut Theme) {
     let tab_bar = colors.tab_bar;
     let tab_active = colors.tab_active;
     theme.tokens.button_primary =
-        ThemeToken::new(primary, gradient(135.0, primary, tone(0xB18CFF)));
+        ThemeToken::new(primary, gradient(135.0, primary, tone(0xA78BFA)));
     theme.tokens.button_primary_hover = ThemeToken::new(
         primary_hover,
         gradient(135.0, primary_hover, tone(0xC4A6FF)),
@@ -239,18 +262,18 @@ fn apply_dark(theme: &mut Theme) {
         primary_active,
         gradient(135.0, primary_active, tone(0x9A77F0)),
     );
-    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x0A1030)));
+    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x050505)));
     theme.tokens.tab_active =
-        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x0A1030)));
+        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x050505)));
 
     let highlight = Arc::make_mut(&mut theme.highlight_theme);
-    highlight.style.editor_background = Some(tone(0x0D153B).opacity(0.72));
-    highlight.style.editor_foreground = Some(tone(0xE9ECFF));
-    highlight.style.editor_active_line = Some(tone(0x161F4E).opacity(0.55));
-    highlight.style.editor_line_number = Some(tone(0xA4ADD9));
-    highlight.style.editor_active_line_number = Some(tone(0xE9ECFF));
-    highlight.style.editor_invisible = Some(tone(0x6F7BB8));
-    highlight.style.editor_gutter_background = Some(tone(0x0D153B).opacity(0.45));
+    highlight.style.editor_background = Some(tone(0x000000).opacity(0.85));
+    highlight.style.editor_foreground = Some(tone(0xF2F2F2));
+    highlight.style.editor_active_line = Some(tone(0x1A1A1A).opacity(0.60));
+    highlight.style.editor_line_number = Some(tone(0x8A8A8A));
+    highlight.style.editor_active_line_number = Some(tone(0xF2F2F2));
+    highlight.style.editor_invisible = Some(tone(0x707070));
+    highlight.style.editor_gutter_background = Some(tone(0x000000).opacity(0.50));
 }
 
 fn apply_light(theme: &mut Theme) {
@@ -372,22 +395,22 @@ fn apply_light(theme: &mut Theme) {
 
 fn apply_kimi(theme: &mut Theme) {
     let colors = &mut theme.colors;
-    colors.background = tone(0x060A24);
+    colors.background = tone(0x000000);
     colors.foreground = tone(0xF2EEFF);
-    colors.muted = tone(0x161E4A);
-    colors.muted_foreground = tone(0xACB5E6);
-    colors.border = tone(0x2B3470);
+    colors.muted = tone(0x101018);
+    colors.muted_foreground = tone(0xB0B0D0);
+    colors.border = tone(0x252535);
 
-    colors.sidebar = tone(0x090F32);
-    colors.sidebar_border = tone(0x2B3470);
+    colors.sidebar = tone(0x05050C);
+    colors.sidebar_border = tone(0x252535);
     colors.sidebar_foreground = tone(0xECE8FF);
-    colors.sidebar_accent = tone(0x1D2660);
+    colors.sidebar_accent = tone(0x241A4E);
     colors.sidebar_accent_foreground = tone(0x8FF0FF);
 
-    colors.secondary = tone(0x0E1740);
+    colors.secondary = tone(0x0A0A18);
     colors.secondary_foreground = tone(0xF2EEFF);
-    colors.secondary_hover = tone(0x162056);
-    colors.secondary_active = tone(0x1D2868);
+    colors.secondary_hover = tone(0x141428);
+    colors.secondary_active = tone(0x1C1C38);
 
     colors.primary = tone(0x5FE7FF);
     colors.primary_hover = tone(0x8AF0FF);
@@ -399,26 +422,26 @@ fn apply_kimi(theme: &mut Theme) {
     colors.ring = tone(0xA78BFA);
     colors.caret = tone(0x5FE7FF);
 
-    colors.button = tone(0x111A44);
-    colors.button_hover = tone(0x19245A);
-    colors.button_active = tone(0x202C6B);
+    colors.button = tone(0x0C0C18);
+    colors.button_hover = tone(0x161628);
+    colors.button_active = tone(0x202038);
     colors.button_foreground = tone(0xF2EEFF);
     colors.button_primary = tone(0x5FE7FF);
     colors.button_primary_hover = tone(0x8AF0FF);
     colors.button_primary_active = tone(0x35CBE8);
     colors.button_primary_foreground = tone(0x04122E);
-    colors.button_secondary = tone(0x161F4C);
-    colors.button_secondary_hover = tone(0x1E295F);
-    colors.button_secondary_active = tone(0x263374);
+    colors.button_secondary = tone(0x141428);
+    colors.button_secondary_hover = tone(0x1C1C38);
+    colors.button_secondary_active = tone(0x242448);
     colors.button_secondary_foreground = tone(0xE6E2FF);
 
-    colors.popover = tone(0x0C1438);
+    colors.popover = tone(0x07070F);
     colors.popover_foreground = tone(0xF2EEFF);
-    colors.list = tone(0x0B1338);
-    colors.list_hover = tone(0x151F4E);
-    colors.list_active = tone(0x1B275C);
-    colors.list_even = tone(0x0D153C);
-    colors.list_head = tone(0x101A45);
+    colors.list = tone(0x05050C);
+    colors.list_hover = tone(0x141428);
+    colors.list_active = tone(0x1C1C38);
+    colors.list_even = tone(0x080810);
+    colors.list_head = tone(0x0C0C18);
 
     colors.success = tone(0x63E6BE);
     colors.success_foreground = tone(0x04261D);
@@ -430,33 +453,33 @@ fn apply_kimi(theme: &mut Theme) {
     colors.link_hover = tone(0xB5F4FF);
     colors.link_active = tone(0x5FE7FF);
 
-    colors.scrollbar = tone(0x060A24);
-    colors.scrollbar_thumb = tone(0x2B3470);
-    colors.scrollbar_thumb_hover = tone(0x3B478A);
+    colors.scrollbar = tone(0x000000);
+    colors.scrollbar_thumb = tone(0x252535);
+    colors.scrollbar_thumb_hover = tone(0x3A3A5A);
 
-    colors.title_bar = tone(0x090F32);
-    colors.title_bar_border = tone(0x2B3470);
-    colors.status_bar = tone(0x090F32);
-    colors.status_bar_border = tone(0x2B3470);
-    colors.tab_bar = tone(0x090F32);
-    colors.tab = tone(0x0E1740);
-    colors.tab_active = tone(0x1B275C);
+    colors.title_bar = tone(0x05050C);
+    colors.title_bar_border = tone(0x252535);
+    colors.status_bar = tone(0x05050C);
+    colors.status_bar_border = tone(0x252535);
+    colors.tab_bar = tone(0x05050C);
+    colors.tab = tone(0x0A0A18);
+    colors.tab_active = tone(0x1C1C38);
     colors.tab_active_foreground = tone(0xF2EEFF);
-    colors.tab_foreground = tone(0xACB5E6);
+    colors.tab_foreground = tone(0xB0B0D0);
 
-    colors.table = tone(0x0B1338);
-    colors.table_hover = tone(0x151F4E);
-    colors.table_active = tone(0x1B275C);
-    colors.table_even = tone(0x0D153C);
-    colors.table_head = tone(0x101A45);
+    colors.table = tone(0x05050C);
+    colors.table_hover = tone(0x141428);
+    colors.table_active = tone(0x1C1C38);
+    colors.table_even = tone(0x080810);
+    colors.table_head = tone(0x0C0C18);
     colors.table_head_foreground = tone(0xD9D4FF);
-    colors.table_foot = tone(0x090F32);
-    colors.table_foot_foreground = tone(0xACB5E6);
-    colors.table_row_border = tone(0x222A5C);
+    colors.table_foot = tone(0x05050C);
+    colors.table_foot_foreground = tone(0xB0B0D0);
+    colors.table_row_border = tone(0x202038);
 
-    colors.switch = tone(0x2B3470);
+    colors.switch = tone(0x252535);
     colors.switch_thumb = tone(0xF2EEFF);
-    colors.selection = tone(0x2A3C8A);
+    colors.selection = tone(0x3A2A5A);
 
     let primary = colors.primary;
     let primary_hover = colors.primary_hover;
@@ -473,18 +496,18 @@ fn apply_kimi(theme: &mut Theme) {
         primary_active,
         gradient(135.0, primary_active, tone(0xD94FB5)),
     );
-    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x060A24)));
+    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x000000)));
     theme.tokens.tab_active =
-        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x060A24)));
+        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x000000)));
 
     let highlight = Arc::make_mut(&mut theme.highlight_theme);
-    highlight.style.editor_background = Some(tone(0x0B1338).opacity(0.62));
+    highlight.style.editor_background = Some(tone(0x000000).opacity(0.18));
     highlight.style.editor_foreground = Some(tone(0xF2EEFF));
-    highlight.style.editor_active_line = Some(tone(0x151F4E).opacity(0.55));
-    highlight.style.editor_line_number = Some(tone(0xACB5E6));
+    highlight.style.editor_active_line = Some(tone(0x1C1C38).opacity(0.50));
+    highlight.style.editor_line_number = Some(tone(0xB0B0D0));
     highlight.style.editor_active_line_number = Some(tone(0xF2EEFF));
     highlight.style.editor_invisible = Some(tone(0x6E78B5));
-    highlight.style.editor_gutter_background = Some(tone(0x0B1338).opacity(0.45));
+    highlight.style.editor_gutter_background = Some(tone(0x000000).opacity(0.10));
 }
 
 #[cfg(test)]
@@ -516,7 +539,7 @@ mod tests {
     fn descriptions_match_the_contract() {
         assert_eq!(
             ThemeChoice::Dark.description(),
-            "Deep blue night surfaces with an indigo action color."
+            "Black surfaces with the comet action gradient."
         );
         assert_eq!(
             ThemeChoice::Light.description(),
@@ -524,7 +547,7 @@ mod tests {
         );
         assert_eq!(
             ThemeChoice::Kimi.description(),
-            "Twilight sky, comet cyan, and cloud lilac."
+            "Black canvas with twilight color rising from below."
         );
     }
 }
