@@ -123,6 +123,16 @@ impl CompletionProvider for SqlCompletionProvider {
             token_start + token.rfind('.').map(|dot| dot + 1).unwrap_or_default();
 
         let catalog = self.catalog.borrow();
+        let schema_filter = qualifier.as_deref().and_then(|qualifier| {
+            catalog
+                .schemas
+                .iter()
+                .find(|schema| schema.eq_ignore_ascii_case(qualifier))
+                .cloned()
+        });
+        // `schema.` narrows table suggestions to that schema. A real table
+        // alias or table reference still wins and keeps column completion.
+        let schema_table_mode = qualified_ref.is_none() && schema_filter.is_some();
         let mut items = Vec::new();
         let mut seen = BTreeSet::new();
         let column_context = qualified_ref
@@ -211,6 +221,9 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualified_ref.is_none() && !show_context_columns {
             for (schema, table) in &catalog.tables {
+                if !table_allowed_for_schema(schema_filter.as_deref(), schema) {
+                    continue;
+                }
                 let qualified = format!("{schema}.{table}");
                 if matches(table) || matches(&qualified) {
                     push_item(
@@ -239,9 +252,10 @@ impl CompletionProvider for SqlCompletionProvider {
 
         // On manual completion with no prefix, show columns for the table in
         // the current statement instead of every table in the database.
-        if column_context.is_some()
-            || (!query.is_empty() && qualifier.is_none())
-            || token.ends_with('.')
+        if !schema_table_mode
+            && (column_context.is_some()
+                || (!query.is_empty() && qualifier.is_none())
+                || token.ends_with('.'))
         {
             for (schema, table, column) in &catalog.columns {
                 if let Some(table_ref) = &column_context {
@@ -297,6 +311,10 @@ fn table_ref_label(table_ref: &TableRef) -> String {
         Some(schema) => format!("{schema}.{}", table_ref.table),
         None => table_ref.table.clone(),
     }
+}
+
+fn table_allowed_for_schema(schema_filter: Option<&str>, schema: &str) -> bool {
+    schema_filter.is_none_or(|filter| schema.eq_ignore_ascii_case(filter))
 }
 
 fn clean_identifier(value: &str) -> String {
@@ -716,6 +734,14 @@ const SQL_KEYWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_filter_narrows_tables_case_insensitively() {
+        assert!(table_allowed_for_schema(Some("maintenance"), "maintenance"));
+        assert!(table_allowed_for_schema(Some("maintenance"), "MAINTENANCE"));
+        assert!(!table_allowed_for_schema(Some("maintenance"), "public"));
+        assert!(table_allowed_for_schema(None, "public"));
+    }
 
     #[test]
     fn parses_table_aliases() {
