@@ -68,8 +68,8 @@ impl ThemeChoice {
 /// Generated 1920x1080 backdrop: black sky over a wavy digit field.
 static KIMI_AURORA: LazyLock<Arc<gpui_kit::Image>> = LazyLock::new(|| {
     Arc::new(gpui_kit::Image::from_bytes(
-        gpui_kit::ImageFormat::Png,
-        include_bytes!("../../assets/kimi-aurora.png").to_vec(),
+        gpui_kit::ImageFormat::Webp,
+        include_bytes!("../../assets/kimi-aurora.webp").to_vec(),
     ))
 });
 

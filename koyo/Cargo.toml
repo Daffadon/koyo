@@ -5,7 +5,7 @@ description = "Native database client built with GPUI"
 edition = "2024"
 
 [dependencies]
-gpui-kit = { version = "0.9.1", features = ["tree-sitter-sql"] }
+gpui-kit = { version = "0.9.1", features = ["syntect"] }
 koyo-core = { path = "../koyo-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 uuid = "1"
