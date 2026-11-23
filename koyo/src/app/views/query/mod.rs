@@ -484,7 +484,7 @@ pub(super) fn render(
                                 .secondary()
                                 .compact()
                                 .label("Format")
-                                .tooltip("Format SQL; selection formats alone")
+                                .tooltip("Format SQL (Ctrl/⌘+Shift+F); selection formats alone")
                                 .tooltip_show_delay(std::time::Duration::from_millis(120))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.format_query(tab_id, window, cx);

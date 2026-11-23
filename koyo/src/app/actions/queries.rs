@@ -24,6 +24,17 @@ impl KoyoApp {
         self.run_query(tab_id, cx);
     }
 
+    pub(crate) fn format_active_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.focused_index().and_then(|index| self.tabs.get(index)) else {
+            return;
+        };
+        if !matches!(tab.body, TabBody::Query(_)) {
+            return;
+        }
+        let tab_id = tab.id;
+        self.format_query(tab_id, window, cx);
+    }
+
     pub(crate) fn format_query(
         &mut self,
         tab_id: u64,

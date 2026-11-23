@@ -66,26 +66,28 @@ pub(super) fn result_json(
 }
 
 fn json_result_lines(result: &QueryResultSet) -> Vec<String> {
-    let mut lines = Vec::with_capacity(result.rows.len() + 2);
+    let mut lines = Vec::with_capacity(result.rows.len() * (result.columns.len() + 2) + 2);
     lines.push("[".to_string());
     for (row_index, row) in result.rows.iter().enumerate() {
-        let mut line = String::from("  {");
+        lines.push("  {".to_string());
         for (column_index, column) in result.columns.iter().enumerate() {
-            if column_index > 0 {
-                line.push_str(", ");
-            }
+            let mut line = String::from("    ");
             push_json_string(&mut line, column);
             line.push_str(": ");
             match row.get(column_index).and_then(Option::as_deref) {
                 Some(value) => push_json_string(&mut line, value),
                 None => line.push_str("null"),
             }
+            if column_index + 1 < result.columns.len() {
+                line.push(',');
+            }
+            lines.push(line);
         }
-        line.push('}');
-        if row_index + 1 < result.rows.len() {
-            line.push(',');
-        }
-        lines.push(line);
+        lines.push(if row_index + 1 < result.rows.len() {
+            "  },".to_string()
+        } else {
+            "  }".to_string()
+        });
     }
     lines.push("]".to_string());
     lines
@@ -140,7 +142,15 @@ mod tests {
                 vec![Some("2"), Some("back\\slash"), Some("ok")],
             ],
         );
-        let text = json_result_lines(&result).join("\n");
+        let lines = json_result_lines(&result);
+        assert_eq!(lines.first().map(String::as_str), Some("["));
+        assert_eq!(lines.get(1).map(String::as_str), Some("  {"));
+        assert!(
+            lines.iter().any(|line| line == "    \"missing\": null"),
+            "NULL cells must render as JSON null"
+        );
+        assert_eq!(lines.last().map(String::as_str), Some("]"));
+        let text = lines.join("\n");
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         let rows = parsed.as_array().expect("top-level array");
         assert_eq!(rows.len(), 2);
@@ -149,6 +159,14 @@ mod tests {
         assert!(rows[0]["missing"].is_null());
         assert_eq!(rows[1]["note"], "back\\slash");
         assert_eq!(rows[1]["missing"], "ok");
+    }
+
+    #[test]
+    fn json_view_keeps_empty_strings_distinct_from_null() {
+        let result = result(&["empty", "missing"], vec![vec![Some(""), None]]);
+        let lines = json_result_lines(&result);
+        assert!(lines.iter().any(|line| line == "    \"empty\": \"\","));
+        assert!(lines.iter().any(|line| line == "    \"missing\": null"));
     }
 
     #[test]

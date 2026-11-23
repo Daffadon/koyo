@@ -123,9 +123,7 @@ impl KoyoApp {
                             let Some(index) = this.tab_index(same_session_id) else {
                                 continue;
                             };
-                            if same_session_id == tab_id {
-                                this.tabs[index].expanded.clear();
-                            }
+                            // Keep the explorer expansion state across refreshes.
                             this.tabs[index].tables = tables.clone();
                             this.tabs[index].schema_objects = objects.clone();
                             this.tabs[index].metadata_groups = metadata.clone();

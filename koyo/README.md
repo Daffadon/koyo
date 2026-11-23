@@ -17,6 +17,7 @@ The UI uses GPUI Kit components:
 - `Icon` for built-in monochrome icons.
 - Collapsible explorer, per-pane tab lists, draggable split panes, resizable and collapsible result panes.
 - Resizable, collapsible right-side AI chat panel with multiple threads, stop, compact-context, streaming Markdown, and OpenAI-compatible JSON provider settings.
+- **Ctrl+Shift+F** / **Cmd+Shift+F** formats the active query; a selection formats alone.
 - **Ctrl+B** / **Cmd+B** toggles the left sidebar; **Ctrl+Alt+B** / **Cmd+Alt+B** toggles the AI panel.
 - Metadata explorer for tables, views, functions, and triggers, plus a foreign-key relation view per table.
 
