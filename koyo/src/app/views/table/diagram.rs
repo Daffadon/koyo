@@ -1,8 +1,10 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
+use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::{ColumnInfo, Engine, ForeignKeyInfo, TablePage};
 
 use crate::app::*;
@@ -182,12 +184,21 @@ fn relation_ref(
     schema: &str,
     table: &str,
     column: &str,
+    show_schema: bool,
     current: bool,
     palette: &Palette,
     mono: &SharedString,
+    index: usize,
 ) -> AnyElement {
+    let full = format!("{schema}.{table}.{column}");
+    let label = if show_schema {
+        format!("{schema}.{table}")
+    } else {
+        table.to_string()
+    };
     h_flex()
-        .max_w(px(245.0))
+        .id(SharedString::from(format!("relationship-{index}-{full}")))
+        .max_w(px(320.0))
         .min_w(px(0.0))
         .items_center()
         .gap_1()
@@ -197,15 +208,36 @@ fn relation_ref(
         .when(current, |this| {
             this.bg(palette.accent_soft).text_color(palette.accent)
         })
+        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
         .child(
-            div()
+            v_flex()
                 .min_w(px(0.0))
-                .text_xs()
-                .font_family(mono.clone())
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .child(format!("{schema}.{table}.{column}")),
+                .gap_0p5()
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(if current {
+                            palette.accent
+                        } else {
+                            palette.muted
+                        })
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(column.to_string()),
+                ),
         )
         .when(current, |this| {
             this.child(
@@ -225,6 +257,7 @@ fn relationship_row(
     table: &TableTab,
     palette: &Palette,
     mono: &SharedString,
+    index: usize,
     first: bool,
 ) -> AnyElement {
     let outgoing = fk.schema == table.schema && fk.table == table.table;
@@ -246,6 +279,7 @@ fn relationship_row(
     } else {
         (fk.schema.as_str(), fk.table.as_str(), fk.column.as_str())
     };
+    let show_schema = !from_schema.eq_ignore_ascii_case(to_schema);
 
     h_flex()
         .items_center()
@@ -259,9 +293,11 @@ fn relationship_row(
             from_schema,
             from_table,
             from_column,
+            show_schema,
             outgoing,
             palette,
             mono,
+            index,
         ))
         .child(
             Icon::new(IconName::ChevronRight)
@@ -269,12 +305,23 @@ fn relationship_row(
                 .text_color(palette.muted),
         )
         .child(relation_ref(
-            to_schema, to_table, to_column, !outgoing, palette, mono,
+            to_schema,
+            to_table,
+            to_column,
+            show_schema,
+            !outgoing,
+            palette,
+            mono,
+            index,
         ))
         .child(div().flex_1().min_w(px(0.0)))
         .when(!fk.constraint_name.is_empty(), |this| {
+            let constraint = fk.constraint_name.clone();
             this.child(
                 div()
+                    .id(SharedString::from(format!(
+                        "relationship-constraint-{index}"
+                    )))
                     .max_w(px(180.0))
                     .flex_shrink_0()
                     .text_right()
@@ -284,6 +331,7 @@ fn relationship_row(
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
+                    .tooltip(move |window, cx| Tooltip::new(constraint.clone()).build(window, cx))
                     .child(fk.constraint_name.clone()),
             )
         })
@@ -342,7 +390,14 @@ fn relationships_panel(table: &TableTab, palette: &Palette, mono: &SharedString)
         );
     } else {
         for (index, fk) in table.foreign_keys.iter().enumerate() {
-            panel = panel.child(relationship_row(fk, table, palette, mono, index == 0));
+            panel = panel.child(relationship_row(
+                fk,
+                table,
+                palette,
+                mono,
+                index,
+                index == 0,
+            ));
         }
     }
 
