@@ -115,6 +115,8 @@ pub(super) fn render(
         .flex_1()
         .min_h(px(0.0))
         .overflow_hidden()
+        // Data surfaces stay opaque; the theme backdrop belongs behind chrome.
+        .bg(palette.background)
         .child(
             h_flex()
                 .w_full()

@@ -60,6 +60,7 @@ pub(super) fn result_json(
         .overflow_scroll()
         .restrict_scroll_to_axis()
         .track_scroll(&scroll_handle)
+        .bg(palette.background)
         .child(rows)
         .font_family(mono.clone())
         .into_any_element()

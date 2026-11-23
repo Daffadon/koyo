@@ -543,6 +543,7 @@ pub(super) fn render(
                 .py_2()
                 .border_t_1()
                 .border_color(palette.border)
+                .bg(palette.background)
                 .text_xs()
                 .text_color(palette.muted)
                 .child(div().font_family(footer_mono.clone()).child(format!(
