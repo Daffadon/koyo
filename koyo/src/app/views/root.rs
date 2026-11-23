@@ -6,8 +6,8 @@ use gpui_kit::{CursorStyle, InteractiveElement};
 use super::{connection, query, table, widgets};
 use crate::app::*;
 use crate::{
-    CompleteFilter, DeleteLine, DuplicateLine, FormatQuery, MoveLineDown, MoveLineUp, RefreshTable,
-    RunQuery, ToggleAi, ToggleComment, ToggleSidebar,
+    CompleteFilter, DeleteLine, DuplicateLine, FormatQuery, MoveLineDown, MoveLineUp, MoveTabLeft,
+    MoveTabRight, RefreshTable, RunQuery, ToggleAi, ToggleComment, ToggleSidebar,
 };
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
@@ -202,6 +202,12 @@ impl Render for KoyoApp {
             }))
             .on_action(cx.listener(|this, _: &FormatQuery, window, cx| {
                 this.format_active_query(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabLeft, _, cx| {
+                this.move_active_tab(-1, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveTabRight, _, cx| {
+                this.move_active_tab(1, cx);
             }))
             .on_action(cx.listener(|this, _: &RefreshTable, window, cx| {
                 this.refresh_active_table(window, cx);

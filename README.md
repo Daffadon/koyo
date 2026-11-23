@@ -56,6 +56,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
+- Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag a tab's icon onto another tab. Drag onto another pane to move it there.
 - The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
 - Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a data-pattern twilight backdrop. Settings groups appearance, notifications, and idle connections in a two-pane dialog.

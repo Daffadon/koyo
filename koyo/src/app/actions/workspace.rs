@@ -1920,6 +1920,89 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn reorder_tab(
+        &mut self,
+        tab_id: u64,
+        target_id: u64,
+        pane: Pane,
+        cx: &mut Context<Self>,
+    ) {
+        if tab_id == target_id || (pane == Pane::Secondary && self.split.is_none()) {
+            return;
+        }
+        let source = if self.primary_tabs.contains(&tab_id) {
+            Some(Pane::Primary)
+        } else if self.secondary_tabs.contains(&tab_id) {
+            Some(Pane::Secondary)
+        } else {
+            None
+        };
+        let Some(source) = source else {
+            return;
+        };
+        let Some(mut target_index) = self
+            .pane_tab_ids(pane)
+            .iter()
+            .position(|id| *id == target_id)
+        else {
+            return;
+        };
+        match source {
+            Pane::Primary => {
+                self.primary_tabs.retain(|id| *id != tab_id);
+                if self.primary_active == tab_id {
+                    self.primary_active = self.primary_tabs.first().copied().unwrap_or(0);
+                }
+            }
+            Pane::Secondary => {
+                self.secondary_tabs.retain(|id| *id != tab_id);
+                if self.secondary_active == tab_id {
+                    self.secondary_active = self.secondary_tabs.first().copied().unwrap_or(0);
+                }
+            }
+        }
+        if source == pane
+            && let Some(index) = self
+                .pane_tab_ids(pane)
+                .iter()
+                .position(|id| *id == target_id)
+        {
+            target_index = index;
+        }
+        match pane {
+            Pane::Primary => {
+                self.primary_tabs.insert(target_index, tab_id);
+                self.primary_active = tab_id;
+            }
+            Pane::Secondary => {
+                self.secondary_tabs.insert(target_index, tab_id);
+                self.secondary_active = tab_id;
+            }
+        }
+        self.focus = pane;
+        self.normalize_panes();
+        self.reveal_active_tab(pane);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn move_active_tab(&mut self, direction: isize, cx: &mut Context<Self>) {
+        let pane = self.focus;
+        let Some(active) = self.pane_active_id(pane) else {
+            return;
+        };
+        let tabs = match pane {
+            Pane::Primary => &mut self.primary_tabs,
+            Pane::Secondary => &mut self.secondary_tabs,
+        };
+        if !move_tab_id(tabs, active, direction) {
+            return;
+        }
+        self.reveal_active_tab(pane);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
     pub(crate) fn move_tab_to_pane(&mut self, tab_id: u64, target: Pane, cx: &mut Context<Self>) {
         if target == Pane::Secondary && self.split.is_none() {
             return;
@@ -2075,6 +2158,21 @@ impl KoyoApp {
     }
 }
 
+fn move_tab_id(tabs: &mut Vec<u64>, tab_id: u64, direction: isize) -> bool {
+    let Some(from) = tabs.iter().position(|id| *id == tab_id) else {
+        return false;
+    };
+    let Some(to) = from.checked_add_signed(direction) else {
+        return false;
+    };
+    if to >= tabs.len() {
+        return false;
+    }
+    let id = tabs.remove(from);
+    tabs.insert(to, id);
+    true
+}
+
 fn tab_should_indent(value: &str, selection: &std::ops::Range<usize>) -> bool {
     let cursor = selection.end.min(value.len());
     let line_start = value[..cursor]
@@ -2098,7 +2196,9 @@ fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{KoyoApp, neighbor_after_close, same_connection_target, tab_should_indent};
+    use super::{
+        KoyoApp, move_tab_id, neighbor_after_close, same_connection_target, tab_should_indent,
+    };
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
 
@@ -2150,6 +2250,17 @@ mod tests {
         assert_eq!(neighbor_after_close(&[10, 30], 1), 30);
         assert_eq!(neighbor_after_close(&[10, 20], 2), 20);
         assert_eq!(neighbor_after_close(&[], 0), 0);
+    }
+
+    #[test]
+    fn moves_tabs_one_step_and_stops_at_edges() {
+        let mut tabs = vec![1, 2, 3];
+        assert!(move_tab_id(&mut tabs, 2, -1));
+        assert_eq!(tabs, vec![2, 1, 3]);
+        assert!(move_tab_id(&mut tabs, 2, 1));
+        assert_eq!(tabs, vec![1, 2, 3]);
+        assert!(!move_tab_id(&mut tabs, 1, -1));
+        assert!(!move_tab_id(&mut tabs, 3, 1));
     }
 
     #[test]

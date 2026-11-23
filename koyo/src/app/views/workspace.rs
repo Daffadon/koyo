@@ -3,6 +3,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::tab::{Tab as BarTab, TabBar};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -482,6 +483,16 @@ impl KoyoApp {
                                 .on_drag(drag, |drag, _, _, cx| {
                                     cx.stop_propagation();
                                     cx.new(|_| drag.clone())
+                                })
+                                .on_drop::<TabDrag>(cx.listener(
+                                    move |this, drag: &TabDrag, _, cx| {
+                                        cx.stop_propagation();
+                                        this.reorder_tab(drag.tab_id, tab_id, pane, cx);
+                                    },
+                                ))
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Drag to reorder tabs or move to another pane")
+                                        .build(window, cx)
                                 })
                                 .child(icon.with_size(Size::Small)),
                         )

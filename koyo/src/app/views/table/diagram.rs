@@ -456,6 +456,8 @@ fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> An
         );
     } else {
         for (index, item) in table.indexes.iter().enumerate() {
+            let name = item.name.clone();
+            let columns = item.columns.join(", ");
             panel = panel.child(
                 h_flex()
                     .items_center()
@@ -466,28 +468,39 @@ fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> An
                         this.border_t_1().border_color(palette.border)
                     })
                     .child(
-                        div()
+                        v_flex()
                             .min_w(px(0.0))
                             .flex_1()
-                            .text_xs()
-                            .font_family(mono.clone())
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(item.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .max_w(px(240.0))
-                            .flex_shrink_0()
-                            .text_right()
-                            .text_xs()
-                            .font_family(mono.clone())
-                            .text_color(palette.muted)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(item.columns.join(", ")),
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("index-name-{index}")))
+                                    .min_w(px(0.0))
+                                    .text_xs()
+                                    .font_family(mono.clone())
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(name.clone()).build(window, cx)
+                                    })
+                                    .child(item.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("index-columns-{index}")))
+                                    .min_w(px(0.0))
+                                    .text_xs()
+                                    .font_family(mono.clone())
+                                    .text_color(palette.muted)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(columns.clone()).build(window, cx)
+                                    })
+                                    .child(item.columns.join(", ")),
+                            ),
                     )
                     .when(item.primary, |this| {
                         this.child(
