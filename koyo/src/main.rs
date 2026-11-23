@@ -17,7 +17,6 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 actions!(
     koyo,
     [
-        AcceptCompletion,
         CompleteFilter,
         DeleteLine,
         DuplicateLine,
@@ -132,7 +131,9 @@ fn main() {
                 .install(cx);
             Theme::change(ThemeMode::Dark, None, cx);
             cx.bind_keys([
-                KeyBinding::new("tab", AcceptCompletion, Some("Input && mode == editor")),
+                // The SQL editor handles Tab in its capture listener so a
+                // completion accept cannot also insert indentation.
+                KeyBinding::new("tab", NoAction {}, Some("Input && mode == editor")),
                 KeyBinding::new("tab", CompleteFilter, Some("TableFilter")),
                 KeyBinding::new("ctrl-/", ToggleComment, Some("Input && mode == editor")),
                 KeyBinding::new("cmd-/", ToggleComment, Some("Input && mode == editor")),

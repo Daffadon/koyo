@@ -535,8 +535,17 @@ impl KoyoApp {
                 cx,
             );
         } else {
-            handle.dispatch_action(&IndentInline, window, cx);
+            let (value, selection) = {
+                let editor = editor.read(cx);
+                (editor.value().to_string(), editor.selected_range())
+            };
+            // Tab indents a line or selection. At the end of existing text it
+            // would only leave trailing whitespace.
+            if tab_should_indent(&value, &selection) {
+                handle.dispatch_action(&IndentInline, window, cx);
+            }
         }
+        cx.stop_propagation();
     }
 
     pub(crate) fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
@@ -2066,6 +2075,15 @@ impl KoyoApp {
     }
 }
 
+fn tab_should_indent(value: &str, selection: &std::ops::Range<usize>) -> bool {
+    let cursor = selection.end.min(value.len());
+    let line_start = value[..cursor]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    !selection.is_empty() || value[line_start..cursor].trim().is_empty()
+}
+
 fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
     remaining
         .get(closed_position)
@@ -2080,7 +2098,7 @@ fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{KoyoApp, neighbor_after_close, same_connection_target};
+    use super::{KoyoApp, neighbor_after_close, same_connection_target, tab_should_indent};
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
 
@@ -2132,5 +2150,15 @@ mod tests {
         assert_eq!(neighbor_after_close(&[10, 30], 1), 30);
         assert_eq!(neighbor_after_close(&[10, 20], 2), 20);
         assert_eq!(neighbor_after_close(&[], 0), 0);
+    }
+
+    #[test]
+    fn tab_indents_lines_and_selections_but_not_trailing_text() {
+        assert!(tab_should_indent("", &(0..0)));
+        assert!(tab_should_indent("  select", &(2..2)));
+        assert!(tab_should_indent("select", &(0..6)));
+        assert!(!tab_should_indent("select", &(6..6)));
+        assert!(!tab_should_indent("select  ", &(8..8)));
+        assert!(tab_should_indent("select\n", &(7..7)));
     }
 }

@@ -552,9 +552,12 @@ pub(super) fn render(
                                     .min_h(px(0.0))
                                     .bg(palette.editor)
                                     .capture_key_down(cx.listener(
-                                        move |this, event: &KeyDownEvent, _, cx| {
+                                        move |this, event: &KeyDownEvent, window, cx| {
                                             let modifiers = event.keystroke.modifiers;
-                                            if event.keystroke.key == "enter"
+                                            if event.keystroke.key == "tab" {
+                                                cx.stop_propagation();
+                                                this.accept_completion_or_indent(window, cx);
+                                            } else if event.keystroke.key == "enter"
                                                 && (modifiers.control || modifiers.platform)
                                             {
                                                 cx.stop_propagation();
