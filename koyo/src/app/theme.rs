@@ -42,7 +42,7 @@ impl ThemeChoice {
         match self {
             Self::Dark => "Black surfaces with the comet action gradient.",
             Self::Light => "Pale twilight surfaces with a twilight blue action color.",
-            Self::Kimi => "Black canvas with a twilight data-pattern backdrop.",
+            Self::Kimi => "Deep twilight gradient with comet blue, lavender, and soft pink light.",
         }
     }
 
@@ -50,7 +50,7 @@ impl ThemeChoice {
         let colors = match self {
             Self::Dark => [0x050505, 0x080808, 0x5FE7FF],
             Self::Light => [0xF4F2FC, 0xECE9F7, 0x2E55C7],
-            Self::Kimi => [0x000000, 0x05050C, 0x5FE7FF],
+            Self::Kimi => [0x05060F, 0x1B2A6B, 0x7FD1F2],
         };
         colors.map(|hex| gpui_kit::rgb(hex).into())
     }
@@ -59,13 +59,13 @@ impl ThemeChoice {
         let colors = match self {
             Self::Dark => [0x5FE7FF, 0xA78BFA],
             Self::Light => [0x2E55C7, 0x6B5CE7],
-            Self::Kimi => [0x5FE7FF, 0xFF6BD6],
+            Self::Kimi => [0x7FD1F2, 0xB48AD3],
         };
         colors.map(|hex| gpui_kit::rgb(hex).into())
     }
 }
 
-/// Generated 1920x1080 backdrop: black sky over a wavy digit field.
+/// Generated 1920x1080 backdrop: blurred, dark twilight with a comet band.
 static KIMI_AURORA: LazyLock<Arc<gpui_kit::Image>> = LazyLock::new(|| {
     Arc::new(gpui_kit::Image::from_bytes(
         gpui_kit::ImageFormat::Webp,
@@ -128,16 +128,16 @@ pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
         sidebar_gradient: match choice {
             ThemeChoice::Kimi => gradient(
                 180.0,
-                tone(0x000000).opacity(0.80),
-                tone(0x000000).opacity(0.55),
+                tone(0x05060F).opacity(0.86),
+                tone(0x05060F).opacity(0.66),
             ),
             _ => gradient(180.0, theme.sidebar, theme.background),
         },
         selection: match choice {
             ThemeChoice::Kimi => gradient(
                 135.0,
-                tone(0x2A1A5E).opacity(0.92),
-                tone(0x000000).opacity(0.35),
+                tone(0x3E4C8A).opacity(0.88),
+                tone(0x05060F).opacity(0.32),
             ),
             _ => gradient(135.0, theme.accent, theme.background),
         },
@@ -146,8 +146,8 @@ pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
             ThemeChoice::Light => gradient(160.0, theme.secondary, theme.accent),
             ThemeChoice::Kimi => gradient(
                 180.0,
-                tone(0x000000).opacity(0.28),
-                tone(0x000000).opacity(0.28),
+                tone(0x05060F).opacity(0.24),
+                tone(0x05060F).opacity(0.24),
             ),
         },
     }
@@ -414,91 +414,91 @@ fn apply_light(theme: &mut Theme) {
 
 fn apply_kimi(theme: &mut Theme) {
     let colors = &mut theme.colors;
-    colors.background = tone(0x000000);
-    colors.foreground = tone(0xF2EEFF);
-    colors.muted = tone(0x101018);
-    colors.muted_foreground = tone(0xB0B0D0);
-    colors.border = tone(0x252535);
+    colors.background = tone(0x05060F);
+    colors.foreground = tone(0xEEF0FF);
+    colors.muted = tone(0x0C1020);
+    colors.muted_foreground = tone(0xA9A8C4);
+    colors.border = tone(0x262B45);
 
-    colors.sidebar = tone(0x05050C);
-    colors.sidebar_border = tone(0x252535);
-    colors.sidebar_foreground = tone(0xECE8FF);
-    colors.sidebar_accent = tone(0x241A4E);
-    colors.sidebar_accent_foreground = tone(0x8FF0FF);
+    colors.sidebar = tone(0x070A16);
+    colors.sidebar_border = tone(0x252B45);
+    colors.sidebar_foreground = tone(0xEBEDFF);
+    colors.sidebar_accent = tone(0x1E2450);
+    colors.sidebar_accent_foreground = tone(0x9FDCF2);
 
-    colors.secondary = tone(0x0A0A18);
-    colors.secondary_foreground = tone(0xF2EEFF);
-    colors.secondary_hover = tone(0x141428);
-    colors.secondary_active = tone(0x1C1C38);
+    colors.secondary = tone(0x0A0E1E);
+    colors.secondary_foreground = tone(0xF2F2FF);
+    colors.secondary_hover = tone(0x12182C);
+    colors.secondary_active = tone(0x1A2140);
 
-    colors.primary = tone(0x5FE7FF);
-    colors.primary_hover = tone(0x8AF0FF);
-    colors.primary_active = tone(0x35CBE8);
-    colors.primary_foreground = tone(0x04122E);
-    colors.accent = tone(0x2A1A5E);
-    colors.accent_foreground = tone(0xF3D9FF);
-    colors.input = tone(0x6E78B5);
-    colors.ring = tone(0xA78BFA);
-    colors.caret = tone(0x5FE7FF);
+    colors.primary = tone(0x7FD1F2);
+    colors.primary_hover = tone(0xA6E4FF);
+    colors.primary_active = tone(0x57B6DD);
+    colors.primary_foreground = tone(0x071426);
+    colors.accent = tone(0x2B235C);
+    colors.accent_foreground = tone(0xF1E9FF);
+    colors.input = tone(0x6F78A8);
+    colors.ring = tone(0xB48AD3);
+    colors.caret = tone(0x7FD1F2);
 
-    colors.button = tone(0x0C0C18);
-    colors.button_hover = tone(0x161628);
-    colors.button_active = tone(0x202038);
-    colors.button_foreground = tone(0xF2EEFF);
-    colors.button_primary = tone(0x5FE7FF);
-    colors.button_primary_hover = tone(0x8AF0FF);
-    colors.button_primary_active = tone(0x35CBE8);
-    colors.button_primary_foreground = tone(0x04122E);
-    colors.button_secondary = tone(0x141428);
-    colors.button_secondary_hover = tone(0x1C1C38);
-    colors.button_secondary_active = tone(0x242448);
-    colors.button_secondary_foreground = tone(0xE6E2FF);
+    colors.button = tone(0x0B1020);
+    colors.button_hover = tone(0x151B32);
+    colors.button_active = tone(0x1E2542);
+    colors.button_foreground = tone(0xF2F2FF);
+    colors.button_primary = tone(0x7FD1F2);
+    colors.button_primary_hover = tone(0xA6E4FF);
+    colors.button_primary_active = tone(0x57B6DD);
+    colors.button_primary_foreground = tone(0x071426);
+    colors.button_secondary = tone(0x141A30);
+    colors.button_secondary_hover = tone(0x1C2440);
+    colors.button_secondary_active = tone(0x252E50);
+    colors.button_secondary_foreground = tone(0xE6E9FF);
 
-    colors.popover = tone(0x07070F);
-    colors.popover_foreground = tone(0xF2EEFF);
-    colors.list = tone(0x05050C);
-    colors.list_hover = tone(0x141428);
-    colors.list_active = tone(0x1C1C38);
-    colors.list_even = tone(0x080810);
-    colors.list_head = tone(0x0C0C18);
+    colors.popover = tone(0x070A14);
+    colors.popover_foreground = tone(0xF2F2FF);
+    colors.list = tone(0x080C18);
+    colors.list_hover = tone(0x151B32);
+    colors.list_active = tone(0x1E2542);
+    colors.list_even = tone(0x0A0F1E);
+    colors.list_head = tone(0x0E1428);
 
-    colors.success = tone(0x63E6BE);
-    colors.success_foreground = tone(0x04261D);
-    colors.warning = tone(0xFFD166);
-    colors.warning_foreground = tone(0x2A1C00);
-    colors.danger = tone(0xFF6B9A);
+    colors.success = tone(0x7CC6B5);
+    colors.success_foreground = tone(0x04201B);
+    colors.warning = tone(0xF7B267);
+    colors.warning_foreground = tone(0x2A1A05);
+    colors.danger = tone(0xF28AB2);
     colors.danger_foreground = tone(0x2A0714);
-    colors.link = tone(0x8CEBFF);
-    colors.link_hover = tone(0xB5F4FF);
-    colors.link_active = tone(0x5FE7FF);
+    colors.link = tone(0x9FDCF2);
+    colors.link_hover = tone(0xC8EEFF);
+    colors.link_active = tone(0x7FD1F2);
 
-    colors.scrollbar = tone(0x000000);
-    colors.scrollbar_thumb = tone(0x252535);
-    colors.scrollbar_thumb_hover = tone(0x3A3A5A);
+    colors.scrollbar = tone(0x05060F);
+    colors.scrollbar_thumb = tone(0x262B45);
+    colors.scrollbar_thumb_hover = tone(0x3E4C8A);
 
-    colors.title_bar = tone(0x05050C);
-    colors.title_bar_border = tone(0x252535);
-    colors.status_bar = tone(0x05050C);
-    colors.status_bar_border = tone(0x252535);
-    colors.tab_bar = tone(0x05050C);
-    colors.tab = tone(0x0A0A18);
-    colors.tab_active = tone(0x1C1C38);
-    colors.tab_active_foreground = tone(0xF2EEFF);
-    colors.tab_foreground = tone(0xB0B0D0);
+    colors.title_bar = tone(0x070A16);
+    colors.title_bar_border = tone(0x252B45);
+    colors.status_bar = tone(0x070A16);
+    colors.status_bar_border = tone(0x252B45);
+    colors.tab_bar = tone(0x070A16);
+    colors.tab = tone(0x0A0E1E);
+    colors.tab_active = tone(0x1A2140);
+    colors.tab_active_foreground = tone(0xF2F2FF);
+    colors.tab_foreground = tone(0xA9A8C4);
 
-    colors.table = tone(0x05050C);
-    colors.table_hover = tone(0x141428);
-    colors.table_active = tone(0x1C1C38);
-    colors.table_even = tone(0x080810);
-    colors.table_head = tone(0x0C0C18);
-    colors.table_head_foreground = tone(0xD9D4FF);
-    colors.table_foot = tone(0x05050C);
-    colors.table_foot_foreground = tone(0xB0B0D0);
-    colors.table_row_border = tone(0x202038);
+    colors.table = tone(0x080C18);
+    colors.table_hover = tone(0x151B32);
+    colors.table_active = tone(0x1E2542);
+    colors.table_even = tone(0x0A0F1E);
+    colors.table_head = tone(0x0E1428);
+    colors.table_head_foreground = tone(0xD9DDFF);
+    colors.table_foot = tone(0x070A16);
+    colors.table_foot_foreground = tone(0xA9A8C4);
+    colors.table_row_border = tone(0x232A45);
 
-    colors.switch = tone(0x252535);
-    colors.switch_thumb = tone(0xF2EEFF);
-    colors.selection = tone(0x3A2A5A);
+    colors.switch = tone(0x262B45);
+    colors.switch_thumb = tone(0xF2F4FF);
+    colors.selection = tone(0x3E4C8A);
 
     let primary = colors.primary;
     let primary_hover = colors.primary_hover;
@@ -506,27 +506,27 @@ fn apply_kimi(theme: &mut Theme) {
     let tab_bar = colors.tab_bar;
     let tab_active = colors.tab_active;
     theme.tokens.button_primary =
-        ThemeToken::new(primary, gradient(135.0, primary, tone(0xFF6BD6)));
+        ThemeToken::new(primary, gradient(135.0, primary, tone(0xB48AD3)));
     theme.tokens.button_primary_hover = ThemeToken::new(
         primary_hover,
-        gradient(135.0, primary_hover, tone(0xFF9AE4)),
+        gradient(135.0, primary_hover, tone(0xCBB2F2)),
     );
     theme.tokens.button_primary_active = ThemeToken::new(
         primary_active,
-        gradient(135.0, primary_active, tone(0xD94FB5)),
+        gradient(135.0, primary_active, tone(0x9B7FC0)),
     );
-    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x000000)));
+    theme.tokens.tab_bar = ThemeToken::new(tab_bar, gradient(180.0, tab_bar, tone(0x05060F)));
     theme.tokens.tab_active =
-        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x000000)));
+        ThemeToken::new(tab_active, gradient(180.0, tab_active, tone(0x05060F)));
 
     let highlight = Arc::make_mut(&mut theme.highlight_theme);
-    highlight.style.editor_background = Some(tone(0x000000).opacity(0.18));
+    highlight.style.editor_background = Some(tone(0x05060F).opacity(0.24));
     highlight.style.editor_foreground = Some(tone(0xF2EEFF));
-    highlight.style.editor_active_line = Some(tone(0x1C1C38).opacity(0.50));
-    highlight.style.editor_line_number = Some(tone(0xB0B0D0));
-    highlight.style.editor_active_line_number = Some(tone(0xF2EEFF));
-    highlight.style.editor_invisible = Some(tone(0x6E78B5));
-    highlight.style.editor_gutter_background = Some(tone(0x000000).opacity(0.10));
+    highlight.style.editor_active_line = Some(tone(0x1A2140).opacity(0.55));
+    highlight.style.editor_line_number = Some(tone(0xA9A8C4));
+    highlight.style.editor_active_line_number = Some(tone(0xF2F2FF));
+    highlight.style.editor_invisible = Some(tone(0x6F78A8));
+    highlight.style.editor_gutter_background = Some(tone(0x05060F).opacity(0.16));
 }
 
 #[cfg(test)]
@@ -566,7 +566,7 @@ mod tests {
         );
         assert_eq!(
             ThemeChoice::Kimi.description(),
-            "Black canvas with a twilight data-pattern backdrop."
+            "Deep twilight gradient with comet blue, lavender, and soft pink light."
         );
     }
 }

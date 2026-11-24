@@ -32,7 +32,7 @@ impl Render for KoyoApp {
                     div()
                         .absolute()
                         .inset_0()
-                        .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.10)),
+                        .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.18)),
                 )
         });
         let show_custom_titlebar = !cfg!(target_os = "linux")
