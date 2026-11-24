@@ -160,7 +160,31 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          choco install nsis --version=3.13.0 --no-progress -y
+          $nsisVersion = "3.11"
+          $nsisSha256 = "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1"
+          $nsisUrl = "https://downloads.sourceforge.net/project/nsis/NSIS%203/$nsisVersion/nsis-$nsisVersion.zip"
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "nsis-$nsisVersion"
+          $nsisZip = Join-Path $env:RUNNER_TEMP "nsis-$nsisVersion.zip"
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri $nsisUrl -OutFile $nsisZip
+              break
+            } catch {
+              if ($attempt -eq 3) { throw }
+              Start-Sleep -Seconds 5
+            }
+          }
+          $actualHash = (Get-FileHash -LiteralPath $nsisZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $nsisSha256) {
+            throw "NSIS checksum mismatch: expected $nsisSha256, got $actualHash"
+          }
+          New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+          Expand-Archive -LiteralPath $nsisZip -DestinationPath $nsisRoot -Force
+          $makensis = Join-Path $nsisRoot "nsis-$nsisVersion\makensis.exe"
+          if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) {
+            throw "NSIS makensis.exe not found at $makensis"
+          }
+
           $version = (Select-String -Path koyo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           $root = (Get-Location).Path
           $icon = Join-Path $root "koyo\assets\koyo.ico"
@@ -170,10 +194,6 @@ jobs:
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Missing NSIS input: $path"
             }
-          }
-          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
-          if (-not $makensis) {
-            $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
           }
           & $makensis "/DVERSION=$version" "/DICON=$icon" "/DEXE=$exe" "/DOUTFILE=$out" packaging/windows/koyo.nsi
           if ($LASTEXITCODE -ne 0) {
