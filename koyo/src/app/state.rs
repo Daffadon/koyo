@@ -101,6 +101,7 @@ pub(crate) struct QueryTab {
     pub(crate) duration_ms: Option<u128>,
     pub(crate) results_collapsed: bool,
     pub(crate) pending_run: bool,
+    pub(crate) definition_kind: Option<koyo_core::models::SchemaObjectKind>,
     pub(crate) result_column_widths: Vec<Vec<f32>>,
     pub(crate) result_resize_pointer_x: Option<f32>,
     pub(crate) result_resize_column: Option<(usize, usize)>,

@@ -355,6 +355,7 @@ impl KoyoApp {
                 editor.set_value(sql.clone(), window, cx);
             });
             query.starter = sql.into();
+            query.definition_kind = Some(kind);
         }
         let connected = shared.is_some();
         tab.connection = shared;
@@ -362,6 +363,14 @@ impl KoyoApp {
         let tab_id = self.add_tab(tab, target_pane);
         if connected {
             self.attach_profile_session(profile.id, tab_id, cx);
+            self.run_query(tab_id, cx);
+        } else {
+            if let Some(index) = self.tab_index(tab_id)
+                && let TabBody::Query(query) = &mut self.tabs[index].body
+            {
+                query.pending_run = true;
+            }
+            self.connect_profile(profile.id, Some(tab_id), false, window, cx);
         }
         self.persist_state(cx);
         cx.notify();

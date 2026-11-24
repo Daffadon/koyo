@@ -337,6 +337,12 @@ impl KoyoApp {
             dialog.busy = true;
             dialog.error.clear();
         }
+        self.push_toast(
+            ToastCategory::Connections,
+            profile.id.to_string(),
+            Notification::info(format!("Connecting to {}.", profile.name)).title("Connecting"),
+            cx,
+        );
         cx.notify();
 
         let manager = self.manager.clone();

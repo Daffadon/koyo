@@ -6,11 +6,43 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{ClipboardItem, Entity, Window};
 use koyo_core::database;
-use koyo_core::models::{ConnectionProfile, Engine};
+use koyo_core::models::{ConnectionProfile, Engine, QueryOutput, SchemaObjectKind};
 use uuid::Uuid;
 
 use super::notifications::ToastCategory;
 use crate::app::*;
+
+fn definition_from_output(
+    engine: Engine,
+    kind: SchemaObjectKind,
+    output: &QueryOutput,
+) -> Option<String> {
+    if engine == Engine::Sqlite && kind == SchemaObjectKind::Function {
+        return None;
+    }
+    let result = output.result_sets.first()?;
+    let column = result.columns.iter().position(|name| {
+        let name = name.to_lowercase();
+        name == "definition"
+            || name == "sql"
+            || name.contains("create function")
+            || name.contains("create trigger")
+            || name.contains("sql original statement")
+    })?;
+    let parts = result
+        .rows
+        .iter()
+        .filter_map(|row| row.get(column).and_then(Option::as_deref))
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(if engine == Engine::Oracle {
+        parts.join("\n")
+    } else {
+        parts.join("\n\n")
+    })
+}
 
 impl KoyoApp {
     pub(crate) fn run_active_query(&mut self, cx: &mut Context<Self>) {
@@ -155,6 +187,7 @@ impl KoyoApp {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
+                let engine = this.tabs[index].engine().unwrap_or(Engine::Postgres);
                 let TabBody::Query(query) = &mut this.tabs[index].body else {
                     return;
                 };
@@ -168,44 +201,58 @@ impl KoyoApp {
                 let duration_ms = started.elapsed().as_millis();
                 query.duration_ms = Some(duration_ms);
                 let success = result.is_ok();
-                let toast = match &result {
-                    Ok(output) => {
-                        let returned = output
-                            .result_sets
-                            .iter()
-                            .map(|result| result.rows.len())
-                            .sum::<usize>();
-                        let affected = output.affected_rows.iter().copied().sum::<u64>();
-                        let detail = if returned > 0 {
-                            format!(
-                                "{returned} {} in {duration_ms} ms",
-                                if returned == 1 { "row" } else { "rows" }
-                            )
-                        } else if affected > 0 {
-                            format!(
-                                "{affected} {} affected in {duration_ms} ms",
-                                if affected == 1 { "row" } else { "rows" }
-                            )
-                        } else {
-                            format!("Statement finished in {duration_ms} ms")
-                        };
-                        Some(Notification::success(detail).title("Query complete"))
+                let definition_kind = query.definition_kind;
+                let is_definition = definition_kind.is_some();
+                let toast = if is_definition {
+                    None
+                } else {
+                    match &result {
+                        Ok(output) => {
+                            let returned = output
+                                .result_sets
+                                .iter()
+                                .map(|result| result.rows.len())
+                                .sum::<usize>();
+                            let affected = output.affected_rows.iter().copied().sum::<u64>();
+                            let detail = if returned > 0 {
+                                format!(
+                                    "{returned} {} in {duration_ms} ms",
+                                    if returned == 1 { "row" } else { "rows" }
+                                )
+                            } else if affected > 0 {
+                                format!(
+                                    "{affected} {} affected in {duration_ms} ms",
+                                    if affected == 1 { "row" } else { "rows" }
+                                )
+                            } else {
+                                format!("Statement finished in {duration_ms} ms")
+                            };
+                            Some(Notification::success(detail).title("Query complete"))
+                        }
+                        Err(error) if !cancelled && !database::is_connection_lost(error) => Some(
+                            Notification::error("See the tab for details.")
+                                .title("Query failed")
+                                .autohide(false),
+                        ),
+                        Err(_) => None,
                     }
-                    Err(error) if !cancelled && !database::is_connection_lost(error) => Some(
-                        Notification::error("See the tab for details.")
-                            .title("Query failed")
-                            .autohide(false),
-                    ),
-                    Err(_) => None,
                 };
+                let mut pending_definition = None;
                 let lost = match result {
                     Ok(output) => {
+                        pending_definition = definition_kind
+                            .and_then(|kind| definition_from_output(engine, kind, &output));
+                        query.definition_kind = None;
                         query.output = Some(output);
                         query.active_result = 0;
                         query.error.clear();
+                        if pending_definition.is_some() {
+                            query.results_collapsed = true;
+                        }
                         None
                     }
                     Err(error) => {
+                        query.definition_kind = None;
                         if database::is_connection_lost(&error) {
                             Some(error)
                         } else {
@@ -214,7 +261,18 @@ impl KoyoApp {
                         }
                     }
                 };
-                this.record_query_history(history_sql, history_profile, success, duration_ms, cx);
+                if let Some(definition) = pending_definition {
+                    this.tabs[index].pending_starter = Some(definition.into());
+                }
+                if !is_definition {
+                    this.record_query_history(
+                        history_sql,
+                        history_profile,
+                        success,
+                        duration_ms,
+                        cx,
+                    );
+                }
                 if let Some(error) = lost {
                     this.mark_connection_lost(session_id, &format!("Connection lost: {error}"), cx);
                 } else if let Some(toast) = toast {
@@ -768,5 +826,80 @@ impl KoyoApp {
             query.active_result = index;
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::definition_from_output;
+    use koyo_core::models::{Engine, QueryOutput, QueryResultSet, SchemaObjectKind};
+
+    fn output(columns: &[&str], rows: &[&[Option<&str>]]) -> QueryOutput {
+        QueryOutput {
+            result_sets: vec![QueryResultSet {
+                columns: columns.iter().map(|name| (*name).into()).collect(),
+                rows: rows
+                    .iter()
+                    .map(|row| row.iter().map(|value| value.map(str::to_string)).collect())
+                    .collect(),
+            }],
+            affected_rows: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn extracts_postgres_function_definition() {
+        let output = output(
+            &["definition"],
+            &[&[Some(
+                "CREATE FUNCTION get_child_locs() RETURNS void AS $$ BEGIN END $$;",
+            )]],
+        );
+        assert_eq!(
+            definition_from_output(Engine::Postgres, SchemaObjectKind::Function, &output)
+                .as_deref(),
+            Some("CREATE FUNCTION get_child_locs() RETURNS void AS $$ BEGIN END $$;")
+        );
+    }
+
+    #[test]
+    fn extracts_mysql_show_create_column() {
+        let output = output(
+            &["Function", "sql_mode", "Create Function"],
+            &[&[
+                Some("f"),
+                Some(""),
+                Some("CREATE FUNCTION f() RETURNS int RETURN 1"),
+            ]],
+        );
+        assert_eq!(
+            definition_from_output(Engine::Mysql, SchemaObjectKind::Function, &output).as_deref(),
+            Some("CREATE FUNCTION f() RETURNS int RETURN 1")
+        );
+    }
+
+    #[test]
+    fn joins_oracle_source_lines() {
+        let output = output(
+            &["DEFINITION"],
+            &[
+                &[Some("FUNCTION f RETURN NUMBER IS")],
+                &[Some("BEGIN RETURN 1; END;")],
+            ],
+        );
+        assert_eq!(
+            definition_from_output(Engine::Oracle, SchemaObjectKind::Function, &output).as_deref(),
+            Some("FUNCTION f RETURN NUMBER IS\nBEGIN RETURN 1; END;")
+        );
+    }
+
+    #[test]
+    fn leaves_sqlite_function_names_alone() {
+        let output = output(&["name"], &[&[Some("f")]]);
+        assert_eq!(
+            definition_from_output(Engine::Sqlite, SchemaObjectKind::Function, &output),
+            None
+        );
     }
 }

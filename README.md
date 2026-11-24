@@ -33,7 +33,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 ### Table browser and data editing
 
-- Explore tables, views, functions, triggers, and engine metadata grouped by schema. Tables and views open in data grids; functions and triggers open their definitions in a query tab.
+- Explore tables, views, functions, triggers, and engine metadata grouped by schema. Tables and views open in data grids; functions and triggers fetch their definitions automatically and load the body into a query tab.
 - Press **F5** to refresh the active table.
 - Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads.
 - Filter input suggests matching columns and valid operators as you type. Press **Tab** to accept, or click a suggestion. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.

@@ -857,6 +857,7 @@ impl KoyoApp {
                 duration_ms: None,
                 results_collapsed: false,
                 pending_run: false,
+                definition_kind: None,
                 result_column_widths: Vec::new(),
                 result_resize_pointer_x: None,
                 result_resize_column: None,
