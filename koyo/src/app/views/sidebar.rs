@@ -323,11 +323,17 @@ impl KoyoApp {
                     let editable = tables.iter().any(|table| {
                         table.schema == schema_name && table.name == name && table.editable
                     });
-                    let clickable = matches!(
+                    let opens_table = matches!(
                         kind,
                         koyo_core::models::SchemaObjectKind::Table
                             | koyo_core::models::SchemaObjectKind::View
                     );
+                    let clickable = opens_table
+                        || matches!(
+                            kind,
+                            koyo_core::models::SchemaObjectKind::Function
+                                | koyo_core::models::SchemaObjectKind::Trigger
+                        );
                     schema_nodes = schema_nodes.child(
                         div()
                             .id(item_id)
@@ -359,10 +365,21 @@ impl KoyoApp {
                                 })
                                 .on_key_down(cx.listener(
                                     move |this, event: &KeyDownEvent, window, cx| {
-                                        if is_activation_key(event) {
+                                        if !is_activation_key(event) {
+                                            return;
+                                        }
+                                        if opens_table {
                                             this.open_table(
                                                 schema_name_for_keyboard.clone(),
                                                 name_for_keyboard.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        } else {
+                                            this.open_schema_definition(
+                                                schema_name_for_keyboard.clone(),
+                                                name_for_keyboard.clone(),
+                                                kind,
                                                 window,
                                                 cx,
                                             );
@@ -371,12 +388,22 @@ impl KoyoApp {
                                 ))
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
-                                        this.open_table(
-                                            schema_name.clone(),
-                                            name.clone(),
-                                            window,
-                                            cx,
-                                        );
+                                        if opens_table {
+                                            this.open_table(
+                                                schema_name.clone(),
+                                                name.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        } else {
+                                            this.open_schema_definition(
+                                                schema_name.clone(),
+                                                name.clone(),
+                                                kind,
+                                                window,
+                                                cx,
+                                            );
+                                        }
                                     },
                                 ))
                             })

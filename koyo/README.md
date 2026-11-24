@@ -21,7 +21,7 @@ The UI uses GPUI Kit components:
 - **Ctrl+Shift+F** / **Cmd+Shift+F** formats the active query; a selection formats alone.
 - **Ctrl+Shift+PageUp/PageDown** / **Cmd+Shift+PageUp/PageDown** reorders tabs; dragging a tab icon also reorders or moves it to another pane.
 - **Ctrl+B** / **Cmd+B** toggles the left sidebar; **Ctrl+Alt+B** / **Cmd+Alt+B** toggles the AI panel.
-- Metadata explorer for tables, views, functions, and triggers, plus a foreign-key relation view per table.
+- Metadata explorer for tables, views, functions, and triggers, plus a foreign-key relation view per table. Functions and triggers open their definitions in a query tab.
 
 Run the full workspace checks from the repository root:
 

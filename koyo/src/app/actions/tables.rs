@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::SessionManager;
 use koyo_core::database;
-use koyo_core::models::{ColumnCatalogEntry, GridChange, TableFilter, TableSort};
+use koyo_core::models::{ColumnCatalogEntry, GridChange, SchemaObjectKind, TableFilter, TableSort};
 use uuid::Uuid;
 
 use super::notifications::ToastCategory;
@@ -298,6 +298,73 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+    }
+
+    pub(crate) fn open_schema_definition(
+        &mut self,
+        schema: String,
+        name: String,
+        kind: SchemaObjectKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source = self
+            .sidebar_index()
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| {
+                (
+                    tab.profile.clone(),
+                    tab.connection.clone(),
+                    tab.tables.clone(),
+                    tab.schema_objects.clone(),
+                    tab.metadata_groups.clone(),
+                    tab.columns.clone(),
+                    tab.expanded.clone(),
+                )
+            });
+        let Some((Some(profile), shared, tables, objects, metadata, columns, expanded)) = source
+        else {
+            self.status = "Open a connection before inspecting functions or triggers.".into();
+            cx.notify();
+            return;
+        };
+        let target_pane = self.focus;
+        let catalog = CatalogSnapshot {
+            tables,
+            schema_objects: objects,
+            metadata_groups: metadata,
+            columns,
+        };
+        let (shared, catalog) = match shared {
+            Some(connection) => (Some(connection), catalog),
+            None => match self.connection_for_profile(&profile) {
+                Some((connection, catalog)) => (Some(connection), catalog),
+                None => (None, catalog),
+            },
+        };
+        let sql = object_definition_sql(profile.engine, kind, &schema, &name);
+        let mut tab = self.make_query_tab(Some(profile.clone()), window, cx);
+        tab.title = format!("{schema}.{name}").into();
+        tab.tables = catalog.tables;
+        tab.schema_objects = catalog.schema_objects;
+        tab.metadata_groups = catalog.metadata_groups;
+        tab.columns = catalog.columns;
+        tab.expanded = expanded;
+        if let TabBody::Query(query) = &mut tab.body {
+            query.editor.update(cx, |editor, cx| {
+                editor.set_value(sql.clone(), window, cx);
+            });
+            query.starter = sql.into();
+        }
+        let connected = shared.is_some();
+        tab.connection = shared;
+        tab.connecting = false;
+        let tab_id = self.add_tab(tab, target_pane);
+        if connected {
+            self.attach_profile_session(profile.id, tab_id, cx);
+        }
+        self.persist_state(cx);
+        cx.notify();
     }
 
     fn focus_existing_table(

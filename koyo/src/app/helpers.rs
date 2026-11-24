@@ -3,7 +3,7 @@ use gpui_kit::*;
 use koyo_core::common::ensure_filter_operator;
 use koyo_core::models::{
     ColumnInfo, ConnectionProfile, Engine, FilterKind, FilterOperator, ForeignKeyInfo,
-    QueryResultSet, TableFilter, TablePage,
+    QueryResultSet, SchemaObjectKind, TableFilter, TablePage,
 };
 use sqlformat::{Dialect as SqlDialect, FormatOptions, QueryParams};
 
@@ -51,6 +51,75 @@ pub(crate) fn starter_sql(engine: Engine) -> String {
         Engine::Mysql | Engine::Mariadb => "SELECT DATABASE(), CURRENT_USER();".into(),
         Engine::SqlServer => "SELECT DB_NAME(), SUSER_SNAME();".into(),
         Engine::Oracle => "SELECT SYS_CONTEXT('USERENV', 'DB_NAME'), USER FROM dual;".into(),
+    }
+}
+
+fn sql_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn ansi_ident(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn mysql_ident(value: &str) -> String {
+    format!("`{}`", value.replace('`', "``"))
+}
+
+/// SQL that opens a function or trigger definition in a query tab. Views and
+/// tables stay on the data grid path.
+pub(crate) fn object_definition_sql(
+    engine: Engine,
+    kind: SchemaObjectKind,
+    schema: &str,
+    name: &str,
+) -> String {
+    let schema_literal = sql_literal(schema);
+    let name_literal = sql_literal(name);
+    match (engine, kind) {
+        (Engine::Postgres, SchemaObjectKind::Function) => format!(
+            "SELECT pg_get_functiondef(p.oid) AS definition\nFROM pg_proc p\nJOIN pg_namespace n ON n.oid = p.pronamespace\nWHERE n.nspname = {schema_literal}\n  AND p.proname = {name_literal}\nORDER BY p.oid;"
+        ),
+        (Engine::Postgres, SchemaObjectKind::Trigger) => format!(
+            "SELECT pg_get_triggerdef(t.oid) AS definition\nFROM pg_trigger t\nJOIN pg_class c ON c.oid = t.tgrelid\nJOIN pg_namespace n ON n.oid = c.relnamespace\nWHERE n.nspname = {schema_literal}\n  AND t.tgname = {name_literal};"
+        ),
+        (Engine::Mysql | Engine::Mariadb, SchemaObjectKind::Function) => format!(
+            "SHOW CREATE FUNCTION {}.{};",
+            mysql_ident(schema),
+            mysql_ident(name)
+        ),
+        (Engine::Mysql | Engine::Mariadb, SchemaObjectKind::Trigger) => format!(
+            "SHOW CREATE TRIGGER {}.{};",
+            mysql_ident(schema),
+            mysql_ident(name)
+        ),
+        (Engine::SqlServer, SchemaObjectKind::Function | SchemaObjectKind::Trigger) => {
+            let object = format!(
+                "[{}].[{}]",
+                schema.replace(']', "]]"),
+                name.replace(']', "]]")
+            );
+            format!(
+                "SELECT OBJECT_DEFINITION(OBJECT_ID(N{})) AS definition;",
+                sql_literal(&object)
+            )
+        }
+        (Engine::Oracle, SchemaObjectKind::Function | SchemaObjectKind::Trigger) => format!(
+            "SELECT text AS definition\nFROM all_source\nWHERE owner = UPPER({schema_literal})\n  AND name = UPPER({name_literal})\n  AND type = '{}'\nORDER BY line;",
+            if kind == SchemaObjectKind::Function {
+                "FUNCTION"
+            } else {
+                "TRIGGER"
+            }
+        ),
+        (Engine::Sqlite, SchemaObjectKind::Trigger) => format!(
+            "SELECT sql AS definition\nFROM {}.sqlite_master\nWHERE type = 'trigger'\n  AND name = {name_literal};",
+            ansi_ident(schema)
+        ),
+        (Engine::Sqlite, SchemaObjectKind::Function) => format!(
+            "-- SQLite functions are built in or provided by extensions.\nSELECT name\nFROM pragma_function_list\nWHERE name = {name_literal};"
+        ),
+        (_, SchemaObjectKind::Table | SchemaObjectKind::View) => String::new(),
     }
 }
 
@@ -733,11 +802,11 @@ mod tests {
 
     use super::{
         default_export_path, filter_suggestions, format_sql, insert_filter_suggestion,
-        parse_filter_input, resolve_export_pages, results_as_csv, results_as_json,
-        table_csv_file_name, table_ddl, table_page_as_csv,
+        object_definition_sql, parse_filter_input, resolve_export_pages, results_as_csv,
+        results_as_json, table_csv_file_name, table_ddl, table_page_as_csv,
     };
     use crate::app::ExportScope;
-    use koyo_core::models::{Engine, ForeignKeyInfo};
+    use koyo_core::models::{Engine, ForeignKeyInfo, SchemaObjectKind};
 
     fn ddl_column(name: &str, data_type: &str, primary_key: bool) -> ColumnInfo {
         ColumnInfo {
@@ -1005,5 +1074,49 @@ mod tests {
     fn filter_input_rejects_unknown_columns() {
         let columns = vec![filter_column("name", FilterKind::Text)];
         assert!(parse_filter_input(&columns, "missing = 1").is_err());
+    }
+    #[test]
+    fn object_definition_sql_quotes_literals_and_identifiers() {
+        let postgres = object_definition_sql(
+            Engine::Postgres,
+            SchemaObjectKind::Function,
+            "app",
+            "get'user",
+        );
+        assert!(postgres.contains("n.nspname = 'app'"));
+        assert!(postgres.contains("p.proname = 'get''user'"));
+        assert!(postgres.contains("pg_get_functiondef"));
+
+        let mysql = object_definition_sql(
+            Engine::Mysql,
+            SchemaObjectKind::Trigger,
+            "odd`schema",
+            "odd`name",
+        );
+        assert_eq!(mysql, "SHOW CREATE TRIGGER `odd``schema`.`odd``name`;");
+
+        let sqlserver = object_definition_sql(
+            Engine::SqlServer,
+            SchemaObjectKind::Function,
+            "sales]data",
+            "total]",
+        );
+        assert!(sqlserver.contains("OBJECT_ID(N'[sales]]data].[total]]]')"));
+
+        let oracle =
+            object_definition_sql(Engine::Oracle, SchemaObjectKind::Trigger, "app", "audit");
+        assert!(oracle.contains("owner = UPPER('app')"));
+        assert!(oracle.contains("name = UPPER('audit')"));
+        assert!(oracle.contains("type = 'TRIGGER'"));
+
+        let sqlite =
+            object_definition_sql(Engine::Sqlite, SchemaObjectKind::Trigger, "main", "audit");
+        assert!(sqlite.contains(r#"FROM "main".sqlite_master"#));
+        assert!(sqlite.contains("name = 'audit'"));
+
+        assert!(
+            object_definition_sql(Engine::Postgres, SchemaObjectKind::Table, "public", "users")
+                .is_empty()
+        );
     }
 }
