@@ -28,7 +28,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple result sets per execution, shown as a data grid or as pretty-printed JSON, one object per row.
 - Copy the active result set as CSV or JSON from the result options menu, download it as a CSV file, copy individual cells, or copy rows as TSV.
 - Drag column edges to resize query-result columns.
-- Persistent query history: load an old statement or re-run it against the same profile. History keeps the latest 100 distinct SQL/profile pairs.
+- Persistent query history: search by SQL, profile, or result, collapse the panel, and load or re-run an old statement. History keeps the latest 100 distinct SQL/profile pairs.
 - Each result set is capped at 1,000 displayed rows.
 
 ### Table browser and data editing

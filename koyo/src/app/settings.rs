@@ -63,6 +63,8 @@ pub(crate) struct PersistedState {
     pub(crate) split: Option<String>,
     pub(crate) split_ratio: f32,
     pub(crate) history: Vec<QueryHistoryEntry>,
+    #[serde(default)]
+    pub(crate) history_collapsed: bool,
     pub(crate) workspace: WorkspaceSnapshot,
     #[serde(default)]
     pub(crate) notifications: NotificationPreferences,
@@ -110,6 +112,7 @@ impl Default for PersistedState {
             split: None,
             split_ratio: 0.5,
             history: Vec::new(),
+            history_collapsed: false,
             workspace: WorkspaceSnapshot::default(),
             notifications: NotificationPreferences::default(),
             idle_pool_size: default_idle_pool_size(),
@@ -387,6 +390,7 @@ mod tests {
                 duration_ms: 3,
                 at: 42,
             }],
+            history_collapsed: true,
             notifications: NotificationPreferences {
                 enabled: true,
                 connections: false,
@@ -432,6 +436,7 @@ mod tests {
         assert_eq!(decoded.next_ai_thread_id, 8);
         assert_eq!(decoded.history.len(), 1);
         assert_eq!(decoded.history[0].sql, "select 1");
+        assert!(decoded.history_collapsed);
         assert!(decoded.notifications.enabled);
         assert!(!decoded.notifications.connections);
         assert!(decoded.notifications.queries);
@@ -457,6 +462,7 @@ mod tests {
         assert_eq!(state.ai_active_thread, 0);
         assert_eq!(state.next_ai_thread_id, 1);
         assert_eq!(state.split_ratio, 0.5);
+        assert!(!state.history_collapsed);
         assert!(state.notifications.enabled);
         assert!(state.notifications.connections);
         assert!(!state.notifications.queries);

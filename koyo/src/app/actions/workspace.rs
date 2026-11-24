@@ -85,10 +85,14 @@ impl KoyoApp {
         let explorer_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables"));
         let profile_filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search saved connections"));
+        let history_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search history"));
         let mut app = Self {
             store,
             save_queue,
             history: saved.history.clone(),
+            history_filter,
+            history_collapsed: saved.history_collapsed,
+            history_scroll: ScrollHandle::new(),
             allow_close: false,
             catalog_generations: HashMap::new(),
             persistence_disabled: persistence_error.is_some(),
@@ -181,6 +185,8 @@ impl KoyoApp {
         cx.observe(&app.explorer_filter, |_, _, cx| cx.notify())
             .detach();
         cx.observe(&app.profile_filter, |_, _, cx| cx.notify())
+            .detach();
+        cx.observe(&app.history_filter, |_, _, cx| cx.notify())
             .detach();
         app
     }
@@ -354,6 +360,7 @@ impl KoyoApp {
             }),
             split_ratio: self.split_ratio,
             history: self.history.clone(),
+            history_collapsed: self.history_collapsed,
             workspace: self.workspace_snapshot(cx),
             notifications: self.notifications.clone(),
             idle_pool_size: self.idle_pool_size,
@@ -563,6 +570,12 @@ impl KoyoApp {
         }
         self.theme_choice = choice;
         apply_theme(choice, cx);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_history(&mut self, cx: &mut Context<Self>) {
+        self.history_collapsed = !self.history_collapsed;
         self.persist_state(cx);
         cx.notify();
     }
