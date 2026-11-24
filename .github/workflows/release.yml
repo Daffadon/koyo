@@ -160,29 +160,51 @@ jobs:
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
-          $nsisVersion = "3.11"
-          $nsisSha256 = "c7d27f780ddb6cffb4730138cd1591e841f4b7edb155856901cdf5f214394fa1"
-          $nsisUrl = "https://downloads.sourceforge.net/project/nsis/NSIS%203/$nsisVersion/nsis-$nsisVersion.zip"
-          $nsisRoot = Join-Path $env:RUNNER_TEMP "nsis-$nsisVersion"
-          $nsisZip = Join-Path $env:RUNNER_TEMP "nsis-$nsisVersion.zip"
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            try {
-              Invoke-WebRequest -Uri $nsisUrl -OutFile $nsisZip
-              break
-            } catch {
-              if ($attempt -eq 3) { throw }
-              Start-Sleep -Seconds 5
+          $nsisSha256 = "fb603934e8dd7f04d4d3ec757dc7ff990bd8cf372c082619b9c187b120ef4bd9"
+          $nsisUrl = "https://www.nuget.org/api/v2/package/NSIS-Package/3.11.0.2"
+          $nsisRoot = Join-Path $env:RUNNER_TEMP "nsis-package"
+          $nsisZip = Join-Path $env:RUNNER_TEMP "nsis-package.zip"
+          $makensis = $null
+
+          try {
+            curl.exe --fail --location --retry 5 --retry-delay 5 --output $nsisZip $nsisUrl
+            if ($LASTEXITCODE -ne 0) { throw "curl failed with exit code $LASTEXITCODE" }
+            $actualHash = (Get-FileHash -LiteralPath $nsisZip -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $nsisSha256) {
+              throw "checksum mismatch: expected $nsisSha256, got $actualHash"
             }
+            New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+            Expand-Archive -LiteralPath $nsisZip -DestinationPath $nsisRoot -Force
+            $candidate = Join-Path $nsisRoot "NSIS\makensis.exe"
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              $makensis = $candidate
+            } else {
+              throw "makensis.exe missing after extraction"
+            }
+          } catch {
+            Write-Warning "Pinned NSIS download failed: $_"
           }
-          $actualHash = (Get-FileHash -LiteralPath $nsisZip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $nsisSha256) {
-            throw "NSIS checksum mismatch: expected $nsisSha256, got $actualHash"
+
+          if (-not $makensis -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Host "Trying winget for NSIS"
+            winget install --id NSIS.NSIS --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+            $makensis = @(
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
           }
-          New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
-          Expand-Archive -LiteralPath $nsisZip -DestinationPath $nsisRoot -Force
-          $makensis = Join-Path $nsisRoot "nsis-$nsisVersion\makensis.exe"
-          if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) {
-            throw "NSIS makensis.exe not found at $makensis"
+
+          if (-not $makensis) {
+            Write-Host "Trying Chocolatey for NSIS"
+            choco install nsis --no-progress -y
+            $makensis = @(
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          }
+
+          if (-not $makensis) {
+            throw "NSIS makensis.exe is unavailable"
           }
 
           $version = (Select-String -Path koyo/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
