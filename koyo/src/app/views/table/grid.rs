@@ -408,6 +408,7 @@ fn render_data_row(
                 .border_r_1()
                 .border_color(palette.border)
                 .overflow_hidden()
+                .whitespace_nowrap()
                 .text_ellipsis()
                 .aria_label(format!(
                     "Table cell row {} column {}",
@@ -618,6 +619,7 @@ fn render_insert_row(
                 .border_r_1()
                 .border_color(palette.border)
                 .overflow_hidden()
+                .whitespace_nowrap()
                 .when(!generated, |this| {
                     this.cursor_pointer()
                         .hover(|style| style.bg(palette.panel_alt))

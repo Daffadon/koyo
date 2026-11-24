@@ -349,7 +349,8 @@ pub(super) fn value_text(value: &Option<String>, palette: &Palette) -> AnyElemen
             .text_sm()
             .overflow_hidden()
             .whitespace_nowrap()
-            .child(value.clone())
+            .text_ellipsis()
+            .child(value.replace('\n', " ").replace('\r', " "))
             .into_any_element(),
     }
 }

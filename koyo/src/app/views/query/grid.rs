@@ -207,6 +207,8 @@ fn render_result_row(
                     .border_r_1()
                     .border_color(palette.border)
                     .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .aria_label(format!(
                         "Copy cell row {} column {}",
                         row_index + 1,
