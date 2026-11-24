@@ -97,6 +97,8 @@ pub(crate) struct Palette {
     pub sidebar_gradient: gpui_kit::Background,
     pub selection: gpui_kit::Background,
     pub editor: gpui_kit::Background,
+    pub comet_border: gpui_kit::Background,
+    pub comet_border_vertical: gpui_kit::Background,
 }
 
 pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
@@ -149,6 +151,22 @@ pub(crate) fn palette(choice: ThemeChoice, cx: &App) -> Palette {
                 tone(0x05060F).opacity(0.24),
                 tone(0x05060F).opacity(0.24),
             ),
+        },
+        comet_border: match choice {
+            ThemeChoice::Kimi => gradient(
+                90.0,
+                tone(0x7FD1F2).opacity(0.62),
+                tone(0xB48AD3).opacity(0.28),
+            ),
+            _ => gradient(0.0, theme.border, theme.border),
+        },
+        comet_border_vertical: match choice {
+            ThemeChoice::Kimi => gradient(
+                180.0,
+                tone(0x7FD1F2).opacity(0.58),
+                tone(0x3E4C8A).opacity(0.22),
+            ),
+            _ => gradient(0.0, theme.border, theme.border),
         },
     }
 }

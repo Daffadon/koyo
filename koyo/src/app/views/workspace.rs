@@ -300,6 +300,7 @@ impl KoyoApp {
                     .gap_2()
                     .px_2()
                     .py_1()
+                    .relative()
                     .overflow_hidden()
                     .border_b_1()
                     .border_color(palette.border)
@@ -421,7 +422,16 @@ impl KoyoApp {
                                     },
                                 )),
                         )
-                    }),
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .bottom_0()
+                            .h(px(1.5))
+                            .bg(palette.comet_border),
+                    ),
             )
             .when(!notice.is_empty(), |this| {
                 this.child(

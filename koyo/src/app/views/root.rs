@@ -81,7 +81,7 @@ impl Render for KoyoApp {
                         );
                     }),
                 )
-                .child(div().w(px(1.0)).h_full().bg(palette.border))
+                .child(div().w(px(1.0)).h_full().bg(palette.comet_border_vertical))
                 .into_any_element();
             let panel = super::ai::render(self, &palette, self.ai_width, cx);
             (divider, panel)
@@ -150,7 +150,7 @@ impl Render for KoyoApp {
                                         );
                                     }),
                                 )
-                                .child(div().w(px(1.0)).h_full().bg(palette.border)),
+                                .child(div().w(px(1.0)).h_full().bg(palette.comet_border_vertical)),
                         )
                     })
                     .child(self.render_workspace(window, &palette, cx))

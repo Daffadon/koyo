@@ -240,6 +240,7 @@ pub(super) fn render(
 
     let weak_app = cx.entity().downgrade();
     let results_header = h_flex()
+        .relative()
         .items_center()
         .justify_between()
         .px_5()
@@ -399,7 +400,16 @@ pub(super) fn render(
                                 "The result hit Koyo's row or memory cap. Copy includes the rows that were returned.",
                             ),
                     )
-                }),
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .h(px(1.5))
+                        .bg(palette.comet_border),
+                ),
         );
 
     let mut results_panel = v_flex()
