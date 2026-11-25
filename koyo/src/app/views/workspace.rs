@@ -485,21 +485,19 @@ impl KoyoApp {
                 };
                 Some(
                     BarTab::new()
+                        .on_drag(drag, |drag, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.new(|_| drag.clone())
+                        })
+                        .on_drop::<TabDrag>(cx.listener(move |this, drag: &TabDrag, _, cx| {
+                            cx.stop_propagation();
+                            this.reorder_tab(drag.tab_id, tab_id, pane, cx);
+                        }))
                         .prefix(
                             div()
-                                .id(("tab-drag", drag.tab_id))
+                                .id(("tab-drag", tab_id))
                                 .flex()
                                 .items_center()
-                                .on_drag(drag, |drag, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.new(|_| drag.clone())
-                                })
-                                .on_drop::<TabDrag>(cx.listener(
-                                    move |this, drag: &TabDrag, _, cx| {
-                                        cx.stop_propagation();
-                                        this.reorder_tab(drag.tab_id, tab_id, pane, cx);
-                                    },
-                                ))
                                 .tooltip(|window, cx| {
                                     Tooltip::new("Drag to reorder tabs or move to another pane")
                                         .build(window, cx)
