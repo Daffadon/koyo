@@ -1,6 +1,6 @@
 [package]
 name = "koyo"
-version = "0.3.11"
+version = "0.3.12"
 description = "Native database client built with GPUI"
 edition = "2024"
 
