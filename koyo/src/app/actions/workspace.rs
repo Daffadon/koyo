@@ -96,6 +96,7 @@ impl KoyoApp {
             history_collapsed: saved.history_collapsed,
             history_scroll: ScrollHandle::new(),
             allow_close: false,
+            inactive_since: None,
             catalog_generations: HashMap::new(),
             persistence_disabled: persistence_error.is_some(),
             manager: Arc::new(SessionManager::default()),
@@ -190,6 +191,10 @@ impl KoyoApp {
             .detach();
         cx.observe(&app.history_filter, |_, _, cx| cx.notify())
             .detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.handle_window_activation(window.is_window_active(), cx);
+        })
+        .detach();
         app
     }
 
@@ -1572,6 +1577,79 @@ impl KoyoApp {
             self.load_page(tab_id, offset, filters, sort, cx);
         }
         true
+    }
+
+    fn session_is_busy(&self, session_id: Uuid) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.connection
+                .as_ref()
+                .is_some_and(|connection| connection.session_id == session_id)
+                && match &tab.body {
+                    TabBody::Query(query) => query.running || query.cancelling,
+                    TabBody::Table(table) => table.loading || table.cancelling,
+                }
+        })
+    }
+
+    fn session_is_tracked(&self, session_id: Uuid) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.connection
+                .as_ref()
+                .is_some_and(|connection| connection.session_id == session_id)
+        }) || self
+            .parked_connections
+            .iter()
+            .any(|parked| parked.connection.session_id == session_id)
+    }
+
+    fn probe_connections(&mut self, cx: &mut Context<Self>) {
+        let mut sessions = Vec::new();
+        for tab in &self.tabs {
+            if let Some(connection) = &tab.connection
+                && !self.session_is_busy(connection.session_id)
+                && !sessions.contains(&connection.session_id)
+            {
+                sessions.push(connection.session_id);
+            }
+        }
+        for parked in &self.parked_connections {
+            if !sessions.contains(&parked.connection.session_id) {
+                sessions.push(parked.connection.session_id);
+            }
+        }
+        for session_id in sessions {
+            let manager = self.manager.clone();
+            cx.spawn(async move |this, cx| {
+                if database::ping(&manager, session_id).await.is_ok() {
+                    return;
+                }
+                let _ = this.update(cx, |this, cx| {
+                    if !this.session_is_tracked(session_id) || this.session_is_busy(session_id) {
+                        return;
+                    }
+                    this.mark_connection_lost(
+                        session_id,
+                        "Connection lost while Koyo was in the background. Reconnect to continue.",
+                        cx,
+                    );
+                });
+            })
+            .detach();
+        }
+    }
+
+    fn handle_window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
+        if !active {
+            self.inactive_since
+                .get_or_insert_with(std::time::Instant::now);
+            return;
+        }
+        let Some(inactive_since) = self.inactive_since.take() else {
+            return;
+        };
+        if inactive_since.elapsed() >= INACTIVE_CONNECTION_RECHECK {
+            self.probe_connections(cx);
+        }
     }
 
     /// An engine-reported dead session. A lost session takes its whole

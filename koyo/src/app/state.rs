@@ -37,6 +37,8 @@ pub(crate) const DEFAULT_IDLE_POOL_TTL_SECS: u64 = 300;
 pub(crate) const MIN_IDLE_POOL_TTL_SECS: u64 = 30;
 pub(crate) const MAX_IDLE_POOL_TTL_SECS: u64 = 3600;
 pub(crate) const PARKED_CONNECTION_PROBE: std::time::Duration = std::time::Duration::from_secs(15);
+pub(crate) const INACTIVE_CONNECTION_RECHECK: std::time::Duration =
+    std::time::Duration::from_secs(180);
 
 #[derive(Clone)]
 pub(crate) struct StagedInsert {
@@ -270,6 +272,7 @@ pub(crate) struct KoyoApp {
     pub(crate) history_scroll: ScrollHandle,
     pub(crate) catalog_generations: HashMap<Uuid, u64>,
     pub(crate) allow_close: bool,
+    pub(crate) inactive_since: Option<std::time::Instant>,
     pub(crate) persistence_disabled: bool,
     pub(crate) manager: Arc<SessionManager>,
     pub(crate) runtime: Arc<Runtime>,
