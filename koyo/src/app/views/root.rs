@@ -6,8 +6,9 @@ use gpui_kit::{CursorStyle, InteractiveElement};
 use super::{connection, query, table, widgets};
 use crate::app::*;
 use crate::{
-    CompleteFilter, DeleteLine, DuplicateLine, FormatQuery, MoveLineDown, MoveLineUp, MoveTabLeft,
-    MoveTabRight, RefreshTable, RunQuery, ToggleAi, ToggleComment, ToggleSidebar,
+    CloseTab, CompleteFilter, DeleteLine, DuplicateLine, FormatQuery, MoveLineDown, MoveLineUp,
+    MoveTabLeft, MoveTabRight, NewTab, NextTab, PreviousTab, RefreshTable, RunQuery, ToggleAi,
+    ToggleComment, ToggleSidebar,
 };
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
@@ -48,7 +49,12 @@ impl Render for KoyoApp {
             None
         };
         let confirm = if let Some(pending) = self.confirm.as_ref() {
-            Some(widgets::render_confirm(pending, &palette, cx))
+            Some(widgets::render_confirm(
+                pending,
+                &self.confirm_focus,
+                &palette,
+                cx,
+            ))
         } else {
             None
         };
@@ -196,6 +202,18 @@ impl Render for KoyoApp {
             }))
             .on_action(cx.listener(|this, _: &DeleteLine, window, cx| {
                 this.delete_line(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewTab, window, cx| {
+                this.new_sql_tab(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                this.close_active_tab(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
+                this.cycle_tab(1, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
+                this.cycle_tab(-1, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
                 this.run_active_query(cx);

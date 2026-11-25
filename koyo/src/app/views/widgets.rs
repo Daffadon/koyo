@@ -408,6 +408,7 @@ pub(super) fn input_field(
 
 pub(super) fn render_confirm(
     pending: &ConfirmState,
+    focus_handle: &FocusHandle,
     palette: &Palette,
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
@@ -418,8 +419,10 @@ pub(super) fn render_confirm(
         .flex()
         .items_center()
         .justify_center()
+        .track_focus(focus_handle)
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
+                cx.stop_propagation();
                 this.resolve_confirm(false, window, cx);
             }
         }))

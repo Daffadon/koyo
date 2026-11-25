@@ -261,6 +261,7 @@ pub(crate) struct ConfirmState {
     pub(crate) description: String,
     pub(crate) action: std::rc::Rc<dyn Fn(&mut KoyoApp, &mut Context<KoyoApp>)>,
     pub(crate) close_window: bool,
+    pub(crate) return_focus: Option<FocusHandle>,
 }
 
 pub(crate) struct KoyoApp {
@@ -325,6 +326,7 @@ pub(crate) struct KoyoApp {
     pub(crate) ai_scroll: ScrollHandle,
     pub(crate) status: String,
     pub(crate) dialog: Option<ConnectionDialog>,
+    pub(crate) confirm_focus: FocusHandle,
     pub(crate) cell_edit: Option<CellEdit>,
     pub(crate) confirm: Option<ConfirmState>,
     pub(crate) export: Option<TableExportDialog>,

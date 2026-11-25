@@ -152,6 +152,7 @@ impl KoyoApp {
             ai_scroll: ScrollHandle::new(),
             status,
             dialog: None,
+            confirm_focus: cx.focus_handle(),
             cell_edit: None,
             confirm: None,
             export: None,
@@ -169,9 +170,10 @@ impl KoyoApp {
         apply_theme(theme_choice, cx);
         app.restore_workspace(&saved.workspace, window, cx);
         app.ensure_workspace_tab(window, cx);
+        app.focus_active_query_editor(window, cx);
 
         let weak = cx.entity().downgrade();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |window, cx| {
             let mut allow = true;
             let _ = weak.update(cx, |app, cx| {
                 if app.allow_close {
@@ -180,7 +182,7 @@ impl KoyoApp {
                 app.persist_state_sync(cx);
                 if app.has_unsaved_work(cx) {
                     allow = false;
-                    app.confirm_close(cx);
+                    app.confirm_close(window, cx);
                 }
             });
             allow
@@ -433,13 +435,15 @@ impl KoyoApp {
         })
     }
 
-    pub(crate) fn confirm_close(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn confirm_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm = Some(ConfirmState {
             title: "Close Koyo?".into(),
             description: "A query is running, a SQL editor has text, or edits are staged. Running queries stop and staged edits are discarded; saved workspace SQL is restored when possible.".into(),
             action: std::rc::Rc::new(|_, _| {}),
             close_window: true,
+            return_focus: window.focused(cx),
         });
+        self.confirm_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -1834,8 +1838,16 @@ impl KoyoApp {
         {
             self.connect_profile(profile.id, Some(tab_id), false, window, cx);
         }
+        self.focus_query_editor(tab_id, window, cx);
         self.persist_state(cx);
         cx.notify();
+    }
+
+    pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.pane_active_id(self.focus) else {
+            return;
+        };
+        self.close_tab(tab_id, window, cx);
     }
 
     pub(crate) fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -1856,6 +1868,7 @@ impl KoyoApp {
             );
         } else {
             self.close_tab_now(tab_id, cx);
+            self.focus_active_query_editor(window, cx);
         }
     }
 
@@ -1999,7 +2012,7 @@ impl KoyoApp {
 
     pub(crate) fn confirm(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
         title: impl Into<String>,
         description: impl Into<String>,
@@ -2010,7 +2023,9 @@ impl KoyoApp {
             description: description.into(),
             action: std::rc::Rc::new(action),
             close_window: false,
+            return_focus: window.focused(cx),
         });
+        self.confirm_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -2035,6 +2050,9 @@ impl KoyoApp {
         }
         if confirmed {
             (pending.action)(self, cx);
+        }
+        if let Some(focus) = pending.return_focus {
+            focus.focus(window, cx);
         }
         cx.notify();
     }
@@ -2172,7 +2190,13 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn switch_tab(&mut self, pane: Pane, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn switch_tab(
+        &mut self,
+        pane: Pane,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(id) = self.pane_tab_ids(pane).get(index).copied() else {
             return;
         };
@@ -2184,8 +2208,49 @@ impl KoyoApp {
         self.reveal_active_tab(pane);
         self.normalize_panes();
         self.auto_connect_tab(id, cx);
+        self.focus_query_editor(id, window, cx);
         self.persist_state(cx);
         cx.notify();
+    }
+
+    pub(crate) fn cycle_tab(
+        &mut self,
+        direction: isize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = self.pane_tab_ids(self.focus).len();
+        if count < 2 {
+            return;
+        }
+        let current = self.pane_selected(self.focus);
+        let next = if direction >= 0 {
+            (current + 1) % count
+        } else {
+            (current + count - 1) % count
+        };
+        self.switch_tab(self.focus, next, window, cx);
+    }
+
+    pub(crate) fn focus_query_editor(
+        &self,
+        tab_id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let TabBody::Query(query) = &self.tabs[index].body else {
+            return;
+        };
+        query.editor.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
+    fn focus_active_query_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(tab_id) = self.pane_active_id(self.focus) {
+            self.focus_query_editor(tab_id, window, cx);
+        }
     }
 
     /// A disconnected tab adopts a live session for its profile. One

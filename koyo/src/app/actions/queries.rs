@@ -620,6 +620,7 @@ impl KoyoApp {
             self.add_tab(tab, self.focus)
         };
         self.set_history_sql(tab_id, &entry.sql, window, cx);
+        self.focus_query_editor(tab_id, window, cx);
         self.status = "Loaded query from history.".into();
         cx.notify();
     }

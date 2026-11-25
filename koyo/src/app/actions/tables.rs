@@ -414,7 +414,7 @@ impl KoyoApp {
         let Some(order) = self.pane_tab_ids(pane).iter().position(|id| *id == tab_id) else {
             return false;
         };
-        self.switch_tab(pane, order, cx);
+        self.switch_tab(pane, order, window, cx);
         let index = self.tab_index(tab_id).expect("tab exists");
         let needs_connect = self.tabs[index].connection.is_none() && !self.tabs[index].connecting;
         self.status = format!("Focused {schema}.{table}.");

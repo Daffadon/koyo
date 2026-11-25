@@ -517,8 +517,8 @@ impl KoyoApp {
                                 })),
                             "Close tab",
                         ))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.switch_tab(pane, order, cx);
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.switch_tab(pane, order, window, cx);
                         })),
                 )
             })
