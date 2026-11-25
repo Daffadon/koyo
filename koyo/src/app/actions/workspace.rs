@@ -3,7 +3,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Enter, IndentInline, InputState, TextareaState};
+use gpui_kit::component::input::{
+    DeleteToPreviousWordStart, Enter, IndentInline, InputState, TextareaState,
+};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -542,17 +544,41 @@ impl KoyoApp {
                 cx,
             );
         } else {
-            let (value, selection) = {
-                let editor = editor.read(cx);
-                (editor.value().to_string(), editor.selected_range())
-            };
-            // Tab indents a line or selection. At the end of existing text it
-            // would only leave trailing whitespace.
-            if tab_should_indent(&value, &selection) {
-                handle.dispatch_action(&IndentInline, window, cx);
-            }
+            handle.dispatch_action(&IndentInline, window, cx);
         }
         cx.stop_propagation();
+    }
+
+    /// Ctrl+Backspace after horizontal whitespace removes that whitespace
+    /// without also eating the word before it. Otherwise the editor's normal
+    /// delete-previous-word behavior applies.
+    pub(crate) fn handle_ctrl_backspace(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editor) = self.focused_query_editor() else {
+            return false;
+        };
+        let (value, selection, handle) = {
+            let editor = editor.read(cx);
+            (
+                editor.value().to_string(),
+                editor.selected_range(),
+                editor.focus_handle(cx).clone(),
+            )
+        };
+        if selection.is_empty()
+            && let Some(start) = previous_horizontal_whitespace_start(&value, selection.end)
+        {
+            editor.update(cx, |editor, cx| {
+                editor.set_selected_range(start..selection.end, cx);
+                editor.replace("", window, cx);
+            });
+            return true;
+        }
+        handle.dispatch_action(&DeleteToPreviousWordStart, window, cx);
+        true
     }
 
     pub(crate) fn set_sidebar_width(&mut self, width: f32, cx: &mut Context<Self>) {
@@ -2188,13 +2214,11 @@ fn move_tab_id(tabs: &mut Vec<u64>, tab_id: u64, direction: isize) -> bool {
     true
 }
 
-fn tab_should_indent(value: &str, selection: &std::ops::Range<usize>) -> bool {
-    let cursor = selection.end.min(value.len());
-    let line_start = value[..cursor]
-        .rfind('\n')
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    !selection.is_empty() || value[line_start..cursor].trim().is_empty()
+fn previous_horizontal_whitespace_start(value: &str, cursor: usize) -> Option<usize> {
+    let cursor = cursor.min(value.len());
+    let before = &value[..cursor];
+    let start = before.trim_end_matches([' ', '\t']).len();
+    (start < cursor).then_some(start)
 }
 
 fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
@@ -2212,7 +2236,8 @@ fn neighbor_after_close(remaining: &[u64], closed_position: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        KoyoApp, move_tab_id, neighbor_after_close, same_connection_target, tab_should_indent,
+        KoyoApp, move_tab_id, neighbor_after_close, previous_horizontal_whitespace_start,
+        same_connection_target,
     };
     use koyo_core::models::{ConnectionProfile, Engine, SslMode};
     use uuid::Uuid;
@@ -2279,12 +2304,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_indents_lines_and_selections_but_not_trailing_text() {
-        assert!(tab_should_indent("", &(0..0)));
-        assert!(tab_should_indent("  select", &(2..2)));
-        assert!(tab_should_indent("select", &(0..6)));
-        assert!(!tab_should_indent("select", &(6..6)));
-        assert!(!tab_should_indent("select  ", &(8..8)));
-        assert!(tab_should_indent("select\n", &(7..7)));
+    fn ctrl_backspace_removes_only_trailing_horizontal_whitespace() {
+        assert_eq!(previous_horizontal_whitespace_start("select ", 7), Some(6));
+        assert_eq!(previous_horizontal_whitespace_start("\t  x", 3), Some(0));
+        assert_eq!(previous_horizontal_whitespace_start("select", 6), None);
+        assert_eq!(previous_horizontal_whitespace_start("select\n", 7), None);
     }
 }

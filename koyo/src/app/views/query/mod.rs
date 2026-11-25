@@ -567,6 +567,12 @@ pub(super) fn render(
                                             if event.keystroke.key == "tab" {
                                                 cx.stop_propagation();
                                                 this.accept_completion_or_indent(window, cx);
+                                            } else if event.keystroke.key == "backspace"
+                                                && modifiers.control
+                                                && !cfg!(target_os = "macos")
+                                                && this.handle_ctrl_backspace(window, cx)
+                                            {
+                                                cx.stop_propagation();
                                             } else if event.keystroke.key == "enter"
                                                 && (modifiers.control || modifiers.platform)
                                             {

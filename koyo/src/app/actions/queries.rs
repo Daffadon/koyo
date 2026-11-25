@@ -351,7 +351,7 @@ impl KoyoApp {
         );
     }
 
-    fn focused_query_editor(&self) -> Option<Entity<EditorState>> {
+    pub(crate) fn focused_query_editor(&self) -> Option<Entity<EditorState>> {
         self.focused_index().and_then(|index| {
             self.tabs.get(index).and_then(|tab| match &tab.body {
                 TabBody::Query(query) => Some(query.editor.clone()),

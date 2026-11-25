@@ -171,6 +171,14 @@ fn main() {
                 KeyBinding::new("ctrl-alt-b", ToggleAi, Some("Koyo")),
                 KeyBinding::new("cmd-alt-b", ToggleAi, Some("Koyo")),
             ]);
+            // Capture handles Ctrl+Backspace so trailing whitespace can be
+            // removed without also deleting the word before it.
+            #[cfg(not(target_os = "macos"))]
+            cx.bind_keys([KeyBinding::new(
+                "ctrl-backspace",
+                NoAction {},
+                Some("Input && mode == editor"),
+            )]);
 
             let bounds = Bounds::centered(None, size(px(1440.0), px(960.0)), cx);
             let runtime = runtime.clone();
