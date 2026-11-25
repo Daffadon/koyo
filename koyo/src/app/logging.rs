@@ -124,6 +124,25 @@ fn rotate_log(path: &Path) {
     let _ = fs::rename(path, old);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{MAX_LOG_BYTES, rotate_log};
+    use std::fs;
+
+    #[test]
+    fn oversized_log_rotates_once() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-log-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).expect("create log temp dir");
+        let path = directory.join("koyo.log");
+        fs::write(&path, vec![b'x'; MAX_LOG_BYTES as usize + 1]).expect("seed log");
+        rotate_log(&path);
+        assert!(!path.exists());
+        assert!(path.with_extension("log.1").exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+}
+
 pub(crate) fn install_panic_hook() {
     let path = log_path();
     std::panic::set_hook(Box::new(move |info| {

@@ -9,6 +9,7 @@ pub(crate) enum SqlRisk {
     UnfilteredDelete,
     UnfilteredUpdate,
     DestructiveDdl,
+    DynamicSql,
 }
 
 /// Advance the app's transaction warning from the SQL text. The database
@@ -85,6 +86,12 @@ pub(crate) fn sql_risk(sql: &str) -> Option<SqlRisk> {
                         }
                     }
                     "truncate" | "drop" => return Some(SqlRisk::DestructiveDdl),
+                    "exec" | "execute" if depth == 0 => {
+                        return Some(SqlRisk::DynamicSql);
+                    }
+                    "do" if depth == 0 && !saw_insert => {
+                        return Some(SqlRisk::DynamicSql);
+                    }
                     _ => {}
                 }
                 word.clear();
@@ -312,6 +319,14 @@ mod tests {
             Some(SqlRisk::DestructiveDdl)
         );
         assert_eq!(sql_risk("DROP TABLE users;"), Some(SqlRisk::DestructiveDdl));
+        assert_eq!(
+            sql_risk("EXEC('DELETE FROM users')"),
+            Some(SqlRisk::DynamicSql)
+        );
+        assert_eq!(
+            sql_risk("DO $$ BEGIN DELETE FROM users; END $$;"),
+            Some(SqlRisk::DynamicSql)
+        );
     }
 
     #[test]
@@ -338,7 +353,6 @@ mod tests {
         assert_eq!(sql_risk("SELECT 'DELETE FROM users'"), None);
         assert_eq!(sql_risk("SELECT \"delete\" FROM users"), None);
         assert_eq!(sql_risk("SELECT [delete] FROM users"), None);
-        assert_eq!(sql_risk("DO $$ BEGIN DELETE FROM users; END $$;"), None);
     }
 
     #[test]

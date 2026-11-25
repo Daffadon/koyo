@@ -163,6 +163,10 @@ impl KoyoApp {
                         "Run destructive DDL?",
                         "TRUNCATE or DROP can permanently remove data. Run it?",
                     ),
+                    SqlRisk::DynamicSql => (
+                        "Run dynamic SQL?",
+                        "EXECUTE and DO blocks can hide destructive statements. Run it?",
+                    ),
                 };
                 self.confirm_deferred(
                     title,
