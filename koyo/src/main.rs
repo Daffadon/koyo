@@ -110,9 +110,28 @@ fn acquire_instance_lock() -> Result<File, String> {
 }
 
 fn main() {
+    let config_directory = koyo_core::storage::default_config_dir();
+    if let Err(error) = ensure_config_directory(&config_directory) {
+        rfd::MessageDialog::new()
+            .set_title("Koyo")
+            .set_description(error)
+            .show();
+        return;
+    }
+    if let Err(error) = app::init_logging() {
+        eprintln!("Could not initialize Koyo logging: {error}");
+    }
+    app::install_panic_hook();
+    log::info!(
+        "Koyo {} starting on {} {}",
+        app::VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
     let _instance_lock = match acquire_instance_lock() {
         Ok(lock) => lock,
         Err(error) => {
+            log::error!("could not acquire the Koyo instance lock: {error}");
             rfd::MessageDialog::new()
                 .set_title("Koyo")
                 .set_description(error)

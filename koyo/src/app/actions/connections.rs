@@ -139,6 +139,7 @@ impl KoyoApp {
                         this.status = format!("{object_count} objects.");
                     }
                     Err(error) => {
+                        log::error!("database object load failed on session {session_id}: {error}");
                         if database::is_connection_lost(&error) {
                             this.mark_connection_lost(
                                 session_id,
@@ -488,6 +489,7 @@ impl KoyoApp {
                         }
                     }
                     Err(error) => {
+                        log::error!("connection to profile {profile_id} failed: {error}");
                         let waiting = this
                             .tabs
                             .iter()
@@ -738,6 +740,7 @@ impl KoyoApp {
                 self.connect_from_dialog(saved.id, window, cx);
             }
             Err(error) => {
+                log::error!("could not save connection profile: {error}");
                 if let Some(dialog) = self.dialog.as_mut() {
                     dialog.error = error;
                 }
@@ -784,6 +787,7 @@ impl KoyoApp {
                         }
                     }
                     Err(error) => {
+                        log::error!("could not delete connection profile {id}: {error}");
                         if let Some(dialog) = this.dialog.as_mut() {
                             dialog.error = error;
                         }

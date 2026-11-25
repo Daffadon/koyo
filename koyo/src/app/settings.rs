@@ -18,16 +18,23 @@ pub(crate) enum SettingsSection {
     Appearance,
     Notifications,
     Connections,
+    About,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [Self; 3] = [Self::Appearance, Self::Notifications, Self::Connections];
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Appearance,
+        Self::Notifications,
+        Self::Connections,
+        Self::About,
+    ];
 
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Notifications => "Notifications",
             Self::Connections => "Connections",
+            Self::About => "About",
         }
     }
 
@@ -36,6 +43,7 @@ impl SettingsSection {
             Self::Appearance => "Pick the palette for the workspace, tables, and chrome.",
             Self::Notifications => "Choose which events show a toast.",
             Self::Connections => "Set how long clean sessions wait for reuse.",
+            Self::About => "Version, executable checksum, and local log location.",
         }
     }
 }
@@ -249,6 +257,7 @@ pub(crate) fn spawn_state_save_worker(
                 let (state, generation) = queue.next();
                 let result = settings.save(&state);
                 if let Err(error) = &result {
+                    log::error!("state save worker failed: {error}");
                     let _ = errors.send(error.clone());
                 }
                 queue.finish(generation, result.err());
@@ -612,7 +621,8 @@ mod tests {
             [
                 SettingsSection::Appearance,
                 SettingsSection::Notifications,
-                SettingsSection::Connections
+                SettingsSection::Connections,
+                SettingsSection::About
             ]
         );
     }

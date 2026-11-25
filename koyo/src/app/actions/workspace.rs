@@ -43,7 +43,10 @@ impl KoyoApp {
         let settings = SettingsStore::from_default_dir();
         let (saved, state_warning, persistence_error) = match settings.load() {
             Ok(loaded) => (loaded.state, loaded.warning, None),
-            Err(error) => (PersistedState::default(), Some(error.clone()), Some(error)),
+            Err(error) => {
+                log::error!("could not load Koyo state: {error}");
+                (PersistedState::default(), Some(error.clone()), Some(error))
+            }
         };
         let (profiles, mut status) = match store.load_profiles() {
             Ok(profiles) => {
@@ -54,12 +57,17 @@ impl KoyoApp {
                 };
                 (profiles, status)
             }
-            Err(error) => (Vec::new(), error),
+            Err(error) => {
+                log::error!("could not load saved connection profiles: {error}");
+                (Vec::new(), error)
+            }
         };
         if let Some(warning) = store.take_migration_warning() {
+            log::warn!("{warning}");
             status = warning;
         }
         if let Some(warning) = state_warning {
+            log::warn!("{warning}");
             status = warning;
         }
         let ai_config_json = saved.ai_config_json.clone();
@@ -344,6 +352,7 @@ impl KoyoApp {
         }
         let state = self.persisted_state(cx);
         if let Err(error) = self.save_queue.flush(state) {
+            log::error!("could not save Koyo state: {error}");
             self.status = error;
         }
     }
@@ -2026,6 +2035,34 @@ impl KoyoApp {
             return_focus: window.focused(cx),
         });
         self.confirm_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    /// Confirmation raised from an action that has no `Window` parameter.
+    /// Focus arrives on the next effect cycle so Escape still dismisses it.
+    pub(crate) fn confirm_deferred(
+        &mut self,
+        title: impl Into<String>,
+        description: impl Into<String>,
+        action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm = Some(ConfirmState {
+            title: title.into(),
+            description: description.into(),
+            action: std::rc::Rc::new(action),
+            close_window: false,
+            return_focus: self
+                .focused_query_editor()
+                .map(|editor| editor.read(cx).focus_handle(cx).clone()),
+        });
+        let window_handle = self.window_handle;
+        let focus = self.confirm_focus.clone();
+        cx.defer(move |cx| {
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                focus.focus(window, cx);
+            });
+        });
         cx.notify();
     }
 

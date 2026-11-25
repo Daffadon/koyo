@@ -1,4 +1,5 @@
 use gpui_kit::InteractiveElement;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::{Disableable, FocusTrapElement as _, Icon, IconName, Size};
@@ -8,7 +9,10 @@ use gpui_kit::*;
 
 use super::widgets::{SETTINGS_FOCUS_SCOPE, control_focus, is_activation_key};
 use crate::app::actions::settings::NotificationPreference;
-use crate::app::{KoyoApp, Palette, SettingsSection, ThemeChoice};
+use crate::app::{
+    KoyoApp, Palette, SettingsSection, ThemeChoice, VERSION, config_path, executable_checksum,
+    log_path,
+};
 
 fn preference_row(
     id: &'static str,
@@ -379,6 +383,93 @@ fn connections_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>)
         .into_any_element()
 }
 
+fn about_body(palette: &Palette, cx: &mut Context<KoyoApp>) -> AnyElement {
+    let checksum = executable_checksum();
+    let log_path = log_path();
+    let config_path = config_path();
+    let mono = cx.theme().mono_font_family.clone();
+
+    let info_row = |label: &'static str, value: String, copy: Option<String>| {
+        v_flex()
+            .w_full()
+            .gap_1()
+            .child(div().text_xs().text_color(palette.muted).child(label))
+            .child(
+                h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .font_family(mono.clone())
+                            .text_xs()
+                            .whitespace_normal()
+                            .child(value),
+                    )
+                    .when_some(copy, |this, copy| {
+                        this.child(
+                            Button::new(SharedString::from(format!("copy-about-{label}")))
+                                .ghost()
+                                .compact()
+                                .label("Copy")
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                                })),
+                        )
+                    }),
+            )
+    };
+
+    v_flex()
+        .gap_4()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Koyo"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child("Native database client for PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle."),
+                ),
+        )
+        .child(info_row("Version", VERSION.to_string(), None))
+        .child(info_row(
+            "Executable SHA-256",
+            checksum.clone(),
+            Some(checksum),
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Compare this checksum with the downloaded release asset to verify the binary."),
+        )
+        .child(info_row(
+            "Log file",
+            log_path.display().to_string(),
+            Some(log_path.display().to_string()),
+        ))
+        .child(info_row(
+            "Config directory",
+            config_path.display().to_string(),
+            Some(config_path.display().to_string()),
+        ))
+        .child(
+            div()
+                .text_xs()
+                .text_color(palette.muted)
+                .child("Errors and panics append here. The log rotates to koyo.log.1 at 5 MB."),
+        )
+        .into_any_element()
+}
+
 pub(super) fn render_settings(
     app: &KoyoApp,
     palette: &Palette,
@@ -389,6 +480,7 @@ pub(super) fn render_settings(
         SettingsSection::Appearance => appearance_body(app, palette, cx),
         SettingsSection::Notifications => notifications_body(app, palette, cx),
         SettingsSection::Connections => connections_body(app, palette, cx),
+        SettingsSection::About => about_body(palette, cx),
     };
 
     let sidebar = v_flex()

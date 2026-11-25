@@ -130,6 +130,42 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
+        let TabBody::Query(query) = &self.tabs[index].body else {
+            return;
+        };
+        if query.running {
+            return;
+        }
+        if self.tabs[index].connection.is_some() {
+            let (selected, full) = {
+                let editor = query.editor.read(cx);
+                (
+                    editor.selected_value().to_string(),
+                    editor.value().to_string(),
+                )
+            };
+            let sql = if selected.trim().is_empty() {
+                full
+            } else {
+                selected
+            };
+            if !sql.trim().is_empty() && delete_without_where(&sql) {
+                self.confirm_deferred(
+                    "Run DELETE without WHERE?",
+                    "This statement has no WHERE clause and can delete every row from its target table. Run it?",
+                    move |this, cx| this.run_query_sql(tab_id, cx),
+                    cx,
+                );
+                return;
+            }
+        }
+        self.run_query_sql(tab_id, cx);
+    }
+
+    fn run_query_sql(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
         let Some(connection) = self.tabs[index].connection.clone() else {
             self.tabs[index].notice = "Connect a database to run SQL.".into();
             cx.notify();
@@ -253,6 +289,9 @@ impl KoyoApp {
                     }
                     Err(error) => {
                         query.definition_kind = None;
+                        if !cancelled {
+                            log::error!("query failed on session {session_id}: {error}");
+                        }
                         if database::is_connection_lost(&error) {
                             Some(error)
                         } else {
@@ -484,6 +523,7 @@ impl KoyoApp {
                 );
             }
             Err(error) => {
+                log::error!("CSV download failed: {error}");
                 let message = format!("CSV download failed: {error}");
                 self.tabs[index].notice = message.clone();
                 self.push_toast(

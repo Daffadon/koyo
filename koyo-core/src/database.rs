@@ -250,7 +250,7 @@ pub async fn connect(
                 .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
             tokio::spawn(async move {
                 if let Err(error) = connection.await {
-                    eprintln!("PostgreSQL connection closed: {error}");
+                    log::warn!("PostgreSQL connection closed: {error}");
                 }
             });
             client
@@ -262,7 +262,7 @@ pub async fn connect(
                 .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
             tokio::spawn(async move {
                 if let Err(error) = connection.await {
-                    eprintln!("PostgreSQL connection closed: {error}");
+                    log::warn!("PostgreSQL connection closed: {error}");
                 }
             });
             client

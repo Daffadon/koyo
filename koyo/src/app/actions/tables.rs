@@ -536,6 +536,7 @@ impl KoyoApp {
                     Err(error) => Some(error),
                 };
                 if let Some(error) = error {
+                    log::error!("table page load failed on session {session_id}: {error}");
                     if database::is_connection_lost(&error) || error.contains("timed out") {
                         this.mark_connection_lost(
                             session_id,
@@ -872,6 +873,7 @@ impl KoyoApp {
                         );
                     }
                     Err(error) => {
+                        log::error!("table CSV export failed on session {session_id}: {error}");
                         if database::is_connection_lost(&error) || error.contains("timed out") {
                             this.mark_connection_lost(
                                 session_id,
@@ -1031,6 +1033,7 @@ impl KoyoApp {
                         this.load_page(tab_id, offset, filters, sort, cx);
                     }
                     Err(error) => {
+                        log::error!("applying staged changes failed on session {session_id}: {error}");
                         if database::is_connection_lost(&error) {
                             this.mark_connection_lost(
                                 session_id,
