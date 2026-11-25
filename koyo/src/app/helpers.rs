@@ -162,11 +162,30 @@ pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
     format!("{name}.csv")
 }
 
-fn quote_sql_identifier(engine: Engine, name: &str) -> String {
+pub(crate) fn quote_sql_identifier(engine: Engine, name: &str) -> String {
     match engine {
         Engine::Mysql | Engine::Mariadb => format!("`{}`", name.replace('`', "``")),
         Engine::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ => format!("\"{}\"", name.replace('"', "\"\"")),
+    }
+}
+
+/// Small preview query so "Query table" cannot accidentally load a whole
+/// warehouse table into memory.
+pub(crate) fn table_preview_sql(engine: Engine, schema: &str, table: &str) -> String {
+    let relation = if schema.is_empty() {
+        quote_sql_identifier(engine, table)
+    } else {
+        format!(
+            "{}.{}",
+            quote_sql_identifier(engine, schema),
+            quote_sql_identifier(engine, table)
+        )
+    };
+    match engine {
+        Engine::SqlServer => format!("SELECT TOP 100 * FROM {relation};"),
+        Engine::Oracle => format!("SELECT * FROM {relation} FETCH FIRST 100 ROWS ONLY;"),
+        _ => format!("SELECT * FROM {relation} LIMIT 100;"),
     }
 }
 
@@ -803,7 +822,7 @@ mod tests {
     use super::{
         default_export_path, filter_suggestions, format_sql, insert_filter_suggestion,
         object_definition_sql, parse_filter_input, resolve_export_pages, results_as_csv,
-        results_as_json, table_csv_file_name, table_ddl, table_page_as_csv,
+        results_as_json, table_csv_file_name, table_ddl, table_page_as_csv, table_preview_sql,
     };
     use crate::app::ExportScope;
     use koyo_core::models::{Engine, ForeignKeyInfo, SchemaObjectKind};
@@ -956,6 +975,26 @@ mod tests {
         let ddl = table_ddl(Engine::Mysql, "app", "items", &columns, &[]);
         assert!(ddl.contains("CREATE TABLE `app`.`items` ("));
         assert!(ddl.contains("`id` bigint NOT NULL"));
+    }
+
+    #[test]
+    fn table_preview_sql_uses_the_right_limit_syntax() {
+        assert_eq!(
+            table_preview_sql(Engine::Postgres, "public", "users"),
+            "SELECT * FROM \"public\".\"users\" LIMIT 100;"
+        );
+        assert_eq!(
+            table_preview_sql(Engine::Mysql, "app", "users"),
+            "SELECT * FROM `app`.`users` LIMIT 100;"
+        );
+        assert_eq!(
+            table_preview_sql(Engine::SqlServer, "dbo", "users"),
+            "SELECT TOP 100 * FROM [dbo].[users];"
+        );
+        assert_eq!(
+            table_preview_sql(Engine::Oracle, "APP", "USERS"),
+            "SELECT * FROM \"APP\".\"USERS\" FETCH FIRST 100 ROWS ONLY;"
+        );
     }
 
     #[test]

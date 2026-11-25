@@ -596,6 +596,25 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn query_table(
+        &mut self,
+        engine: Engine,
+        schema: &str,
+        table: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_sql_tab(window, cx);
+        let Some(tab_id) = self.pane_active_id(self.focus) else {
+            return;
+        };
+        let sql = table_preview_sql(engine, schema, table);
+        self.set_history_sql(tab_id, &sql, window, cx);
+        self.focus_query_editor(tab_id, window, cx);
+        self.status = format!("Loaded a preview query for {schema}.{table}.");
+        cx.notify();
+    }
+
     pub(crate) fn load_history_entry(
         &mut self,
         index: usize,

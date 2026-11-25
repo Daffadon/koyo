@@ -4,6 +4,7 @@ use gpui_kit::InteractiveElement;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable, Icon, IconName, Size};
 use gpui_kit::component::{h_flex, v_flex};
@@ -15,6 +16,30 @@ use crate::app::{KoyoApp, Palette, QueryHistoryEntry, TabBody, engine_label, uni
 
 const HISTORY_ROW_HEIGHT: f32 = 40.0;
 const HISTORY_OVERSCAN: usize = 4;
+
+fn open_table_from_menu(app: &Entity<KoyoApp>, schema: String, table: String, cx: &mut App) {
+    let window_handle = app.read(cx).window_handle;
+    let _ = cx.update_window(window_handle, |_, window, cx| {
+        let _ = app.update(cx, |this, cx| {
+            this.open_table(schema, table, window, cx);
+        });
+    });
+}
+
+fn query_table_from_menu(
+    app: &Entity<KoyoApp>,
+    engine: koyo_core::models::Engine,
+    schema: String,
+    table: String,
+    cx: &mut App,
+) {
+    let window_handle = app.read(cx).window_handle;
+    let _ = cx.update_window(window_handle, |_, window, cx| {
+        let _ = app.update(cx, |this, cx| {
+            this.query_table(engine, &schema, &table, window, cx);
+        });
+    });
+}
 
 fn metadata_group_icon(name: &str) -> IconName {
     match name {
@@ -121,6 +146,7 @@ impl KoyoApp {
             return div();
         };
         let tab_id = tab.id;
+        let engine = tab.profile.as_ref().map(|profile| profile.engine);
         let profile = tab.profile.clone();
         let connection = tab.connection.clone();
         let tables = tab.tables.clone();
@@ -334,94 +360,139 @@ impl KoyoApp {
                             koyo_core::models::SchemaObjectKind::Function
                                 | koyo_core::models::SchemaObjectKind::Trigger
                         );
-                    schema_nodes = schema_nodes.child(
-                        div()
-                            .id(item_id)
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .ml_7()
-                            .rounded_md()
-                            .when(clickable, |this| this.cursor_pointer())
-                            .when(selected, |this| this.bg(palette.selection))
-                            .when(!selected && clickable, |this| {
-                                this.hover(|style| style.bg(palette.panel))
-                            })
-                            .aria_label(format!("{kind:?} {name}"))
-                            .when(clickable, |this| {
-                                let name = name.clone();
-                                let schema_name_for_keyboard = schema_name.clone();
-                                let name_for_keyboard = name.clone();
-                                this.track_focus(&control_focus(
-                                    tab_id,
-                                    format!("schema-object-{schema_name}-{kind:?}-{name}"),
-                                    cx,
-                                ))
-                                .tab_stop(true)
-                                .focus(|style| {
-                                    style.bg(palette.accent_soft).border_color(palette.ring)
-                                })
-                                .on_key_down(cx.listener(
-                                    move |this, event: &KeyDownEvent, window, cx| {
-                                        if !is_activation_key(event) {
-                                            return;
-                                        }
-                                        if opens_table {
-                                            this.open_table(
-                                                schema_name_for_keyboard.clone(),
-                                                name_for_keyboard.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        } else {
-                                            this.open_schema_definition(
-                                                schema_name_for_keyboard.clone(),
-                                                name_for_keyboard.clone(),
-                                                kind,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                ))
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        if opens_table {
-                                            this.open_table(
-                                                schema_name.clone(),
-                                                name.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        } else {
-                                            this.open_schema_definition(
-                                                schema_name.clone(),
-                                                name.clone(),
-                                                kind,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                ))
-                            })
-                            .child(Icon::new(schema_kind_icon(kind)).with_size(Size::Small))
-                            .child(div().flex_1().text_sm().child(name.clone()))
-                            .when(
-                                kind == koyo_core::models::SchemaObjectKind::Table && !editable,
-                                |this| {
-                                    this.child(
-                                        div()
-                                            .w(px(6.0))
-                                            .h(px(6.0))
-                                            .rounded_full()
-                                            .bg(palette.muted),
-                                    )
+                    let context_schema = schema_name.clone();
+                    let context_table = name.clone();
+                    let node = div()
+                        .id(item_id)
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .ml_7()
+                        .rounded_md()
+                        .when(clickable, |this| this.cursor_pointer())
+                        .when(selected, |this| this.bg(palette.selection))
+                        .when(!selected && clickable, |this| {
+                            this.hover(|style| style.bg(palette.panel))
+                        })
+                        .aria_label(format!("{kind:?} {name}"))
+                        .when(clickable, |this| {
+                            let name = name.clone();
+                            let schema_name_for_keyboard = schema_name.clone();
+                            let name_for_keyboard = name.clone();
+                            this.track_focus(&control_focus(
+                                tab_id,
+                                format!("schema-object-{schema_name}-{kind:?}-{name}"),
+                                cx,
+                            ))
+                            .tab_stop(true)
+                            .focus(|style| style.bg(palette.accent_soft).border_color(palette.ring))
+                            .on_key_down(cx.listener(
+                                move |this, event: &KeyDownEvent, window, cx| {
+                                    if !is_activation_key(event) {
+                                        return;
+                                    }
+                                    if opens_table {
+                                        this.open_table(
+                                            schema_name_for_keyboard.clone(),
+                                            name_for_keyboard.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        this.open_schema_definition(
+                                            schema_name_for_keyboard.clone(),
+                                            name_for_keyboard.clone(),
+                                            kind,
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                 },
-                            ),
-                    );
+                            ))
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    if opens_table {
+                                        this.open_table(
+                                            schema_name.clone(),
+                                            name.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    } else {
+                                        this.open_schema_definition(
+                                            schema_name.clone(),
+                                            name.clone(),
+                                            kind,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            ))
+                        })
+                        .child(Icon::new(schema_kind_icon(kind)).with_size(Size::Small))
+                        .child(div().flex_1().text_sm().child(name.clone()))
+                        .when(
+                            kind == koyo_core::models::SchemaObjectKind::Table && !editable,
+                            |this| {
+                                this.child(
+                                    div().w(px(6.0)).h(px(6.0)).rounded_full().bg(palette.muted),
+                                )
+                            },
+                        );
+                    let node = if opens_table {
+                        let app = cx.entity();
+                        let menu_schema = context_schema;
+                        let menu_table = context_table;
+                        node.context_menu(move |menu, _, _cx| {
+                            let mut menu = menu;
+                            if let Some(engine) = engine {
+                                let open_app = app.clone();
+                                let open_schema = menu_schema.clone();
+                                let open_table = menu_table.clone();
+                                menu = menu.item(PopupMenuItem::new("Open data").on_click(
+                                    move |_, _, cx| {
+                                        open_table_from_menu(
+                                            &open_app,
+                                            open_schema.clone(),
+                                            open_table.clone(),
+                                            cx,
+                                        );
+                                    },
+                                ));
+                                let query_app = app.clone();
+                                let query_schema = menu_schema.clone();
+                                let query_table = menu_table.clone();
+                                menu = menu.item(PopupMenuItem::new("Query table").on_click(
+                                    move |_, _, cx| {
+                                        query_table_from_menu(
+                                            &query_app,
+                                            engine,
+                                            query_schema.clone(),
+                                            query_table.clone(),
+                                            cx,
+                                        );
+                                    },
+                                ));
+                            }
+                            let qualified = format!("{menu_schema}.{menu_table}");
+                            menu.separator().item(
+                                PopupMenuItem::new("Copy qualified name").on_click(
+                                    move |_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            qualified.clone(),
+                                        ));
+                                    },
+                                ),
+                            )
+                        })
+                        .into_any_element()
+                    } else {
+                        node.into_any_element()
+                    };
+                    schema_nodes = schema_nodes.child(node);
                 }
             }
         }

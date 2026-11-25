@@ -1,3 +1,5 @@
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -189,12 +191,15 @@ fn render_result_row(
         .child(div().w(px(ROW_RAIL_WIDTH)).flex_shrink_0())
         .children((0..result.columns.len()).map(|column_index| {
             let value = row.get(column_index).cloned().unwrap_or(None);
+            let tooltip_value = value.as_ref().filter(|value| !value.is_empty()).cloned();
             let copy_text = value.clone().unwrap_or_default();
             let column_width = widths
                 .get(column_index)
                 .copied()
                 .unwrap_or(RESULT_COLUMN_WIDTH);
-            keyboard_row(
+            let menu_value = copy_text.clone();
+            let menu_row = row_text.clone();
+            let mut cell = keyboard_row(
                 div()
                     .id(SharedString::from(format!(
                         "result-cell-{tab_id}-{result_index}-{row_index}-{column_index}"
@@ -228,7 +233,20 @@ fn render_result_row(
                     let copy_text = value.clone().unwrap_or_default();
                     this.copy_to_clipboard(copy_text, "Copied cell.", cx);
                 },
-            )
+            );
+            if let Some(full) = tooltip_value {
+                cell = cell.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+            }
+            cell.context_menu(move |menu, _, _| {
+                let value = menu_value.clone();
+                let row = menu_row.clone();
+                menu.item(PopupMenuItem::new("Copy value").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+                }))
+                .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(row.clone()));
+                }))
+            })
         }))
         .child(keyboard_row(
             div()

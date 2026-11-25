@@ -1,5 +1,6 @@
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
@@ -388,6 +389,7 @@ fn render_data_row(
             && !column.generated
             && !column.identity
             && !row.truncated.get(column_index).copied().unwrap_or(false);
+        let tooltip_value = value.as_ref().filter(|value| !value.is_empty()).cloned();
         let copy_value = value.clone().unwrap_or_default();
         let copy_row = Rc::clone(&copy_row_text);
         let keyboard_copy = copy_value.clone();
@@ -437,6 +439,11 @@ fn render_data_row(
                 }
             },
         );
+        let cell = if let Some(full) = tooltip_value {
+            cell.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        } else {
+            cell
+        };
         let menu_app = app.clone();
         row_view = row_view.child(cell.context_menu(move |menu, _, _| {
             let cell = copy_value.clone();
