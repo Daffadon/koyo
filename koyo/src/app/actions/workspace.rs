@@ -824,8 +824,9 @@ impl KoyoApp {
         editor.update(cx, |editor, _| {
             let lsp = editor.lsp_mut();
             lsp.completion_provider = Some(provider);
-            // Keep the popup from covering the neighboring split pane.
-            lsp.completion_menu.max_width = px(240.0);
+            // Schema-qualified names routinely exceed 240 px; keep the full
+            // identifier readable. The popup still clamps to the window edge.
+            lsp.completion_menu.max_width = px(640.0);
         });
 
         let title = query_tab_title(profile.as_ref());
