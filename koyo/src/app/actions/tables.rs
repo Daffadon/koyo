@@ -1441,30 +1441,17 @@ impl KoyoApp {
             return;
         };
         if table.loading || !table.staged.is_empty() {
-            return;
         }
         let (value, cursor) = {
             let input = table.filter_input.read(cx);
             (input.value().to_string(), input.cursor())
-        };
         let (value, cursor) = insert_filter_suggestion(&value, cursor, &insert);
         table.filter_input.update(cx, |input, cx| {
             input.set_value(value, window, cx);
             input.set_selected_range(cursor..cursor, cx);
-        });
         table.filter_error.clear();
-        cx.notify();
-    }
-
     pub(crate) fn apply_filter(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
         self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.filter_error.clear();
         if table.loading {
             table.filter_error = "Wait for the current page load to finish.".into();
             cx.notify();
@@ -1490,22 +1477,7 @@ impl KoyoApp {
         table.filters = filters.clone();
         let sort = table.sort.clone();
         self.load_page(tab_id, 0, filters, sort, cx);
-    }
-
     pub(crate) fn request_clear_filters(
-        &mut self,
-        tab_id: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(index) = self.tab_index(tab_id) else {
-            return;
-        };
-        self.tabs[index].notice.clear();
-        let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
-        table.filter_error.clear();
         if table.loading {
             table.filter_error = "Wait for the current page load to finish.".into();
             cx.notify();
@@ -1531,14 +1503,9 @@ impl KoyoApp {
 
     fn clear_filter_input(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
-            return;
         };
         let TabBody::Table(table) = &mut self.tabs[index].body else {
-            return;
-        };
         table.filter_input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
-        });
     }
 
     fn clear_filters_now(&mut self, tab_id: u64, cx: &mut Context<Self>) {
@@ -1548,13 +1515,7 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        let had_filters = !table.filters.is_empty();
-        table.filters.clear();
         table.filter_error.clear();
-        let sort = table.sort.clone();
-        if had_filters {
-            self.load_page(tab_id, 0, Vec::new(), sort, cx);
-        } else {
             cx.notify();
         }
     }

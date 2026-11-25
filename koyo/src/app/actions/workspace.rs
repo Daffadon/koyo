@@ -562,7 +562,6 @@ impl KoyoApp {
                 cx,
             );
         } else {
-            handle.dispatch_action(&IndentInline, window, cx);
         }
         cx.stop_propagation();
     }
@@ -577,7 +576,6 @@ impl KoyoApp {
     ) -> bool {
         let Some(editor) = self.focused_query_editor() else {
             return false;
-        };
         let (value, selection, handle) = {
             let editor = editor.read(cx);
             (
@@ -1854,11 +1852,6 @@ impl KoyoApp {
 
     pub(crate) fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab_id) = self.pane_active_id(self.focus) else {
-            return;
-        };
-        self.close_tab(tab_id, window, cx);
-    }
-
     pub(crate) fn close_tab(&mut self, tab_id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.tab_index(tab_id) else {
             return;
