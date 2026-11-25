@@ -15,12 +15,12 @@ libc = "0.2"
 lsp-types = "0.97"
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
-ropey = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots-no-provider"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 sqlformat = "0.5.0"
+rustls = { version = "0.23", features = ["aws_lc_rs", "prefer-post-quantum"] }
 log = "0.4"
 chrono = "0.4"
 

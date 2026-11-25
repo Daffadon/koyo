@@ -1,12 +1,22 @@
 use std::fs::File;
 use std::io::Read;
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 use sha2::{Digest, Sha256};
 
 static EXECUTABLE_CHECKSUM: OnceLock<String> = OnceLock::new();
+static CRYPTO_PROVIDER: Once = Once::new();
 
 pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Prefer the hybrid X25519MLKEM768 key exchange whenever a TLS peer supports
+/// it. This is idempotent because tests create clients without going through
+/// `main`.
+pub(crate) fn ensure_crypto_provider() {
+    CRYPTO_PROVIDER.call_once(|| {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    });
+}
 
 /// SHA-256 of the running executable. The value identifies the exact binary,
 /// not just the source revision.

@@ -112,6 +112,7 @@ impl KoyoApp {
             allow_close: false,
             inactive_since: None,
             catalog_generations: HashMap::new(),
+            session_transactions: HashMap::new(),
             persistence_disabled: persistence_error.is_some(),
             manager: Arc::new(SessionManager::default()),
             runtime,

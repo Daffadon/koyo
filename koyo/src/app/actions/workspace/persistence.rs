@@ -192,16 +192,17 @@ impl KoyoApp {
     }
 
     pub(crate) fn has_unsaved_work(&self, cx: &App) -> bool {
-        self.tabs.iter().any(|tab| match &tab.body {
-            TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
-            TabBody::Table(table) => !table.staged.is_empty(),
-        })
+        self.session_transactions.values().any(|open| *open)
+            || self.tabs.iter().any(|tab| match &tab.body {
+                TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
+                TabBody::Table(table) => !table.staged.is_empty() || table.exporting,
+            })
     }
 
     pub(crate) fn confirm_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.confirm = Some(ConfirmState {
             title: "Close Koyo?".into(),
-            description: "A query is running, a SQL editor has text, or edits are staged. Running queries stop and staged edits are discarded; saved workspace SQL is restored when possible.".into(),
+            description: "A query or export is running, a transaction is open, a SQL editor has text, or edits are staged. Running work stops and uncommitted work is lost; saved workspace SQL is restored when possible.".into(),
             action: std::rc::Rc::new(|_, _| {}),
             close_window: true,
             return_focus: window.focused(cx),

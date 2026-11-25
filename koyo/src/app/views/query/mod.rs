@@ -78,6 +78,10 @@ pub(super) fn render(
     let cancel_supported = engine != Some(Engine::Oracle);
     let error = query.error.clone();
     let duration = query.duration_ms;
+    let transaction_open = tab
+        .connection
+        .as_ref()
+        .is_some_and(|connection| app.session_transaction_open(connection.session_id));
     let results_collapsed = query.results_collapsed;
     let result_view = query.result_view;
     let output = query.output.as_ref();
@@ -457,7 +461,15 @@ pub(super) fn render(
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child("SQL editor"),
-                        ),
+                        )
+                        .when(transaction_open, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(palette.warning)
+                                    .child("Transaction open"),
+                            )
+                        }),
                 )
                 .child(
                     h_flex()

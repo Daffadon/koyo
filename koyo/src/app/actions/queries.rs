@@ -149,10 +149,24 @@ impl KoyoApp {
             } else {
                 selected
             };
-            if !sql.trim().is_empty() && delete_without_where(&sql) {
+            if let Some(risk) = sql_risk(&sql) {
+                let (title, description) = match risk {
+                    SqlRisk::UnfilteredDelete => (
+                        "Run DELETE without WHERE?",
+                        "This statement has no WHERE clause and can delete every row from its target table. Run it?",
+                    ),
+                    SqlRisk::UnfilteredUpdate => (
+                        "Run UPDATE without WHERE?",
+                        "This statement has no WHERE clause and can update every row in its target table. Run it?",
+                    ),
+                    SqlRisk::DestructiveDdl => (
+                        "Run destructive DDL?",
+                        "TRUNCATE or DROP can permanently remove data. Run it?",
+                    ),
+                };
                 self.confirm_deferred(
-                    "Run DELETE without WHERE?",
-                    "This statement has no WHERE clause and can delete every row from its target table. Run it?",
+                    title,
+                    description,
                     move |this, cx| this.run_query_sql(tab_id, cx),
                     cx,
                 );
@@ -195,6 +209,7 @@ impl KoyoApp {
             return;
         }
         let history_sql = sql.clone();
+        let transaction_sql = sql.clone();
         let history_profile = self.tabs[index].profile.clone();
         let operation_id = Uuid::new_v4();
         let TabBody::Query(query) = &mut self.tabs[index].body else {
@@ -314,8 +329,16 @@ impl KoyoApp {
                 }
                 if let Some(error) = lost {
                     this.mark_connection_lost(session_id, &format!("Connection lost: {error}"), cx);
-                } else if let Some(toast) = toast {
-                    this.push_toast(ToastCategory::Queries, tab_id.to_string(), toast, cx);
+                } else {
+                    let open = this.session_transaction_open(session_id);
+                    this.set_session_transaction(
+                        session_id,
+                        transaction_state_after(open, &transaction_sql),
+                        cx,
+                    );
+                    if let Some(toast) = toast {
+                        this.push_toast(ToastCategory::Queries, tab_id.to_string(), toast, cx);
+                    }
                 }
                 cx.notify();
             },
@@ -507,7 +530,7 @@ impl KoyoApp {
         } else {
             ""
         };
-        match std::fs::write(&path, csv) {
+        match write_private_export(&path, csv.as_bytes()) {
             Ok(()) => {
                 let message = format!("Downloaded active result to {}.{suffix}", path.display());
                 self.tabs[index].notice = message;

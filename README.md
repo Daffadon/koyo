@@ -56,12 +56,13 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
-- Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag a tab's icon onto another tab. Drag onto another pane to move it there.
+- Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag any part of a tab onto another tab. Drag onto another pane to move it there. **Ctrl/Cmd+T** opens a tab; **Ctrl/Cmd+W** closes the active tab; **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle tabs.
 - The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
-- Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a blurred twilight comet gradient. Settings groups appearance, notifications, and idle connections in a two-pane dialog.
+- Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a blurred twilight comet gradient. Settings groups appearance, notifications, idle connections, and an About page in a two-pane dialog.
 - Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
-- Destructive actions require confirmation: closing with unsaved SQL or staged edits, deleting a connection, or clearing query history.
+- Destructive actions require confirmation: closing with unsaved SQL, an open transaction, an active export, or staged edits; deleting a connection; clearing query history. The SQL editor warns before a plain unfiltered `DELETE`, `UPDATE`, `TRUNCATE`, or `DROP`.
+- Koyo writes app diagnostics to `koyo.log` in the config directory. Info/warn/error events and panics are logged; the file rotates at 5 MB. Settings → About shows the app version, executable SHA-256, log path, and config path.
 
 ### AI assistant
 
@@ -175,17 +176,30 @@ koyo/src/
   app/ai.rs                OpenAI-compatible chat-completions client and config
   app/completion.rs        SQL completion catalog and alias parser
   app/actions/             state transitions and async work
-    workspace.rs           panes, tabs, splits, persistence, confirmations
+    workspace/             startup, settings, dialogs, pane/tab lifecycle
+      mod.rs               startup, settings, confirmations
+      tabs.rs              panes, tab creation, reordering, close/switch
+      sessions.rs          connection lifecycle, probes, transactions
+      persistence.rs       state save/restore and workspace snapshots
+      columns.rs           column resize and autosize
+      editor.rs            SQL editor key handling
+    tables/                table actions by workflow
+      mod.rs               shared helpers, CSV streaming, tests
+      open.rs              open tables, views, definitions
+      page.rs              paging, sorting, filtering, refresh
+      editing.rs           staged inserts, updates, deletes, apply
+      export.rs            CSV export dialog and download
     connections.rs         connect, catalog loading, profile dialog/storage
     queries.rs             run, cancel, history, result selection and resize
-    tables.rs              paging, filtering, sorting, refresh, apply/discard
     editing.rs             cell editing, inserts, staged changes
     notifications.rs       notification preference gate and toast IDs
     settings.rs            settings dialog actions
     ai.rs                  AI threads, provider settings, streaming, compacting
   app/views/               GPUI rendering only
     root.rs                root frame and overlays
-    sidebar.rs             explorer, connection summary, query history
+    sidebar/               explorer, connection summary, query history
+      mod.rs               sidebar frame and explorer
+      history.rs           history panel and history helpers
     settings.rs            notification preferences dialog
     ai.rs                  AI chat threads, markdown, stop, compact, provider settings
     workspace.rs           tab bars, panes, status bar
@@ -213,6 +227,8 @@ Koyo stores application data in the platform config directory:
 - AI provider API keys are saved in `state.enc`; the panel settings never write a plaintext provider file.
 - Legacy plaintext `state.json` and `profiles.json` files are encrypted and removed on first successful migration.
 - If the credential store is unavailable, Koyo reports an error and disables state persistence instead of writing plaintext.
+- Release `SHA256SUMS` includes both the installer/archive files and the raw `koyo-*` executables. The About page hashes the running executable; compare it with the matching `koyo-*` line.
+- Data at rest uses XChaCha20-Poly1305 with a 256-bit key. TLS uses rustls 0.23 with the AWS-LC provider; the hybrid X25519MLKEM768 post-quantum key exchange is preferred when the server supports it, with classical fallback.
 - Password fields are masked and cannot copy or cut their values. Saved passwords are never loaded back into the dialog.
 - Linux saved profiles, passwords, and encrypted state require a running Secret Service provider. Without it, profiles cannot be saved and state persistence is disabled.
 
@@ -262,7 +278,7 @@ KOYO_TEST_ORACLE_USER=koyo KOYO_TEST_ORACLE_PASSWORD=koyo \
   cargo test -p koyo-core --lib oracle_workflow -- --ignored
 ```
 
-The workflow tests expect a `koyo` database/schema with `users`, `orders`, and `events` tables and primary keys. Use disposable data only.
+GitHub Actions starts disposable PostgreSQL and MySQL services and runs the live PostgreSQL/MySQL workflows. `.github/mysql-init.sql` creates the MySQL `users` fixture. SQL Server and Oracle workflows remain manual. Use disposable data only.
 
 ### Git hooks
 

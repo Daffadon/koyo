@@ -486,16 +486,25 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
-        let needs_confirm = match &self.tabs[index].body {
-            TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
-            TabBody::Table(table) => !table.staged.is_empty(),
-        };
+        let session_id = self.tabs[index]
+            .connection
+            .as_ref()
+            .map(|connection| connection.session_id);
+        let last_session_tab =
+            session_id.is_some_and(|session_id| !self.session_in_use(session_id, Some(tab_id)));
+        let open_transaction =
+            session_id.is_some_and(|session_id| self.session_transaction_open(session_id));
+        let needs_confirm = (open_transaction && last_session_tab)
+            || match &self.tabs[index].body {
+                TabBody::Query(query) => query.running || query_has_unsaved_sql(query, cx),
+                TabBody::Table(table) => !table.staged.is_empty() || table.exporting,
+            };
         if needs_confirm {
             self.confirm(
                 window,
                 cx,
                 "Close tab?",
-                "The editor has SQL or a query is running or edits are staged. Closing discards them.",
+                "The editor has SQL, a query or export is running, a transaction is open, or edits are staged. Closing discards them.",
                 move |this, cx| this.close_tab_now(tab_id, cx),
             );
         } else {
@@ -511,10 +520,11 @@ impl KoyoApp {
         if let Some(connection) = self.tabs[index].connection.clone()
             && !self.session_in_use(connection.session_id, Some(tab_id))
         {
-            let busy = match &self.tabs[index].body {
-                TabBody::Query(query) => query.running,
-                TabBody::Table(table) => table.loading,
-            };
+            let busy = self.session_transaction_open(connection.session_id)
+                || match &self.tabs[index].body {
+                    TabBody::Query(query) => query.running,
+                    TabBody::Table(table) => table.loading || table.exporting,
+                };
             if busy || self.idle_pool_size == 0 {
                 self.disconnect_session(connection.session_id);
             } else {

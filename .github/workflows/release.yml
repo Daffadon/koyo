@@ -26,14 +26,20 @@ jobs:
             platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             archive: koyo-linux-x64.tar.gz
+            binary: koyo
+            binary_suffix: ""
           - name: windows-x64
             platform: windows-latest
             target: x86_64-pc-windows-msvc
             archive: koyo-windows-x64.zip
+            binary: koyo.exe
+            binary_suffix: .exe
           - name: macos-apple-silicon
             platform: macos-15
             target: aarch64-apple-darwin
             archive: koyo-macos-arm64.tar.gz
+            binary: koyo
+            binary_suffix: ""
 
     steps:
       - name: Check out repository
@@ -221,6 +227,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "makensis failed with exit code $LASTEXITCODE"
           }
+
+      - name: Stage executable for checksum verification
+        shell: bash
+        run: |
+          mkdir -p staged-binary
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+             "staged-binary/koyo-${{ matrix.target }}${{ matrix.binary_suffix }}"
+
+      - name: Upload executable for checksum verification
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: koyo-binary-${{ matrix.target }}
+          path: staged-binary/*
 
       - name: Upload release artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

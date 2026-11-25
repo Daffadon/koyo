@@ -9,6 +9,7 @@ const LOG_FILE: &str = "koyo.log";
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 struct FileLogger {
+    path: PathBuf,
     file: Mutex<File>,
 }
 
@@ -26,14 +27,27 @@ impl Log for FileLogger {
         }
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         if let Ok(mut file) = self.file.lock() {
-            let _ = writeln!(
-                file,
-                "{timestamp} {:<5} {}: {}",
-                record.level(),
-                record.target(),
-                record.args()
-            );
-            let _ = file.flush();
+            let too_large = file
+                .metadata()
+                .map(|metadata| metadata.len() > MAX_LOG_BYTES)
+                .unwrap_or(false);
+            if too_large {
+                drop(file);
+                rotate_log(&self.path);
+                match open_log(&self.path) {
+                    Ok(mut reopened) => {
+                        write_log_line(&mut reopened, &timestamp, record);
+                        if let Ok(mut slot) = self.file.lock() {
+                            *slot = reopened;
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Could not reopen Koyo log after rotation: {error}");
+                    }
+                }
+            } else {
+                write_log_line(&mut file, &timestamp, record);
+            }
         }
     }
 
@@ -60,6 +74,32 @@ pub(crate) fn init_logging() -> Result<(), String> {
     fs::create_dir_all(parent)
         .map_err(|error| format!("Could not create the Koyo log directory: {error}"))?;
     rotate_log(&path);
+    let file = open_log(&path)?;
+    log::set_boxed_logger(Box::new(FileLogger {
+        path: path.clone(),
+        file: Mutex::new(file),
+    }))
+    .map_err(|error| format!("Could not install the Koyo logger: {error}"))?;
+    log::set_max_level(LevelFilter::Info);
+    Ok(())
+}
+
+fn write_log_line(
+    file: &mut File,
+    timestamp: &chrono::format::DelayedFormat<chrono::format::StrftimeItems<'_>>,
+    record: &Record,
+) {
+    let _ = writeln!(
+        file,
+        "{timestamp} {:<5} {}: {}",
+        record.level(),
+        record.target(),
+        record.args()
+    );
+    let _ = file.flush();
+}
+
+fn open_log(path: &Path) -> Result<File, String> {
     let mut options = OpenOptions::new();
     options.create(true).append(true);
     #[cfg(unix)]
@@ -67,15 +107,9 @@ pub(crate) fn init_logging() -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let file = options
-        .open(&path)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-    log::set_boxed_logger(Box::new(FileLogger {
-        file: Mutex::new(file),
-    }))
-    .map_err(|error| format!("Could not install the Koyo logger: {error}"))?;
-    log::set_max_level(LevelFilter::Info);
-    Ok(())
+    options
+        .open(path)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))
 }
 
 fn rotate_log(path: &Path) {

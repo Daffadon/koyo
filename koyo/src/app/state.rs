@@ -272,6 +272,7 @@ pub(crate) struct KoyoApp {
     pub(crate) history_collapsed: bool,
     pub(crate) history_scroll: ScrollHandle,
     pub(crate) catalog_generations: HashMap<Uuid, u64>,
+    pub(crate) session_transactions: HashMap<Uuid, bool>,
     pub(crate) allow_close: bool,
     pub(crate) inactive_since: Option<std::time::Instant>,
     pub(crate) persistence_disabled: bool,

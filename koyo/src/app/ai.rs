@@ -422,6 +422,7 @@ async fn stream_inner(
     messages: &[AiMessage],
     sink: &Sender<AiStreamEvent>,
 ) -> Result<(), String> {
+    crate::app::ensure_crypto_provider();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .user_agent("Koyo")

@@ -527,6 +527,11 @@ fn apply_changes_sync(
     if !meta.editable() {
         return Err("Grid editing requires a table with a primary key.".into());
     }
+    if !connection.is_autocommit() {
+        return Err(
+            "Commit or roll back the SQL tab's transaction before applying grid edits.".into(),
+        );
+    }
     let mut applied = 0;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1261,6 +1266,17 @@ mod tests {
         )
         .await;
         assert!(stale.is_err(), "stale update must roll back");
+    }
+
+    #[tokio::test]
+    async fn refuses_grid_edits_inside_an_open_transaction() {
+        let session = memory_session();
+        run_sql(&session, "BEGIN").await.expect("begin transaction");
+        let error = apply_changes(&session, "main", "items", Vec::new())
+            .await
+            .expect_err("open transaction must block grid edits");
+        assert!(error.contains("Commit or roll back"), "{error}");
+        run_sql(&session, "ROLLBACK").await.expect("rollback");
     }
 
     #[tokio::test]

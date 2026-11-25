@@ -62,6 +62,7 @@ impl KoyoApp {
 
     pub(crate) fn disconnect_session(&mut self, session_id: Uuid) {
         self.catalog_generations.remove(&session_id);
+        self.session_transactions.remove(&session_id);
         let manager = self.manager.clone();
         self.runtime.spawn(async move {
             let _ = database::disconnect(&manager, session_id).await;
@@ -207,6 +208,10 @@ impl KoyoApp {
                 TabBody::Query(query) => query.running,
                 TabBody::Table(table) => !table.staged.is_empty(),
             })
+            || self
+                .profile_session_ids(profile_id)
+                .into_iter()
+                .any(|session_id| self.session_transaction_open(session_id))
     }
 
     fn disconnect_profile(
@@ -281,6 +286,7 @@ impl KoyoApp {
         }
         for session_id in &sessions {
             self.catalog_generations.remove(session_id);
+            self.session_transactions.remove(session_id);
             self.disconnect_session(*session_id);
         }
         if dialog_target_in_group && let Some(dialog) = self.dialog.as_mut() {
@@ -414,15 +420,40 @@ impl KoyoApp {
         true
     }
 
+    pub(crate) fn session_transaction_open(&self, session_id: Uuid) -> bool {
+        self.session_transactions
+            .get(&session_id)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn set_session_transaction(
+        &mut self,
+        session_id: Uuid,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.session_transactions.insert(session_id, open) != Some(open) {
+            cx.notify();
+        }
+    }
+
     fn session_is_busy(&self, session_id: Uuid) -> bool {
         self.tabs.iter().any(|tab| {
             tab.connection
                 .as_ref()
                 .is_some_and(|connection| connection.session_id == session_id)
-                && match &tab.body {
-                    TabBody::Query(query) => query.running || query.cancelling,
-                    TabBody::Table(table) => table.loading || table.cancelling,
-                }
+                && (tab.catalog_loading
+                    || tab
+                        .body
+                        .table()
+                        .is_some_and(|table| table.foreign_keys_loading)
+                    || match &tab.body {
+                        TabBody::Query(query) => query.running || query.cancelling,
+                        TabBody::Table(table) => {
+                            table.loading || table.cancelling || table.exporting
+                        }
+                    })
         })
     }
 
@@ -458,6 +489,13 @@ impl KoyoApp {
                 if database::ping(&manager, session_id).await.is_ok() {
                     return;
                 }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                if database::ping(&manager, session_id).await.is_ok() {
+                    return;
+                }
+                log::warn!("session {session_id} failed two refocus pings");
                 let _ = this.update(cx, |this, cx| {
                     if !this.session_is_tracked(session_id) || this.session_is_busy(session_id) {
                         return;

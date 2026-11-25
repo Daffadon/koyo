@@ -121,6 +121,7 @@ fn main() {
     if let Err(error) = app::init_logging() {
         eprintln!("Could not initialize Koyo logging: {error}");
     }
+    app::ensure_crypto_provider();
     app::install_panic_hook();
     log::info!(
         "Koyo {} starting on {} {}",

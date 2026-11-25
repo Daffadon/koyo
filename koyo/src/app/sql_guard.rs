@@ -1,18 +1,58 @@
 //! Cheap SQL safety checks for destructive statements.
 //!
-//! This is intentionally not a parser. It only has to avoid false negatives
-//! for plain `DELETE` statements; the confirmation dialog is the safety net,
-//! not the scanner.
+//! This is intentionally not a full parser. It catches the common direct
+//! forms and known executable-comment form, while the confirmation dialog is
+//! the safety net.
 
-/// Returns true when a statement deletes without a top-level `WHERE`.
-pub(crate) fn delete_without_where(sql: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SqlRisk {
+    UnfilteredDelete,
+    UnfilteredUpdate,
+    DestructiveDdl,
+}
+
+/// Advance the app's transaction warning from the SQL text. The database
+/// engine remains authoritative, but this catches BEGIN/COMMIT/ROLLBACK and
+/// MySQL autocommit toggles without an extra round trip.
+pub(crate) fn transaction_state_after(current: bool, sql: &str) -> bool {
+    let cleaned = strip_comments_and_literals(sql);
+    let mut open = current;
+    for statement in cleaned.split(';') {
+        let words = statement.split_ascii_whitespace().collect::<Vec<_>>();
+        let Some(first) = words.first().copied() else {
+            continue;
+        };
+        match first {
+            "begin" => open = true,
+            "start" if words.get(1) == Some(&"transaction") => open = true,
+            "rollback" if words.get(1) == Some(&"to") => {}
+            "commit" | "rollback" | "end" | "abort" => open = false,
+            "set" => {
+                let compact = statement.replace(' ', "");
+                if compact.contains("autocommit=0") || compact.contains("autocommit0") {
+                    open = true;
+                } else if compact.contains("autocommit=1") || compact.contains("autocommit1") {
+                    open = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    open
+}
+
+/// Returns the first destructive statement that needs confirmation.
+pub(crate) fn sql_risk(sql: &str) -> Option<SqlRisk> {
+    if let Some(risk) = executable_comment_risk(sql) {
+        return Some(risk);
+    }
     let cleaned = strip_comments_and_literals(sql);
     for statement in cleaned.split(';') {
         let mut depth = 0usize;
         let mut word = String::new();
-        let mut saw_delete = false;
-        let mut saw_from = false;
-        let mut saw_where = false;
+        let mut deletes: Vec<DeleteState> = Vec::new();
+        let mut updates: Vec<UpdateState> = Vec::new();
+        let mut saw_insert = false;
 
         for ch in statement.chars().chain(std::iter::once(' ')) {
             if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -20,13 +60,32 @@ pub(crate) fn delete_without_where(sql: &str) -> bool {
                 continue;
             }
             if !word.is_empty() {
-                if depth == 0 {
-                    match word.as_str() {
-                        "delete" if !saw_delete => saw_delete = true,
-                        "from" if saw_delete => saw_from = true,
-                        "where" if saw_delete => saw_where = true,
-                        _ => {}
+                match word.as_str() {
+                    "delete" => deletes.push(DeleteState {
+                        depth,
+                        saw_from: false,
+                        saw_where: false,
+                    }),
+                    "insert" if depth == 0 => saw_insert = true,
+                    "update" if !saw_insert => updates.push(UpdateState {
+                        depth,
+                        saw_where: false,
+                    }),
+                    "from" => {
+                        for delete in deletes.iter_mut().filter(|delete| delete.depth == depth) {
+                            delete.saw_from = true;
+                        }
                     }
+                    "where" => {
+                        for delete in deletes.iter_mut().filter(|delete| delete.depth == depth) {
+                            delete.saw_where = true;
+                        }
+                        for update in updates.iter_mut().filter(|update| update.depth == depth) {
+                            update.saw_where = true;
+                        }
+                    }
+                    "truncate" | "drop" => return Some(SqlRisk::DestructiveDdl),
+                    _ => {}
                 }
                 word.clear();
             }
@@ -37,15 +96,51 @@ pub(crate) fn delete_without_where(sql: &str) -> bool {
             }
         }
 
-        if saw_delete && saw_from && !saw_where {
-            return true;
+        if deletes
+            .iter()
+            .any(|delete| delete.saw_from && !delete.saw_where)
+        {
+            return Some(SqlRisk::UnfilteredDelete);
+        }
+        if updates.iter().any(|update| !update.saw_where) {
+            return Some(SqlRisk::UnfilteredUpdate);
         }
     }
-    false
+    None
+}
+
+#[derive(Clone, Copy)]
+struct DeleteState {
+    depth: usize,
+    saw_from: bool,
+    saw_where: bool,
+}
+
+#[derive(Clone, Copy)]
+struct UpdateState {
+    depth: usize,
+    saw_where: bool,
+}
+
+/// MySQL executes `/*! ... */` as code, so inspect those bodies separately
+/// instead of treating them as comments.
+fn executable_comment_risk(sql: &str) -> Option<SqlRisk> {
+    let mut rest = sql;
+    while let Some(start) = rest.find("/*!") {
+        let body_start = start + 3;
+        let body = &rest[body_start..];
+        let end = body.find("*/")?;
+        if let Some(risk) = sql_risk(&body[..end]) {
+            return Some(risk);
+        }
+        rest = &body[end + 2..];
+    }
+    None
 }
 
 /// Keep ASCII words and statement structure; replace strings, identifiers, and
-/// comments with spaces so keywords inside them cannot trigger the guard.
+/// ordinary comments with spaces so keywords inside them cannot trigger the
+/// guard.
 fn strip_comments_and_literals(sql: &str) -> String {
     let bytes = sql.as_bytes();
     let mut out = String::with_capacity(sql.len());
@@ -164,59 +259,125 @@ fn dollar_quote_tag(bytes: &[u8], start: usize) -> Option<(&str, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::delete_without_where;
+    use super::{SqlRisk, sql_risk};
 
     #[test]
     fn detects_plain_delete() {
-        assert!(delete_without_where("DELETE FROM users;"));
-        assert!(delete_without_where("delete from users"));
-        assert!(delete_without_where("SELECT 1; DELETE FROM users;"));
-        assert!(delete_without_where(
-            "WITH x AS (SELECT 1) DELETE FROM users;"
-        ));
-        assert!(delete_without_where("DELETE FROM users RETURNING *;"));
+        assert_eq!(
+            sql_risk("DELETE FROM users;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("delete from users"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("SELECT 1; DELETE FROM users;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("WITH x AS (SELECT 1) DELETE FROM users;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("DELETE FROM users RETURNING *;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
     }
 
     #[test]
-    fn ignores_filtered_deletes() {
-        assert!(!delete_without_where("DELETE FROM users WHERE id = 1;"));
-        assert!(!delete_without_where(
-            "DELETE FROM users WHERE id IN (SELECT id FROM x);"
-        ));
-        assert!(!delete_without_where("delete from users\nwhere id = 1"));
+    fn detects_cte_and_executable_comment_deletes() {
+        assert_eq!(
+            sql_risk("WITH x AS (DELETE FROM users RETURNING *) SELECT * FROM x;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("/*!40101 DELETE FROM users */"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+    }
+
+    #[test]
+    fn detects_unfiltered_update_and_ddl() {
+        assert_eq!(
+            sql_risk("UPDATE users SET active = false;"),
+            Some(SqlRisk::UnfilteredUpdate)
+        );
+        assert_eq!(
+            sql_risk("UPDATE users SET active = false WHERE id = 1;"),
+            None
+        );
+        assert_eq!(
+            sql_risk("TRUNCATE TABLE users;"),
+            Some(SqlRisk::DestructiveDdl)
+        );
+        assert_eq!(sql_risk("DROP TABLE users;"), Some(SqlRisk::DestructiveDdl));
+    }
+
+    #[test]
+    fn ignores_filtered_deletes_and_non_commands() {
+        assert_eq!(sql_risk("DELETE FROM users WHERE id = 1;"), None);
+        assert_eq!(
+            sql_risk("DELETE FROM users WHERE id IN (SELECT id FROM x);"),
+            None
+        );
+        assert_eq!(
+            sql_risk("INSERT INTO users(id) VALUES (1) ON CONFLICT DO NOTHING;"),
+            None
+        );
+        assert_eq!(
+            sql_risk("INSERT INTO users(id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = 1;"),
+            None
+        );
     }
 
     #[test]
     fn ignores_keywords_in_strings_comments_and_identifiers() {
-        assert!(!delete_without_where("-- DELETE FROM users"));
-        assert!(!delete_without_where("/* DELETE FROM users */ SELECT 1"));
-        assert!(!delete_without_where("SELECT 'DELETE FROM users'"));
-        assert!(!delete_without_where("SELECT \"delete\" FROM users"));
-        assert!(!delete_without_where("SELECT [delete] FROM users"));
-        assert!(!delete_without_where(
-            "DO $$ BEGIN DELETE FROM users; END $$;"
-        ));
+        assert_eq!(sql_risk("-- DELETE FROM users"), None);
+        assert_eq!(sql_risk("/* DELETE FROM users */ SELECT 1"), None);
+        assert_eq!(sql_risk("SELECT 'DELETE FROM users'"), None);
+        assert_eq!(sql_risk("SELECT \"delete\" FROM users"), None);
+        assert_eq!(sql_risk("SELECT [delete] FROM users"), None);
+        assert_eq!(sql_risk("DO $$ BEGIN DELETE FROM users; END $$;"), None);
     }
 
     #[test]
     fn comments_cannot_hide_a_missing_where() {
-        assert!(delete_without_where("DELETE FROM users -- WHERE id = 1"));
-        assert!(delete_without_where(
-            "DELETE /* WHERE id = 1 */ FROM users;"
-        ));
+        assert_eq!(
+            sql_risk("DELETE FROM users -- WHERE id = 1"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+        assert_eq!(
+            sql_risk("DELETE /* WHERE id = 1 */ FROM users;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
     }
 
     #[test]
     fn where_inside_using_subquery_does_not_count() {
-        assert!(delete_without_where(
-            "DELETE FROM users USING (SELECT id FROM admins WHERE active) a;"
-        ));
+        assert_eq!(
+            sql_risk("DELETE FROM users USING (SELECT id FROM admins WHERE active) a;"),
+            Some(SqlRisk::UnfilteredDelete)
+        );
+    }
+
+    #[test]
+    fn tracks_transaction_boundaries() {
+        use super::transaction_state_after;
+        assert!(transaction_state_after(false, "BEGIN;"));
+        assert!(transaction_state_after(false, "START TRANSACTION;"));
+        assert!(!transaction_state_after(true, "COMMIT;"));
+        assert!(!transaction_state_after(true, "ROLLBACK;"));
+        assert!(transaction_state_after(true, "ROLLBACK TO SAVEPOINT s1;"));
+        assert!(!transaction_state_after(true, "END;"));
+        assert!(transaction_state_after(true, "SELECT 1;"));
+        assert!(transaction_state_after(false, "SET autocommit=0;"));
+        assert!(!transaction_state_after(true, "SET autocommit = 1;"));
     }
 
     #[test]
     fn other_statements_are_ignored() {
-        assert!(!delete_without_where("UPDATE users SET active = false;"));
-        assert!(!delete_without_where("TRUNCATE TABLE users;"));
-        assert!(!delete_without_where(""));
+        assert_eq!(sql_risk("SELECT 1;"), None);
+        assert_eq!(sql_risk(""), None);
     }
 }

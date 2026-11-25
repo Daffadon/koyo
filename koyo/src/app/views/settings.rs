@@ -449,7 +449,7 @@ fn about_body(palette: &Palette, cx: &mut Context<KoyoApp>) -> AnyElement {
             div()
                 .text_xs()
                 .text_color(palette.muted)
-                .child("Compare this checksum with the downloaded release asset to verify the binary."),
+                .child("Compare this with the koyo-* binary line in the release SHA256SUMS."),
         )
         .child(info_row(
             "Log file",

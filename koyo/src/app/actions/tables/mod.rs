@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,60 +96,68 @@ async fn export_table_csv(
     sort: Option<TableSort>,
     path: PathBuf,
 ) -> Result<(usize, bool), String> {
-    let mut file =
-        File::create(&path).map_err(|error| format!("Could not create file: {error}"))?;
-    let mut page_number = first_page;
-    let mut rows = 0usize;
-    let mut truncated = false;
-    let mut first_chunk = true;
-    loop {
-        if last_page.is_some_and(|last| page_number > last) {
-            break;
+    let (file, temporary_path) = create_private_temp(&path)?;
+    let cleanup_path = temporary_path.clone();
+    let destination = path.clone();
+    let result = async move {
+        let mut file = file;
+        let mut page_number = first_page;
+        let mut rows = 0usize;
+        let mut truncated = false;
+        let mut first_chunk = true;
+        loop {
+            if last_page.is_some_and(|last| page_number > last) {
+                break;
+            }
+            let offset = page_number
+                .saturating_sub(1)
+                .checked_mul(PAGE_LIMIT)
+                .ok_or_else(|| "Page range is too large.".to_string())?;
+            let page = tokio::time::timeout(
+                TABLE_IO_TIMEOUT,
+                database::load_table_page(
+                    &manager,
+                    session_id,
+                    Uuid::new_v4(),
+                    schema.clone(),
+                    table.clone(),
+                    offset,
+                    PAGE_LIMIT,
+                    filters.clone(),
+                    sort.clone(),
+                    false,
+                ),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err("CSV export timed out. The database connection may have closed.".into())
+            })?;
+            let chunk = table_page_as_csv(&page, first_chunk);
+            if !chunk.is_empty() {
+                file.write_all(chunk.as_bytes())
+                    .map_err(|error| format!("Could not write file: {error}"))?;
+            }
+            first_chunk = false;
+            rows += page.rows.len();
+            truncated |= page
+                .rows
+                .iter()
+                .any(|row| row.truncated.iter().any(|value| *value));
+            if !page.has_more || page.rows.is_empty() {
+                break;
+            }
+            page_number = page_number
+                .checked_add(1)
+                .ok_or_else(|| "Page range is too large.".to_string())?;
         }
-        let offset = page_number
-            .saturating_sub(1)
-            .checked_mul(PAGE_LIMIT)
-            .ok_or_else(|| "Page range is too large.".to_string())?;
-        let page = tokio::time::timeout(
-            TABLE_IO_TIMEOUT,
-            database::load_table_page(
-                &manager,
-                session_id,
-                Uuid::new_v4(),
-                schema.clone(),
-                table.clone(),
-                offset,
-                PAGE_LIMIT,
-                filters.clone(),
-                sort.clone(),
-                false,
-            ),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err("CSV export timed out. The database connection may have closed.".into())
-        })?;
-        let chunk = table_page_as_csv(&page, first_chunk);
-        if !chunk.is_empty() {
-            file.write_all(chunk.as_bytes())
-                .map_err(|error| format!("Could not write file: {error}"))?;
-        }
-        first_chunk = false;
-        rows += page.rows.len();
-        truncated |= page
-            .rows
-            .iter()
-            .any(|row| row.truncated.iter().any(|value| *value));
-        if !page.has_more || page.rows.is_empty() {
-            break;
-        }
-        page_number = page_number
-            .checked_add(1)
-            .ok_or_else(|| "Page range is too large.".to_string())?;
+        finish_private_export(file, &temporary_path, &destination)?;
+        Ok((rows, truncated))
     }
-    file.flush()
-        .map_err(|error| format!("Could not finish file: {error}"))?;
-    Ok((rows, truncated))
+    .await;
+    if result.is_err() {
+        discard_private_export(&cleanup_path);
+    }
+    result
 }
 
 #[cfg(test)]
