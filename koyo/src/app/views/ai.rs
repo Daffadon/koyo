@@ -501,6 +501,11 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
             .child(
                 TextView::markdown(("ai-message", index), message.content.clone())
                     .image_source(block_images)
+                    .on_link_click(|url, _, _, cx| {
+                        if url.starts_with("https://") || url.starts_with("http://") {
+                            cx.open_url(url);
+                        }
+                    })
                     .w_full()
                     .text_sm()
                     .selectable(true),
@@ -528,6 +533,11 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
                 div().flex_1().min_w(px(0.0)).child(
                     TextView::markdown(("ai-message", index), message.content.clone())
                         .image_source(block_images)
+                        .on_link_click(|url, _, _, cx| {
+                            if url.starts_with("https://") || url.starts_with("http://") {
+                                cx.open_url(url);
+                            }
+                        })
                         .w_full()
                         .text_sm()
                         .selectable(true),

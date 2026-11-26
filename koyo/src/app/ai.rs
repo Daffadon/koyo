@@ -426,6 +426,7 @@ async fn stream_inner(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .user_agent("Koyo")
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| format!("Could not create the AI HTTP client: {error}"))?;
 
@@ -895,6 +896,44 @@ mod tests {
             request.contains("\"role\":\"system\",\"content\":\"prior context\""),
             "{request}"
         );
+    }
+
+    #[test]
+    fn redirects_fail_closed_instead_of_replaying_the_request() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut buffer = [0u8; 2048];
+            let _ = stream.read(&mut buffer);
+            write!(
+                stream,
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://127.0.0.1:9/sink\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write response");
+        });
+        let config = AiConfig::parse(&format!(
+            r#"{{"base_url":"http://{address}/v1","api_key":"secret","model":"test"}}"#
+        ))
+        .expect("test config");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(8);
+        runtime.block_on(stream(&config, &[AiMessage::user("hi")], sender));
+        server.join().expect("test server");
+        let mut error = String::new();
+        while let Ok(event) = receiver.try_recv() {
+            if let AiStreamEvent::Error(message) = event {
+                error = message;
+            }
+        }
+        assert!(error.contains("307"), "{error}");
     }
 
     #[test]

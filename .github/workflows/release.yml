@@ -172,23 +172,30 @@ jobs:
           $nsisZip = Join-Path $env:RUNNER_TEMP "nsis-package.zip"
           $makensis = $null
 
+          Remove-Item -LiteralPath $nsisZip -Force -ErrorAction SilentlyContinue
           try {
-            curl.exe --fail --location --retry 5 --retry-delay 5 --output $nsisZip $nsisUrl
+            curl.exe --proto '=https' --tlsv1.2 --fail --location --retry 5 --retry-delay 5 --output $nsisZip $nsisUrl
             if ($LASTEXITCODE -ne 0) { throw "curl failed with exit code $LASTEXITCODE" }
+          } catch {
+            Write-Warning "Pinned NSIS download failed: $_"
+          }
+          if (Test-Path -LiteralPath $nsisZip -PathType Leaf) {
             $actualHash = (Get-FileHash -LiteralPath $nsisZip -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actualHash -ne $nsisSha256) {
               throw "checksum mismatch: expected $nsisSha256, got $actualHash"
             }
-            New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
-            Expand-Archive -LiteralPath $nsisZip -DestinationPath $nsisRoot -Force
-            $candidate = Join-Path $nsisRoot "NSIS\makensis.exe"
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-              $makensis = $candidate
-            } else {
-              throw "makensis.exe missing after extraction"
+            try {
+              New-Item -ItemType Directory -Path $nsisRoot -Force | Out-Null
+              Expand-Archive -LiteralPath $nsisZip -DestinationPath $nsisRoot -Force
+              $candidate = Join-Path $nsisRoot "NSIS\makensis.exe"
+              if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $makensis = $candidate
+              } else {
+                throw "makensis.exe missing after extraction"
+              }
+            } catch {
+              Write-Warning "Pinned NSIS extraction failed: $_"
             }
-          } catch {
-            Write-Warning "Pinned NSIS download failed: $_"
           }
 
           if (-not $makensis -and (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -310,7 +317,7 @@ jobs:
             echo "Koyo desktop builds for Windows, macOS, and Linux."
             echo
             echo "Linux requires libxkbcommon, libxkbcommon-x11, X11, Wayland, and fontconfig runtime libraries."
-            echo "These builds are unsigned. Verify downloads with SHA256SUMS. Build provenance is attached and can be checked with `gh attestation verify <archive> --repo $GITHUB_REPOSITORY`. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn."
+            echo "These builds are unsigned. Verify downloads with SHA256SUMS. Build provenance is attached and can be checked with \`gh attestation verify <archive> --repo $GITHUB_REPOSITORY\`. On macOS, right-click the app and choose Open. On Windows, SmartScreen may warn."
           } > release-notes.md
 
       - name: Download artifacts
@@ -319,15 +326,15 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
-        with:
-          subject-path: artifacts/*
-
       - name: Generate SHA-256 checksums
         run: |
           cd artifacts
           sha256sum * > SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@8beda2b7ed98355c0e97c0a63bec38ae472e66c4 # v4
+        with:
+          subject-path: artifacts/*
 
       - name: Create draft release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2

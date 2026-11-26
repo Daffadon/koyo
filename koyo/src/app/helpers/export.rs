@@ -267,14 +267,15 @@ fn push_csv_field(output: &mut String, field: &str) {
     let formula_like = field.chars().next().is_some_and(|first| {
         matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r') && field.parse::<f64>().is_err()
     });
-    if formula_like {
-        output.push('\'');
-    }
-    if !field.contains(|character| matches!(character, ',' | '"' | '\n' | '\r')) {
+    let needs_quotes = field.contains(|character| matches!(character, ',' | '"' | '\n' | '\r'));
+    if !needs_quotes && !formula_like {
         output.push_str(field);
         return;
     }
     output.push('"');
+    if formula_like {
+        output.push('\'');
+    }
     for character in field.chars() {
         if character == '"' {
             output.push('"');

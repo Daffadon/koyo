@@ -534,22 +534,18 @@ pub async fn load_page(
     for row in results.into_iter().next().unwrap_or_default() {
         let mut values = Vec::with_capacity(meta.columns.len());
         let mut truncated = Vec::with_capacity(meta.columns.len());
-        for (index, (_, value)) in row.cells().enumerate() {
+        for (_, value) in row.cells() {
             let value = column_text(value);
-            if meta.primary_indices.contains(&index) {
-                values.push(value);
-                truncated.push(false);
-            } else {
-                let (value, clipped) = budget.page_cell_flagged(value);
-                values.push(value);
-                truncated.push(clipped);
-            }
+            let (value, clipped) = budget.page_cell_flagged(value);
+            values.push(value);
+            truncated.push(clipped);
         }
-        let key = meta
+        let key: Vec<Option<String>> = meta
             .primary_indices
             .iter()
             .map(|index| values[*index].clone())
             .collect();
+        budget.charge_bytes(key.iter().flatten().map(String::len).sum());
         page_rows.push(GridRow {
             version: String::new(),
             key,
@@ -1021,9 +1017,6 @@ fn build_delete(
 
 fn page_display_expression(column: &ColumnInfo) -> String {
     let expression = display_expression(column);
-    if column.primary_key {
-        return expression;
-    }
     let limit = common::MAX_CELL_CHARS;
     format!(
         "CASE WHEN LEN({expression}) > {limit} THEN LEFT({expression}, {limit}) + ' [truncated]' ELSE {expression} END"

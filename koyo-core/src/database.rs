@@ -35,6 +35,7 @@ struct SessionEntry {
     query_active: AtomicBool,
     active_operation: std::sync::Mutex<Option<Uuid>>,
     cancelled_operations: std::sync::Mutex<HashSet<Uuid>>,
+    connection_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 #[derive(Clone)]
@@ -146,6 +147,7 @@ pub async fn connect(
                     query_active: AtomicBool::new(false),
                     active_operation: std::sync::Mutex::new(None),
                     cancelled_operations: std::sync::Mutex::new(HashSet::new()),
+                    connection_task: std::sync::Mutex::new(None),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -170,6 +172,7 @@ pub async fn connect(
                     query_active: AtomicBool::new(false),
                     active_operation: std::sync::Mutex::new(None),
                     cancelled_operations: std::sync::Mutex::new(HashSet::new()),
+                    connection_task: std::sync::Mutex::new(None),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -194,6 +197,7 @@ pub async fn connect(
                     query_active: AtomicBool::new(false),
                     active_operation: std::sync::Mutex::new(None),
                     cancelled_operations: std::sync::Mutex::new(HashSet::new()),
+                    connection_task: std::sync::Mutex::new(None),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -214,6 +218,7 @@ pub async fn connect(
                     query_active: AtomicBool::new(false),
                     active_operation: std::sync::Mutex::new(None),
                     cancelled_operations: std::sync::Mutex::new(HashSet::new()),
+                    connection_task: std::sync::Mutex::new(None),
                 }),
             );
             return Ok(ConnectionInfo {
@@ -239,7 +244,7 @@ pub async fn connect(
         crate::models::SslMode::Disable => SslMode::Disable,
     });
 
-    let client = match profile.ssl_mode {
+    let (client, connection_task) = match profile.ssl_mode {
         crate::models::SslMode::VerifyFull => {
             let tls = config_platform_verifier().map_err(|error| {
                 format!("Could not initialize system TLS verification: {error}")
@@ -248,24 +253,24 @@ pub async fn connect(
                 .connect(MakeRustlsConnect::new(tls))
                 .await
                 .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 if let Err(error) = connection.await {
                     log::warn!("PostgreSQL connection closed: {error}");
                 }
             });
-            client
+            (client, Some(task))
         }
         crate::models::SslMode::Disable => {
             let (client, connection) = config
                 .connect(tokio_postgres::NoTls)
                 .await
                 .map_err(|error| format!("PostgreSQL connection failed: {error}"))?;
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 if let Err(error) = connection.await {
                     log::warn!("PostgreSQL connection closed: {error}");
                 }
             });
-            client
+            (client, Some(task))
         }
     };
 
@@ -295,6 +300,7 @@ pub async fn connect(
             query_active: AtomicBool::new(false),
             active_operation: std::sync::Mutex::new(None),
             cancelled_operations: std::sync::Mutex::new(HashSet::new()),
+            connection_task: std::sync::Mutex::new(connection_task),
         }),
     );
     Ok(ConnectionInfo {
@@ -307,10 +313,18 @@ pub async fn connect(
 
 pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<(), String> {
     let entry = get_session(manager, session_id).await?;
+    let connection_task = entry
+        .connection_task
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
     if entry.query_active.load(Ordering::SeqCst) {
         if let Some(cancel) = entry.cancel.lock().await.clone() {
             let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel)).await;
         }
+    }
+    if let Some(task) = connection_task {
+        task.abort();
     }
     let mut session = match tokio::time::timeout(DISCONNECT_TIMEOUT, entry.session.lock()).await {
         Ok(session) => session,
@@ -1048,22 +1062,18 @@ pub async fn load_table_page(
             let value = row
                 .try_get::<_, Option<String>>(index + value_offset)
                 .map_err(|error| error.to_string())?;
-            if meta.columns[index].primary_key {
-                values.push(value);
-                truncated.push(false);
-            } else {
-                let (value, clipped) = budget.page_cell_flagged(value);
-                values.push(value);
-                truncated.push(clipped);
-            }
+            let (value, clipped) = budget.page_cell_flagged(value);
+            values.push(value);
+            truncated.push(clipped);
         }
-        let key = meta
+        let key: Vec<Option<String>> = meta
             .columns
             .iter()
             .enumerate()
             .filter(|(_, column)| column.primary_key)
             .map(|(index, _)| values[index].clone())
             .collect();
+        budget.charge_bytes(key.iter().flatten().map(String::len).sum());
         page_rows.push(GridRow {
             version,
             key,
@@ -1139,9 +1149,6 @@ fn build_table_page_query(
 
 fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
-    if column.primary_key {
-        return format!("{identifier}::text");
-    }
     let limit = crate::common::MAX_CELL_CHARS;
     if column.filter_type == "bytea" {
         format!(
@@ -1406,6 +1413,9 @@ pub async fn run_sql(
     collect_query(client, &sql, cancel.as_ref()).await
 }
 
+const MAX_RESULT_SETS: usize = 64;
+const MAX_AFFECTED_ROWS: usize = 64;
+
 async fn collect_query(
     client: &Client,
     sql: &str,
@@ -1421,6 +1431,7 @@ async fn collect_query(
     let mut affected_rows = Vec::new();
     let mut budget = QueryBudget::new();
     let mut truncated = false;
+    let mut accept_rows = false;
     let mut read_deadline: Option<tokio::time::Instant> = None;
     loop {
         let message = match read_deadline {
@@ -1442,6 +1453,11 @@ async fn collect_query(
         };
         match message {
             SimpleQueryMessage::RowDescription(columns) => {
+                if result_sets.len() >= MAX_RESULT_SETS || budget.exhausted() {
+                    truncated = true;
+                    accept_rows = false;
+                    continue;
+                }
                 result_sets.push(QueryResultSet {
                     columns: columns
                         .iter()
@@ -1449,12 +1465,13 @@ async fn collect_query(
                         .collect(),
                     rows: Vec::new(),
                 });
+                accept_rows = true;
             }
             SimpleQueryMessage::Row(row) => {
                 let Some(result_set) = result_sets.last_mut() else {
                     continue;
                 };
-                if result_set.rows.len() < QUERY_ROW_LIMIT && !budget.exhausted() {
+                if accept_rows && result_set.rows.len() < QUERY_ROW_LIMIT && !budget.exhausted() {
                     let mut values = Vec::with_capacity(row.len());
                     for index in 0..row.len() {
                         values.push(budget.cell_str(row.get(index)));
@@ -1481,7 +1498,13 @@ async fn collect_query(
                     read_deadline = Some(tokio::time::Instant::now() + DISCONNECT_TIMEOUT);
                 }
             }
-            SimpleQueryMessage::CommandComplete(count) => affected_rows.push(count),
+            SimpleQueryMessage::CommandComplete(count) => {
+                if affected_rows.len() < MAX_AFFECTED_ROWS {
+                    affected_rows.push(count);
+                } else {
+                    truncated = true;
+                }
+            }
             _ => {}
         }
     }
@@ -1528,6 +1551,9 @@ pub fn is_connection_lost(error: &str) -> bool {
         "ora-03113",
         "ora-03114",
         "ora-03135",
+        "did not stop after cancellation",
+        "cancellation failed",
+        "cancellation timed out",
     ];
     let lower = error.to_ascii_lowercase();
     PATTERNS.iter().any(|pattern| lower.contains(pattern))
@@ -2382,6 +2408,12 @@ mod connection_loss_tests {
             "SQLSTATE 42P01: relation \"missing\" does not exist"
         ));
         assert!(!is_connection_lost("database is locked"));
+        assert!(is_connection_lost(
+            "Query exceeded 1,000 rows and did not stop after cancellation."
+        ));
+        assert!(is_connection_lost(
+            "Query exceeded 1,000 rows and cancellation timed out."
+        ));
     }
 }
 

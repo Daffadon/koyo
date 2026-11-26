@@ -482,20 +482,16 @@ fn load_page_sync(
         let mut truncated = Vec::with_capacity(meta.columns.len());
         for index in 0..meta.columns.len() {
             let value = cell_text(row, index)?;
-            if meta.primary_indices.contains(&index) {
-                values.push(value);
-                truncated.push(false);
-            } else {
-                let (value, clipped) = budget.page_cell_flagged(value);
-                values.push(value);
-                truncated.push(clipped);
-            }
+            let (value, clipped) = budget.page_cell_flagged(value);
+            values.push(value);
+            truncated.push(clipped);
         }
-        let key = meta
+        let key: Vec<Option<String>> = meta
             .primary_indices
             .iter()
             .map(|index| values[*index].clone())
             .collect();
+        budget.charge_bytes(key.iter().flatten().map(String::len).sum());
         page_rows.push(GridRow {
             version: String::new(),
             key,
@@ -727,13 +723,6 @@ fn filter_kind(declared: &str) -> FilterKind {
 
 fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
-    if column.primary_key {
-        return if is_binary(column) {
-            format!("hex({identifier})")
-        } else {
-            format!("CAST({identifier} AS TEXT)")
-        };
-    }
     let limit = crate::common::MAX_CELL_CHARS;
     if is_binary(column) {
         format!(
@@ -1026,6 +1015,35 @@ mod tests {
             .expect("run query");
         assert!(output.truncated);
         assert_eq!(output.result_sets[0].rows.len(), QUERY_ROW_LIMIT);
+    }
+
+    #[tokio::test]
+    async fn caps_oversized_primary_key_cells() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        let huge = "x".repeat(crate::common::MAX_CELL_CHARS + 10_000);
+        connection
+            .execute("CREATE TABLE huge (id TEXT PRIMARY KEY, note TEXT)", [])
+            .expect("create sqlite table");
+        connection
+            .execute("INSERT INTO huge (id, note) VALUES (?1, 'n')", [&huge])
+            .expect("insert sqlite row");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+
+        let page = load_page(&session, "main", "huge", 0, 10, &[], None, true)
+            .await
+            .expect("page huge table");
+        let row = &page.rows[0];
+        assert!(row.truncated[0]);
+        assert!(
+            row.values[0]
+                .as_ref()
+                .is_some_and(|value| value.ends_with(" [truncated]"))
+        );
+        assert_eq!(row.key[0], row.values[0]);
     }
 
     #[tokio::test]

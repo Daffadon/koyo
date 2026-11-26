@@ -409,20 +409,16 @@ pub async fn load_page(
         let mut truncated = Vec::with_capacity(meta.columns.len());
         for index in 0..meta.columns.len() {
             let value = row.as_ref(index).and_then(value_text);
-            if meta.primary_indices.contains(&index) {
-                values.push(value);
-                truncated.push(false);
-            } else {
-                let (value, clipped) = budget.page_cell_flagged(value);
-                values.push(value);
-                truncated.push(clipped);
-            }
+            let (value, clipped) = budget.page_cell_flagged(value);
+            values.push(value);
+            truncated.push(clipped);
         }
-        let key = meta
+        let key: Vec<Option<String>> = meta
             .primary_indices
             .iter()
             .map(|index| values[*index].clone())
             .collect();
+        budget.charge_bytes(key.iter().flatten().map(String::len).sum());
         page_rows.push(GridRow {
             version: String::new(),
             key,
@@ -713,13 +709,6 @@ async fn load_meta(
 
 fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
-    if column.primary_key {
-        return if is_binary(column) {
-            format!("HEX({identifier})")
-        } else {
-            format!("CAST({identifier} AS CHAR)")
-        };
-    }
     let limit = common::MAX_CELL_CHARS;
     if is_binary(column) {
         format!(

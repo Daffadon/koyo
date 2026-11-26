@@ -35,9 +35,25 @@ impl QueryBudget {
         self.truncated
     }
 
-    pub fn column(&mut self, mut value: String) -> String {
-        if self.remaining == 0 {
+    /// Charge retained container/slot bytes that are not part of a value's
+    /// string length. Returns false when the budget is exhausted.
+    pub fn charge_bytes(&mut self, bytes: usize) -> bool {
+        if self.remaining < bytes {
+            self.remaining = 0;
             self.truncated = true;
+            false
+        } else {
+            self.remaining -= bytes;
+            true
+        }
+    }
+
+    fn charge_slot(&mut self) -> bool {
+        self.charge_bytes(std::mem::size_of::<Option<String>>())
+    }
+
+    pub fn column(&mut self, mut value: String) -> String {
+        if !self.charge_slot() {
             return String::new();
         }
         let cap = self.remaining.min(MAX_CELL_CHARS);
@@ -53,6 +69,9 @@ impl QueryBudget {
     }
 
     pub fn cell(&mut self, value: Option<String>) -> Option<String> {
+        if !self.charge_slot() {
+            return None;
+        }
         let Some(mut value) = value else {
             return None;
         };
@@ -73,8 +92,7 @@ impl QueryBudget {
     }
 
     /// Table-page cells are retained for editing. When the page-wide budget
-    /// is exhausted, keep a visible marker instead of turning the cell into
-    /// NULL. Primary-key cells should bypass this method so edits stay valid.
+    /// is exhausted, return a truncated marker so the UI refuses edits.
     pub fn page_cell(&mut self, value: Option<String>) -> Option<String> {
         self.page_cell_flagged(value).0
     }
@@ -82,12 +100,15 @@ impl QueryBudget {
     /// Like `page_cell`, but reports whether this cell was clipped or replaced.
     /// The flag lets the UI refuse edits that would write partial data back.
     pub fn page_cell_flagged(&mut self, value: Option<String>) -> (Option<String>, bool) {
+        if !self.charge_slot() {
+            return (None, true);
+        }
         let Some(mut value) = value else {
             return (None, false);
         };
         if self.remaining == 0 {
             self.truncated = true;
-            return (Some("[truncated]".to_string()), true);
+            return (None, true);
         }
         let cap = self.remaining.min(MAX_CELL_CHARS);
         let mut clipped = false;
@@ -104,6 +125,9 @@ impl QueryBudget {
     }
 
     pub fn cell_str(&mut self, value: Option<&str>) -> Option<String> {
+        if !self.charge_slot() {
+            return None;
+        }
         let value = value?;
         if self.remaining == 0 {
             self.truncated = true;
@@ -348,28 +372,41 @@ mod tests {
     }
 
     #[test]
-    fn query_budget_marks_table_cells_after_exhaustion() {
+    fn query_budget_charges_slots_and_rejects_after_exhaustion() {
+        let slot = std::mem::size_of::<Option<String>>();
         let mut budget = QueryBudget {
-            remaining: 2,
+            remaining: slot * 2 + 2,
             truncated: false,
         };
         assert_eq!(budget.page_cell(Some("ab".into())), Some("ab".into()));
-        assert_eq!(
-            budget.page_cell(Some("cd".into())),
-            Some("[truncated]".into())
-        );
-        assert_eq!(budget.page_cell(None), None);
+        assert_eq!(budget.page_cell_flagged(Some("cd".into())), (None, true));
+        assert_eq!(budget.page_cell_flagged(None), (None, true));
+        assert!(budget.truncated());
     }
 
     #[test]
     fn query_budget_stops_after_total_budget() {
+        let slot = std::mem::size_of::<Option<String>>();
         let mut budget = QueryBudget {
-            remaining: 8,
+            remaining: (slot + 4) * 2,
             truncated: false,
         };
         assert_eq!(budget.cell(Some("1234".into())), Some("1234".into()));
         assert_eq!(budget.cell(Some("5678".into())), Some("5678".into()));
         assert_eq!(budget.cell(Some("9".into())), None);
+        assert!(budget.truncated());
+    }
+
+    #[test]
+    fn null_cells_still_consume_structural_budget() {
+        let slot = std::mem::size_of::<Option<String>>();
+        let mut budget = QueryBudget {
+            remaining: slot * 2,
+            truncated: false,
+        };
+        assert_eq!(budget.cell(None), None);
+        assert_eq!(budget.cell(None), None);
+        assert_eq!(budget.cell(None), None);
         assert!(budget.truncated());
     }
 }

@@ -65,7 +65,28 @@ mod tests {
 
         assert_eq!(
             results_as_csv(&result),
-            "value\n'\"=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n'-1+2\n'@cmd\n"
+            "value\n\"'=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n\"'-1+2\"\n\"'@cmd\"\n"
+        );
+    }
+
+    #[test]
+    fn csv_formula_guard_keeps_delimiters_inside_quotes() {
+        let result = QueryResultSet {
+            columns: vec!["value".into()],
+            rows: vec![vec![Some("=1,=cmd|' /C calc'!A0,x".into())]],
+        };
+        assert_eq!(
+            results_as_csv(&result),
+            "value\n\"'=1,=cmd|' /C calc'!A0,x\"\n"
+        );
+
+        let result = QueryResultSet {
+            columns: vec!["value".into()],
+            rows: vec![vec![Some("=1\n=cmd|' /C calc'!A0\nx".into())]],
+        };
+        assert_eq!(
+            results_as_csv(&result),
+            "value\n\"'=1\n=cmd|' /C calc'!A0\nx\"\n"
         );
     }
 
@@ -120,8 +141,8 @@ mod tests {
             editable: false,
         };
 
-        assert_eq!(table_page_as_csv(&page, true), "name\n'=cmd\n");
-        assert_eq!(table_page_as_csv(&page, false), "'=cmd\n");
+        assert_eq!(table_page_as_csv(&page, true), "name\n\"'=cmd\"\n");
+        assert_eq!(table_page_as_csv(&page, false), "\"'=cmd\"\n");
     }
 
     #[test]

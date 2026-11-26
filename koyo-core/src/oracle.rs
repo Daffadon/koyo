@@ -560,20 +560,16 @@ fn load_page_sync(
         let mut truncated = Vec::with_capacity(meta.columns.len());
         for index in 0..meta.columns.len() {
             let value = cell_text(&row, index)?;
-            if meta.primary_indices.contains(&index) {
-                values.push(value);
-                truncated.push(false);
-            } else {
-                let (value, clipped) = budget.page_cell_flagged(value);
-                values.push(value);
-                truncated.push(clipped);
-            }
+            let (value, clipped) = budget.page_cell_flagged(value);
+            values.push(value);
+            truncated.push(clipped);
         }
-        let key = meta
+        let key: Vec<Option<String>> = meta
             .primary_indices
             .iter()
             .map(|index| values[*index].clone())
             .collect();
+        budget.charge_bytes(key.iter().flatten().map(String::len).sum());
         page_rows.push(GridRow {
             version: String::new(),
             key,

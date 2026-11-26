@@ -136,13 +136,7 @@ impl KoyoApp {
                     }
                     Err(error) => {
                         log::error!("applying staged changes failed on session {session_id}: {error}");
-                        if database::is_connection_lost(&error) {
-                            this.mark_connection_lost(
-                                session_id,
-                                "Connection lost while applying changes. Reconnect to retry.",
-                                cx,
-                            );
-                        } else if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
+                        if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
                             table.staged.clear();
                             table.selected_keys.clear();
                             let message = "Commit result could not be confirmed. Page reloaded; verify data before retrying.";
@@ -158,6 +152,12 @@ impl KoyoApp {
                                 cx,
                             );
                             this.load_page(tab_id, offset, filters, sort, cx);
+                        } else if database::is_connection_lost(&error) {
+                            this.mark_connection_lost(
+                                session_id,
+                                "Connection lost while applying changes. Reconnect to retry.",
+                                cx,
+                            );
                         } else {
                             this.tabs[index].notice = error.clone();
                             this.push_toast(
