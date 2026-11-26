@@ -4,7 +4,7 @@ use std::time::Instant;
 use gpui_kit::component::input::EditorState;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
-use gpui_kit::{ClipboardItem, Entity, Window};
+use gpui_kit::{ClipboardItem, Entity, Focusable, Window};
 use koyo_core::database;
 use koyo_core::models::{ConnectionProfile, Engine, QueryOutput, SchemaObjectKind};
 use uuid::Uuid;
@@ -121,9 +121,12 @@ impl KoyoApp {
             (next, selection)
         };
         query.editor.update(cx, |editor, cx| {
-            editor.set_value(next, window, cx);
+            // Formatting is a normal edit, not a document reset: keep one
+            // undo step so Ctrl/Cmd+Z restores the pre-format SQL.
+            editor.replace_all(next, window, cx);
             editor.set_selected_range(selection, cx);
         });
+        query.editor.read(cx).focus_handle(cx).focus(window, cx);
     }
 
     pub(crate) fn run_query(&mut self, tab_id: u64, cx: &mut Context<Self>) {
