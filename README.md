@@ -33,7 +33,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 ### Table browser and data editing
 
-- Explore tables, views, functions, triggers, and engine metadata grouped by schema. Tables and views open in data grids; functions and triggers fetch their definitions automatically and load the body into a query tab.
+- Explore tables, views, functions, triggers, and engine metadata grouped by schema. The explorer scrolls horizontally for long names. Tables and views open in data grids; functions and triggers fetch their definitions automatically and load the body into a query tab.
 - Press **F5** to refresh the active table.
 - Preview rows with server-side filter expressions, one-column sorting, offset paging, total page counts, and cancellable page loads.
 - Filter input suggests matching columns and valid operators as you type. Press **Tab** to accept, or click a suggestion. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
@@ -56,7 +56,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple databases can stay live side by side in one tab strip. Shared tabs also share transaction and session state.
 - The left explorer and right AI panel belong to the workspace, not individual tabs. Switching tabs keeps the selected connection and panel state.
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
-- Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag any part of a tab onto another tab. Drag onto another pane to move it there. **Ctrl/Cmd+T** opens a tab; **Ctrl/Cmd+W** closes the active tab; **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle tabs.
+- Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag any part of a tab onto another tab. Drag onto another pane to move it there. **Ctrl/Cmd+T** opens a tab; **Ctrl/Cmd+W** closes the active tab; **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle tabs. **Ctrl/Cmd+P** quick-opens a table by schema or name; use Up/Down and Enter.
 - The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
 - Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
 - Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a blurred twilight comet gradient. Settings groups appearance, notifications, idle connections, and an About page in a two-pane dialog.

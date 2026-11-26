@@ -7,8 +7,8 @@ use super::{connection, query, table, widgets};
 use crate::app::*;
 use crate::{
     CloseTab, CompleteFilter, DeleteLine, DuplicateLine, FormatQuery, MoveLineDown, MoveLineUp,
-    MoveTabLeft, MoveTabRight, NewTab, NextTab, PreviousTab, RefreshTable, RunQuery, ToggleAi,
-    ToggleComment, ToggleSidebar,
+    MoveTabLeft, MoveTabRight, NewTab, NextTab, PreviousTab, QuickOpen, RefreshTable, RunQuery,
+    ToggleAi, ToggleComment, ToggleSidebar,
 };
 
 const AI_DIVIDER_WIDTH: f32 = 6.0;
@@ -65,6 +65,10 @@ impl Render for KoyoApp {
         let settings = self
             .settings_open
             .then(|| super::settings::render_settings(self, &palette, cx));
+        let quick_open = self
+            .quick_open
+            .as_ref()
+            .map(|_| widgets::render_quick_open(self, &palette, cx));
         let ai = self.ai_open.then(|| {
             let divider = div()
                 .id("ai-divider")
@@ -238,6 +242,9 @@ impl Render for KoyoApp {
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.toggle_sidebar(cx);
             }))
+            .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
+                this.open_quick_open(window, cx);
+            }))
             .on_action(cx.listener(|this, _: &ToggleAi, window, cx| {
                 this.toggle_ai(window, cx);
             }))
@@ -246,5 +253,6 @@ impl Render for KoyoApp {
             .when_some(export, |this, export| this.child(export))
             .when_some(settings, |this, settings| this.child(settings))
             .when_some(confirm, |this, confirm| this.child(confirm))
+            .when_some(quick_open, |this, quick_open| this.child(quick_open))
     }
 }

@@ -2,7 +2,7 @@ use gpui_kit::InteractiveElement;
 use gpui_kit::StatefulInteractiveElement;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputGroup, InputState, Textarea};
-use gpui_kit::component::{Disableable, IconName, Sizable, Size};
+use gpui_kit::component::{Disableable, Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
@@ -404,6 +404,170 @@ pub(super) fn input_field(
                 .w_full()
                 .disabled(disabled),
         )
+}
+
+pub(super) fn render_quick_open(
+    app: &KoyoApp,
+    palette: &Palette,
+    cx: &mut Context<KoyoApp>,
+) -> AnyElement {
+    let Some(open) = app.quick_open.as_ref() else {
+        return div().into_any_element();
+    };
+    let query = open.input.read(cx).value().to_string();
+    let matches = app.quick_open_matches(&query);
+    let selected = open.selected.min(matches.len().saturating_sub(1));
+    let count = matches.len();
+
+    let results = if matches.is_empty() {
+        div()
+            .px_3()
+            .py_6()
+            .text_sm()
+            .text_color(palette.muted)
+            .child(if query.trim().is_empty() {
+                "No tables loaded for this connection."
+            } else {
+                "No tables match this search."
+            })
+            .into_any_element()
+    } else {
+        v_flex()
+            .gap_1()
+            .children(
+                matches
+                    .into_iter()
+                    .take(100)
+                    .enumerate()
+                    .map(|(index, table)| {
+                        let schema = table.schema.clone();
+                        let name = table.name.clone();
+                        div()
+                            .id(SharedString::from(format!(
+                                "quick-open-{schema}-{name}-{index}"
+                            )))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .when(index == selected, |this| this.bg(palette.selection))
+                            .when(index != selected, |this| {
+                                this.hover(|style| style.bg(palette.panel_alt))
+                            })
+                            .child(Icon::new(IconName::LayoutDashboard).with_size(Size::Small))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .text_sm()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(format!("{schema}.{name}")),
+                            )
+                            .child(div().text_xs().text_color(palette.muted).child("table"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_quick_open(window, cx);
+                                this.open_table(schema.clone(), name.clone(), window, cx);
+                            }))
+                            .into_any_element()
+                    }),
+            )
+            .into_any_element()
+    };
+
+    div()
+        .id("quick-open-overlay")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_start()
+        .justify_center()
+        .pt(px(110.0))
+        .child(
+            div()
+                .id("quick-open-backdrop")
+                .absolute()
+                .inset_0()
+                .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_quick_open(window, cx);
+                })),
+        )
+        .child(
+            v_flex()
+                .relative()
+                .occlude()
+                .w(px(600.0))
+                .max_h(px(460.0))
+                .rounded_lg()
+                .border_1()
+                .border_color(palette.border)
+                .bg(palette.background)
+                .shadow_lg()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .px_4()
+                        .pt_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(palette.muted)
+                        .child(format!("Quick open · {count} table(s)")),
+                )
+                .child(
+                    div()
+                        .key_context("QuickOpen")
+                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            match event.keystroke.key.as_str() {
+                                "escape" => {
+                                    cx.stop_propagation();
+                                    this.close_quick_open(window, cx);
+                                }
+                                "enter" => {
+                                    cx.stop_propagation();
+                                    this.accept_quick_open(window, cx);
+                                }
+                                "down" => {
+                                    cx.stop_propagation();
+                                    this.move_quick_open(1, cx);
+                                }
+                                "up" => {
+                                    cx.stop_propagation();
+                                    this.move_quick_open(-1, cx);
+                                }
+                                _ => {}
+                            }
+                        }))
+                        .px_3()
+                        .pb_3()
+                        .child(
+                            Input::new(&open.input)
+                                .aria_label("Quick open table")
+                                .w_full()
+                                .cleanable(true)
+                                .with_size(Size::Small)
+                                .prefix(
+                                    Icon::new(IconName::Search)
+                                        .with_size(Size::Small)
+                                        .text_color(palette.muted),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("quick-open-results")
+                        .max_h(px(330.0))
+                        .overflow_y_scroll()
+                        .px_2()
+                        .pb_2()
+                        .child(results),
+                ),
+        )
+        .into_any_element()
 }
 
 pub(super) fn render_confirm(

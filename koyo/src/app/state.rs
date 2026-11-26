@@ -263,6 +263,12 @@ pub(crate) struct TableExportDialog {
     pub(crate) error: String,
 }
 
+pub(crate) struct QuickOpen {
+    pub(crate) input: Entity<InputState>,
+    pub(crate) selected: usize,
+    pub(crate) return_focus: Option<FocusHandle>,
+}
+
 pub(crate) struct ConfirmState {
     pub(crate) title: String,
     pub(crate) description: String,
@@ -338,6 +344,7 @@ pub(crate) struct KoyoApp {
     pub(crate) cell_edit: Option<CellEdit>,
     pub(crate) confirm: Option<ConfirmState>,
     pub(crate) export: Option<TableExportDialog>,
+    pub(crate) quick_open: Option<QuickOpen>,
     pub(crate) next_tab_id: u64,
 }
 

@@ -171,6 +171,7 @@ impl KoyoApp {
             cell_edit: None,
             confirm: None,
             export: None,
+            quick_open: None,
             next_tab_id: 1,
         };
         cx.spawn(async move |this, cx| {

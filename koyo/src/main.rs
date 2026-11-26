@@ -33,7 +33,8 @@ actions!(
         RunQuery,
         ToggleAi,
         ToggleComment,
-        ToggleSidebar
+        ToggleSidebar,
+        QuickOpen
     ]
 );
 
@@ -185,6 +186,8 @@ fn main() {
                 KeyBinding::new("cmd-shift-f", FormatQuery, Some("Input")),
                 KeyBinding::new("ctrl-shift-f", FormatQuery, Some("Koyo")),
                 KeyBinding::new("cmd-shift-f", FormatQuery, Some("Koyo")),
+                KeyBinding::new("ctrl-p", QuickOpen, Some("Koyo")),
+                KeyBinding::new("cmd-p", QuickOpen, Some("Koyo")),
                 KeyBinding::new("ctrl-t", NewTab, Some("Koyo")),
                 KeyBinding::new("cmd-t", NewTab, Some("Koyo")),
                 KeyBinding::new("ctrl-w", CloseTab, Some("Koyo")),

@@ -446,6 +446,8 @@ impl KoyoApp {
         let mut tree = v_flex()
             .id("schema-tree")
             .flex_1()
+            .min_w(px(0.0))
+            .overflow_x_scroll()
             .overflow_y_scroll()
             .p_2()
             .gap_1();
