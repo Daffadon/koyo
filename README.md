@@ -300,8 +300,8 @@ The release workflow builds Linux x64, Windows x64, and macOS Apple Silicon pack
 Keep the workspace version in `koyo/Cargo.toml` and `koyo-core/Cargo.toml` equal, then push a matching tag:
 
 ```sh
-git tag v0.3.12
-git push origin v0.3.12
+git tag v0.3.13
+git push origin v0.3.13
 ```
 
 Builds are unsigned. macOS may require right-click **Open**; Windows SmartScreen may warn.
