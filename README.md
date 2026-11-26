@@ -70,6 +70,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Toggle the left sidebar with **Ctrl+B** or **Cmd+B**; toggle the AI panel with **Ctrl+Alt+B** or **Cmd+Alt+B**. Open Settings from the gear in the sidebar header.
 - Multiple chat threads with previous, next, new, and delete actions. Thread titles come from the first message.
 - Responses stream into the transcript and render Markdown, including fenced code blocks. **Stop** cancels the active stream.
+- Each request includes live schema context from the active connection: engine, database name, tables, views, columns, known foreign keys, and the open table's column types. Row data, credentials, hosts, and file paths are not sent.
+- The assistant is advisory: it cannot execute SQL or read rows. Run generated SQL from a query tab so the normal destructive-statement confirmation still applies. No local database sandbox is used.
 - **Compact context** asks the provider to summarize the current thread and replaces it with a system summary, keeping the next request small. Long threads are split into chunks and merged.
 - Configure any OpenAI-compatible chat-completions provider from the panel settings using JSON: `base_url`, `api_key`, `model`, `system_prompt`, `temperature`, `max_tokens`, and optional `headers`.
 - Remote AI endpoints must use HTTPS. Plain HTTP is accepted only for loopback hosts such as `localhost` or `127.0.0.1`.

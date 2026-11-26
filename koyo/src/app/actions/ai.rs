@@ -60,6 +60,32 @@ impl KoyoApp {
             .unwrap_or(&[])
     }
 
+    pub(crate) fn ai_schema_context(&self) -> Option<String> {
+        let index = self.sidebar_index().or_else(|| self.focused_index())?;
+        let tab = self.tabs.get(index)?;
+        let profile = tab.profile.as_ref()?;
+        tab.connection.as_ref()?;
+        let (foreign_keys, open_table) = match &tab.body {
+            TabBody::Table(table) => (
+                table.foreign_keys.as_slice(),
+                table
+                    .page
+                    .as_ref()
+                    .map(|page| (table.schema.as_str(), table.table.as_str(), page)),
+            ),
+            TabBody::Query(_) => (&[][..], None),
+        };
+        schema_context(
+            profile.engine,
+            &profile.database,
+            &tab.tables,
+            &tab.schema_objects,
+            &tab.columns,
+            foreign_keys,
+            open_table,
+        )
+    }
+
     fn active_ai_thread_mut(&mut self) -> Option<&mut AiThread> {
         self.ai_threads
             .iter_mut()
@@ -323,10 +349,13 @@ impl KoyoApp {
         self.persist_state(cx);
         cx.notify();
 
-        let messages = transcript_snapshot(self.ai_messages())
+        let mut messages = transcript_snapshot(self.ai_messages())
             .into_iter()
             .filter(|message| !message.content.trim().is_empty())
             .collect::<Vec<_>>();
+        if let Some(context) = self.ai_schema_context() {
+            messages.insert(0, AiMessage::summary(context));
+        }
         let (sender, mut receiver) = mpsc::channel(32);
         let task = self
             .runtime

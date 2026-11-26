@@ -384,7 +384,7 @@ pub(super) fn render(
             div()
                 .text_xs()
                 .text_color(palette.muted)
-                .child("Message the database assistant"),
+                .child("Live schema metadata attached · AI cannot execute SQL"),
         )
         .child(
             div()
