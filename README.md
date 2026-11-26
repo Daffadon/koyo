@@ -39,7 +39,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Filter input suggests matching columns and valid operators as you type. Press **Tab** to accept, or click a suggestion. Filter input accepts forms such as `name contains ada`, `age >= 30`, and `status = closed AND amount < 100`.
 - Download table rows as CSV from the current page, a page range, or every page. All-page exports use the current filter and sort and stream page by page through the existing table session.
 - Opening a table in a pane reuses that pane's tab for the same table, including staged edits and filters. If the table is already open in the other pane, Koyo opens a second tab in the focused pane, like editor groups.
-- Foreign-key diagram for the open table.
+- Foreign-key diagram for the open table. Click a related table to focus or open it; right-click for a new tab or the other pane.
 - Tables with primary keys support staged inserts, updates, and deletes. Apply the batch in one transaction.
 - Tick row checkboxes to select rows on the page. **Select all** selects every deletable row; **Delete selected** stages them together.
 - Stale-row checks roll back the batch when a row changed after it was loaded.

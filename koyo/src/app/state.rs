@@ -82,6 +82,13 @@ pub(crate) enum SplitAxis {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OpenTableMode {
+    FocusOrOpen,
+    NewTab,
+    OtherPane,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ResultView {
     Table,
     Json,

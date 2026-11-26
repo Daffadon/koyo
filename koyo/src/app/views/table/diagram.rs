@@ -1,4 +1,5 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
@@ -180,7 +181,24 @@ fn table_sheet(
         .into_any_element()
 }
 
+fn open_related_from_menu(
+    app: &Entity<KoyoApp>,
+    tab_id: u64,
+    schema: String,
+    table: String,
+    mode: OpenTableMode,
+    cx: &mut App,
+) {
+    let window_handle = app.read(cx).window_handle;
+    let _ = cx.update_window(window_handle, |_, window, cx| {
+        let _ = app.update(cx, |this, cx| {
+            this.open_related_table(tab_id, schema, table, mode, window, cx);
+        });
+    });
+}
+
 fn relation_ref(
+    tab_id: u64,
     schema: &str,
     table: &str,
     column: &str,
@@ -189,8 +207,15 @@ fn relation_ref(
     palette: &Palette,
     mono: &SharedString,
     index: usize,
+    cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let full = format!("{schema}.{table}.{column}");
+    let tooltip = format!("Open {schema}.{table} ({column}). Right-click for tab options.");
+    let open_schema = schema.to_string();
+    let open_table = table.to_string();
+    let menu_schema = open_schema.clone();
+    let menu_table = open_table.clone();
+    let app = cx.entity();
     let label = if show_schema {
         format!("{schema}.{table}")
     } else {
@@ -208,7 +233,35 @@ fn relation_ref(
         .when(current, |this| {
             this.bg(palette.accent_soft).text_color(palette.accent)
         })
-        .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+        .cursor_pointer()
+        .aria_label(format!("Open {label}"))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.open_related_table(
+                tab_id,
+                open_schema.clone(),
+                open_table.clone(),
+                OpenTableMode::FocusOrOpen,
+                window,
+                cx,
+            );
+        }))
+        .context_menu(move |menu, _, _cx| {
+            let mut menu = menu;
+            for (label, mode) in [
+                ("Open table", OpenTableMode::FocusOrOpen),
+                ("Open in new tab", OpenTableMode::NewTab),
+                ("Open in other pane", OpenTableMode::OtherPane),
+            ] {
+                let app = app.clone();
+                let schema = menu_schema.clone();
+                let table = menu_table.clone();
+                menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    open_related_from_menu(&app, tab_id, schema.clone(), table.clone(), mode, cx);
+                }));
+            }
+            menu
+        })
         .child(
             v_flex()
                 .min_w(px(0.0))
@@ -253,12 +306,14 @@ fn relation_ref(
 }
 
 fn relationship_row(
+    tab_id: u64,
     fk: &ForeignKeyInfo,
     table: &TableTab,
     palette: &Palette,
     mono: &SharedString,
     index: usize,
     first: bool,
+    cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let outgoing = fk.schema == table.schema && fk.table == table.table;
     let (from_schema, from_table, from_column) = if outgoing {
@@ -290,6 +345,7 @@ fn relationship_row(
             this.border_t_1().border_color(palette.border)
         })
         .child(relation_ref(
+            tab_id,
             from_schema,
             from_table,
             from_column,
@@ -298,6 +354,7 @@ fn relationship_row(
             palette,
             mono,
             index,
+            cx,
         ))
         .child(
             Icon::new(IconName::ChevronRight)
@@ -305,6 +362,7 @@ fn relationship_row(
                 .text_color(palette.muted),
         )
         .child(relation_ref(
+            tab_id,
             to_schema,
             to_table,
             to_column,
@@ -313,6 +371,7 @@ fn relationship_row(
             palette,
             mono,
             index,
+            cx,
         ))
         .child(div().flex_1().min_w(px(0.0)))
         .when(!fk.constraint_name.is_empty(), |this| {
@@ -338,7 +397,13 @@ fn relationship_row(
         .into_any_element()
 }
 
-fn relationships_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> AnyElement {
+fn relationships_panel(
+    tab_id: u64,
+    table: &TableTab,
+    palette: &Palette,
+    mono: &SharedString,
+    cx: &mut Context<KoyoApp>,
+) -> AnyElement {
     let mut panel = v_flex()
         .flex_1()
         .min_w(px(340.0))
@@ -391,12 +456,14 @@ fn relationships_panel(table: &TableTab, palette: &Palette, mono: &SharedString)
     } else {
         for (index, fk) in table.foreign_keys.iter().enumerate() {
             panel = panel.child(relationship_row(
+                tab_id,
                 fk,
                 table,
                 palette,
                 mono,
                 index,
                 index == 0,
+                cx,
             ));
         }
     }
@@ -647,7 +714,7 @@ pub(super) fn render_diagram(
                         .flex_1()
                         .min_w(px(340.0))
                         .gap_4()
-                        .child(relationships_panel(table, palette, mono))
+                        .child(relationships_panel(tab_id, table, palette, mono, cx))
                         .child(indexes_panel(table, palette, mono)),
                 ),
         )

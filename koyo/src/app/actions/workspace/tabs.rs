@@ -19,7 +19,7 @@ impl KoyoApp {
         }
     }
 
-    pub(super) fn reveal_active_tab(&self, pane: Pane) {
+    pub(crate) fn reveal_active_tab(&self, pane: Pane) {
         self.tab_scroll(pane)
             .scroll_to_item(self.pane_selected(pane));
     }

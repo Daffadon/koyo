@@ -1,3 +1,7 @@
+use std::collections::BTreeSet;
+
+use koyo_core::models::{ConnectionInfo, ConnectionProfile};
+
 use super::*;
 
 impl KoyoApp {
@@ -15,40 +19,107 @@ impl KoyoApp {
                 (
                     tab.profile.clone(),
                     tab.connection.clone(),
-                    tab.tables.clone(),
-                    tab.schema_objects.clone(),
-                    tab.metadata_groups.clone(),
-                    tab.columns.clone(),
+                    tab_catalog(tab),
                     tab.expanded.clone(),
                 )
             });
-        let Some((Some(profile), shared, tables, objects, metadata, columns, expanded)) = source
-        else {
+        let Some((Some(profile), shared, catalog, expanded)) = source else {
             self.status = "Open a connection before browsing tables.".into();
             cx.notify();
             return;
         };
-        let target_pane = self.focus;
-        let catalog = CatalogSnapshot {
-            tables,
-            schema_objects: objects,
-            metadata_groups: metadata,
-            columns,
+        self.open_table_source(
+            profile, shared, catalog, expanded, schema, table, self.focus, false, window, cx,
+        );
+    }
+
+    /// Open a table reached from a diagram relation. The source tab supplies
+    /// the profile, session, and catalog so the new tab stays on the same
+    /// connection even when the explorer points at another pane.
+    pub(crate) fn open_related_table(
+        &mut self,
+        source_tab_id: u64,
+        schema: String,
+        table: String,
+        mode: OpenTableMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.tab_index(source_tab_id) else {
+            return;
         };
-        if self.focus_existing_table(
+        let (profile, shared, catalog, expanded) = {
+            let tab = &self.tabs[index];
+            (
+                tab.profile.clone(),
+                tab.connection.clone(),
+                tab_catalog(tab),
+                tab.expanded.clone(),
+            )
+        };
+        let Some(profile) = profile else {
+            self.status = "Open a connection before browsing tables.".into();
+            cx.notify();
+            return;
+        };
+        let source_pane = if self.primary_tabs.contains(&source_tab_id) {
+            Pane::Primary
+        } else if self.secondary_tabs.contains(&source_tab_id) {
+            Pane::Secondary
+        } else {
+            self.focus
+        };
+        let (target_pane, force_new) = related_table_target(source_pane, mode);
+        if target_pane == Pane::Secondary && self.split.is_none() {
+            self.split = Some(SplitAxis::Vertical);
+        }
+        self.open_table_source(
+            profile,
+            shared,
+            catalog,
+            expanded,
+            schema,
+            table,
             target_pane,
-            profile.id,
-            &schema,
-            &table,
-            shared.clone(),
-            catalog.clone(),
+            force_new,
             window,
             cx,
-        ) {
+        );
+        self.focus_pane(target_pane, cx);
+        self.reveal_active_tab(target_pane);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    fn open_table_source(
+        &mut self,
+        profile: ConnectionProfile,
+        shared: Option<ConnectionInfo>,
+        catalog: CatalogSnapshot,
+        expanded: BTreeSet<String>,
+        schema: String,
+        table: String,
+        target_pane: Pane,
+        force_new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !force_new
+            && self.focus_existing_table(
+                target_pane,
+                profile.id,
+                &schema,
+                &table,
+                shared.clone(),
+                catalog.clone(),
+                window,
+                cx,
+            )
+        {
             return;
         }
 
-        // Prefer any live session for this profile, not just the sidebar tab.
+        // Prefer any live session for this profile, not just the source tab.
         let (shared, catalog) = match shared {
             Some(connection) => (Some(connection), catalog),
             None => match self.connection_for_profile(&profile) {
@@ -409,5 +480,50 @@ impl KoyoApp {
             cx.notify();
         }
         true
+    }
+}
+
+fn tab_catalog(tab: &Tab) -> CatalogSnapshot {
+    CatalogSnapshot {
+        tables: tab.tables.clone(),
+        schema_objects: tab.schema_objects.clone(),
+        metadata_groups: tab.metadata_groups.clone(),
+        columns: tab.columns.clone(),
+    }
+}
+
+fn related_table_target(source: Pane, mode: OpenTableMode) -> (Pane, bool) {
+    match mode {
+        OpenTableMode::FocusOrOpen => (source, false),
+        OpenTableMode::NewTab => (source, true),
+        OpenTableMode::OtherPane => match source {
+            Pane::Primary => (Pane::Secondary, true),
+            Pane::Secondary => (Pane::Primary, true),
+        },
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::{OpenTableMode, Pane, related_table_target};
+
+    #[test]
+    fn related_table_actions_pick_the_right_pane() {
+        assert_eq!(
+            related_table_target(Pane::Primary, OpenTableMode::FocusOrOpen),
+            (Pane::Primary, false)
+        );
+        assert_eq!(
+            related_table_target(Pane::Primary, OpenTableMode::NewTab),
+            (Pane::Primary, true)
+        );
+        assert_eq!(
+            related_table_target(Pane::Primary, OpenTableMode::OtherPane),
+            (Pane::Secondary, true)
+        );
+        assert_eq!(
+            related_table_target(Pane::Secondary, OpenTableMode::OtherPane),
+            (Pane::Primary, true)
+        );
     }
 }
