@@ -5,24 +5,23 @@ description = "Native database client built with GPUI"
 edition = "2024"
 
 [dependencies]
-gpui-kit = { version = "0.9.1", features = ["syntect"] }
+gpui-kit = { version = "0.11", features = ["syntect"] }
 koyo-core = { path = "../koyo-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 uuid = "1"
-rfd = "0.17"
-fs2 = "0.4"
+rfd = "0.18"
 libc = "0.2"
 lsp-types = "0.97"
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots-no-provider"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 sqlformat = "0.5.0"
 rustls = { version = "0.23", features = ["aws_lc_rs", "prefer-post-quantum"] }
 log = "0.4"
 chrono = "0.4"
 
 [build-dependencies]
-winres = "0.1"
+winresource = "0.1"

@@ -3,7 +3,6 @@
 mod app;
 
 use app::KoyoApp;
-use fs2::FileExt;
 use gpui_kit::component::input::ShowCompletions;
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
@@ -105,7 +104,7 @@ fn acquire_instance_lock() -> Result<File, String> {
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("Could not secure the Koyo lock file: {error}"))?;
     }
-    file.try_lock_exclusive()
+    file.try_lock()
         .map_err(|_| "Koyo is already running in another window.".to_string())?;
     Ok(file)
 }

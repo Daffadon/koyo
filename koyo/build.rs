@@ -6,7 +6,7 @@ fn main() {
         return;
     }
 
-    let mut resource = winres::WindowsResource::new();
+    let mut resource = winresource::WindowsResource::new();
     resource.set_icon("assets/koyo.ico");
     resource.set("FileDescription", "Koyo");
     resource.set("ProductName", "Koyo");

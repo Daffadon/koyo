@@ -4,7 +4,7 @@
 
 **A fast, native database client for PostgreSQL, SQLite, MySQL, MariaDB, SQL Server, and Oracle.**
 
-[![Rust](https://img.shields.io/badge/Rust-1.88%2B-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.92%2B-000000?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![GPUI Kit](https://img.shields.io/badge/UI-GPUI%20Kit-5A7D6A?style=flat-square)](https://gpui-kit.com)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-4C6EF5?style=flat-square)](#supported-engines)
 [![No WebView](https://img.shields.io/badge/runtime-no%20WebView%20%C2%B7%20no%20JavaScript-2F9E44?style=flat-square)](#architecture)
@@ -99,7 +99,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 
 ### Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install) 1.88 or newer.
+- [Rust](https://www.rust-lang.org/tools/install) 1.92 or newer.
 - On Linux, native windowing and font development packages. On Debian/Ubuntu:
 
   ```sh

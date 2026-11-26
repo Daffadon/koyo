@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Read;
 use std::sync::{Once, OnceLock};
@@ -45,5 +46,26 @@ fn executable_checksum_inner() -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    let digest = hasher.finalize();
+    let mut checksum = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(checksum, "{byte:02x}");
+    }
+    Ok(checksum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::executable_checksum;
+
+    #[test]
+    fn executable_checksum_is_lowercase_hex() {
+        let checksum = executable_checksum();
+        assert_eq!(checksum.len(), 64);
+        assert!(
+            checksum
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+    }
 }
