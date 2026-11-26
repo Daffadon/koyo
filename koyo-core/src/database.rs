@@ -325,6 +325,7 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
     }
     if let Some(task) = connection_task {
         task.abort();
+        log::info!("aborted PostgreSQL connection task for session {session_id}");
     }
     let mut session = match tokio::time::timeout(DISCONNECT_TIMEOUT, entry.session.lock()).await {
         Ok(session) => session,
@@ -1084,6 +1085,19 @@ pub async fn load_table_page(
 
     let has_more = page_rows.len() > limit as usize;
     page_rows.truncate(limit as usize);
+    let clipped_cells = page_rows
+        .iter()
+        .map(|row| row.truncated.iter().filter(|truncated| **truncated).count())
+        .sum::<usize>();
+    if clipped_cells > 0 {
+        log::info!(
+            "table page clipped: session={session_id}, rows={}, clipped_cells={}, offset={}, limit={}",
+            page_rows.len(),
+            clipped_cells,
+            offset,
+            limit
+        );
+    }
     let editable = meta.editable();
     Ok(TablePage {
         columns: meta.columns,
@@ -1509,10 +1523,21 @@ async fn collect_query(
         }
     }
 
+    let truncated = truncated || budget.truncated();
+    if truncated {
+        let rows: usize = result_sets.iter().map(|set| set.rows.len()).sum();
+        log::info!(
+            "query result truncated: result_sets={}, rows={}, affected_rows={}, budget_exhausted={}",
+            result_sets.len(),
+            rows,
+            affected_rows.len(),
+            budget.exhausted()
+        );
+    }
     Ok(QueryOutput {
         result_sets,
         affected_rows,
-        truncated: truncated || budget.truncated(),
+        truncated,
     })
 }
 

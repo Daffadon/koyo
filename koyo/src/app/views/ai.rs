@@ -504,6 +504,8 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
                     .on_link_click(|url, _, _, cx| {
                         if url.starts_with("https://") || url.starts_with("http://") {
                             cx.open_url(url);
+                        } else {
+                            log::info!("blocked non-http(s) AI Markdown link");
                         }
                     })
                     .w_full()
@@ -536,6 +538,8 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
                         .on_link_click(|url, _, _, cx| {
                             if url.starts_with("https://") || url.starts_with("http://") {
                                 cx.open_url(url);
+                            } else {
+                                log::info!("blocked non-http(s) AI Markdown link");
                             }
                         })
                         .w_full()

@@ -468,6 +468,9 @@ async fn stream_inner(
         .await
         .map_err(|error| format!("AI request failed: {error}"))?;
     let status = response.status();
+    if status.is_redirection() {
+        log::warn!("AI endpoint returned redirect status {status}; redirects are disabled");
+    }
     if !status.is_success() {
         let body = read_limited_text(response, MAX_AI_ERROR_BYTES)
             .await

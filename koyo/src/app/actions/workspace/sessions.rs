@@ -501,6 +501,7 @@ impl KoyoApp {
                 if ping(manager.clone()).await {
                     return;
                 }
+                log::info!("refocus ping failed for session {session_id}; retrying once");
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
@@ -678,6 +679,9 @@ impl KoyoApp {
                     .spawn(async move { database::ping(&ping_manager, session_id).await.is_ok() })
                     .await
                     .unwrap_or(false);
+                if !alive {
+                    log::info!("parked session {session_id} ping failed; checking idle TTL");
+                }
                 let keep = this.update(cx, |this, cx| {
                     let Some(index) = this
                         .parked_connections
