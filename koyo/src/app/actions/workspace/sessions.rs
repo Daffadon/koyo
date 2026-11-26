@@ -485,14 +485,26 @@ impl KoyoApp {
         }
         for session_id in sessions {
             let manager = self.manager.clone();
+            let runtime = self.runtime.clone();
             cx.spawn(async move |this, cx| {
-                if database::ping(&manager, session_id).await.is_ok() {
+                let ping = |manager: std::sync::Arc<koyo_core::SessionManager>| {
+                    let runtime = runtime.clone();
+                    async move {
+                        runtime
+                            .spawn(
+                                async move { database::ping(&manager, session_id).await.is_ok() },
+                            )
+                            .await
+                            .unwrap_or(false)
+                    }
+                };
+                if ping(manager.clone()).await {
                     return;
                 }
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(1))
                     .await;
-                if database::ping(&manager, session_id).await.is_ok() {
+                if ping(manager).await {
                     return;
                 }
                 log::warn!("session {session_id} failed two refocus pings");
@@ -645,6 +657,7 @@ impl KoyoApp {
 
     pub(super) fn spawn_pool_probe(&self, session_id: Uuid, cx: &mut Context<Self>) {
         let manager = self.manager.clone();
+        let runtime = self.runtime.clone();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -660,7 +673,11 @@ impl KoyoApp {
                 if !parked {
                     break;
                 }
-                let alive = database::ping(&manager, session_id).await.is_ok();
+                let ping_manager = manager.clone();
+                let alive = runtime
+                    .spawn(async move { database::ping(&ping_manager, session_id).await.is_ok() })
+                    .await
+                    .unwrap_or(false);
                 let keep = this.update(cx, |this, cx| {
                     let Some(index) = this
                         .parked_connections
