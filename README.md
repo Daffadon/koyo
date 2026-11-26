@@ -278,7 +278,7 @@ KOYO_TEST_ORACLE_USER=koyo KOYO_TEST_ORACLE_PASSWORD=koyo \
   cargo test -p koyo-core --lib oracle_workflow -- --ignored
 ```
 
-GitHub Actions starts disposable PostgreSQL and MySQL services and runs the live PostgreSQL/MySQL workflows. `.github/mysql-init.sql` creates the MySQL `users` fixture. SQL Server and Oracle workflows remain manual. Use disposable data only.
+The release workflow runs the workspace unit tests before packaging. Live PostgreSQL, MySQL, SQL Server, and Oracle workflows stay manual. Use disposable data only.
 
 ### Git hooks
 
