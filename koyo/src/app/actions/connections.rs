@@ -94,6 +94,7 @@ impl ConnectionDialog {
             ssl_disable: engine.is_sqlite(),
             busy: false,
             attempt_tab: None,
+            attempt_abort: None,
             error: String::new(),
         };
         apply_defaults(&mut dialog, engine, window, cx);
@@ -410,7 +411,7 @@ impl KoyoApp {
         let store = self.store.clone();
         let profile_for_task = profile.clone();
         let profile_name = profile.name.clone();
-        self.spawn_task(
+        let attempt_abort = self.spawn_task(
             cx,
             tab_id,
             async move {
@@ -607,6 +608,7 @@ impl KoyoApp {
                         {
                             dialog.busy = false;
                             dialog.attempt_tab = None;
+                            dialog.attempt_abort = None;
                             dialog.error = error.clone();
                         }
                         this.status = error.clone();
@@ -627,6 +629,11 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+        if let Some(dialog) = self.dialog.as_mut()
+            && dialog.attempt_tab == Some(tab_id)
+        {
+            dialog.attempt_abort = Some(attempt_abort);
+        }
     }
 
     pub(crate) fn open_connection_dialog(
@@ -666,10 +673,12 @@ impl KoyoApp {
             return;
         };
         if dialog.busy {
-            // Closing the dialog is also the only reliable way for the user to
-            // abandon a handshake that is stuck in the driver. The task is
-            // bounded by the connection timeout; its late result is ignored by
-            // the attempt check in connect_profile.
+            // Closing the dialog is the user's cancel control. Abort the task
+            // immediately; the wrapper ignores its cancellation result and the
+            // attempt check protects against a result that was already queued.
+            if let Some(abort) = dialog.attempt_abort {
+                abort.abort();
+            }
             if let Some(tab_id) = dialog.attempt_tab.or(dialog.target_tab)
                 && let Some(index) = self.tab_index(tab_id)
             {

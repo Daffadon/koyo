@@ -7,14 +7,20 @@ impl KoyoApp {
         tab_id: u64,
         task: impl Future<Output = T> + Send + 'static,
         done: F,
-    ) where
+    ) -> tokio::task::AbortHandle
+    where
         T: Send + 'static,
         F: FnOnce(&mut Self, &mut Context<Self>, T) + 'static,
     {
         let handle = self.runtime.spawn(task);
+        let abort = handle.abort_handle();
         cx.spawn(async move |this, cx| match handle.await {
             Ok(value) => {
                 let _ = this.update(cx, |this, cx| done(this, cx, value));
+            }
+            Err(error) if error.is_cancelled() => {
+                // The owner deliberately aborted this task, usually because a
+                // connection attempt was cancelled from its dialog.
             }
             Err(error) => {
                 let message = format!("Background task failed unexpectedly: {error}");
@@ -22,6 +28,7 @@ impl KoyoApp {
             }
         })
         .detach();
+        abort
     }
 
     pub(crate) fn fail_task(&mut self, tab_id: u64, error: String, cx: &mut Context<Self>) {

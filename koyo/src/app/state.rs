@@ -220,6 +220,7 @@ pub(crate) struct ConnectionDialog {
     /// Tab owned by the in-flight dialog connection, including tabs created
     /// by the dialog when no target tab existed.
     pub(crate) attempt_tab: Option<u64>,
+    pub(crate) attempt_abort: Option<tokio::task::AbortHandle>,
     pub(crate) error: String,
 }
 
