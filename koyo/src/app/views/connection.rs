@@ -164,6 +164,8 @@ pub(super) fn render_dialog(
                     let connect_id = profile.id;
                     let edit_id = profile.id;
                     let delete_id = profile.id;
+                    let connected = app.profile_is_connected(&profile);
+                    let connecting = app.profile_is_connecting(&profile);
                     let endpoint = if profile.engine.is_sqlite() {
                         profile.sqlite_path.clone()
                     } else {
@@ -254,10 +256,27 @@ pub(super) fn render_dialog(
                             h_flex().justify_end().child(
                                 Button::new(("profile-connect", index))
                                     .primary()
+                                    .when(connected || connecting, |this| this.secondary())
                                     .compact()
-                                    .icon(IconName::Globe)
-                                    .label("Connect")
-                                    .disabled(busy)
+                                    .icon(if connected {
+                                        IconName::CircleCheck
+                                    } else {
+                                        IconName::Globe
+                                    })
+                                    .label(if connecting {
+                                        "Connecting..."
+                                    } else if connected {
+                                        "Connected"
+                                    } else {
+                                        "Connect"
+                                    })
+                                    .loading(connecting)
+                                    .disabled(busy || connected || connecting)
+                                    .tooltip(if connected {
+                                        "This connection is already active."
+                                    } else {
+                                        "Connect to this saved profile."
+                                    })
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.connect_from_dialog(connect_id, window, cx);
                                     })),

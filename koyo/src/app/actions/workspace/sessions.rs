@@ -325,6 +325,20 @@ impl KoyoApp {
         cx.notify();
     }
 
+    /// Whether a profile already owns a live session, either in a tab or in
+    /// the idle pool. The connection dialog uses this to show the row as
+    /// connected instead of offering a duplicate Connect action.
+    pub(crate) fn profile_is_connected(&self, target: &ConnectionProfile) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.connection.as_ref().is_some_and(|connection| {
+                connection.profile.id == target.id
+                    && same_connection_target(&connection.profile, target)
+            })
+        }) || self.parked_connections.iter().any(|parked| {
+            parked.profile.id == target.id && same_connection_target(&parked.profile, target)
+        })
+    }
+
     pub(crate) fn profile_is_connecting(&self, target: &ConnectionProfile) -> bool {
         self.tabs.iter().any(|tab| {
             tab.connecting
