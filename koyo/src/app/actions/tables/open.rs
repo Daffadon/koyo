@@ -190,6 +190,7 @@ impl KoyoApp {
         let profile_name = profile.name.clone();
         let schema_for_task = schema.clone();
         let table_for_task = table.clone();
+        let page_limit = self.page_limit;
         self.spawn_task(
             cx,
             tab_id,
@@ -239,7 +240,7 @@ impl KoyoApp {
                     schema_for_task,
                     table_for_task,
                     0,
-                    PAGE_LIMIT,
+                    page_limit,
                     Vec::new(),
                     None,
                     true,

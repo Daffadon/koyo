@@ -143,9 +143,7 @@ pub(super) fn render(
     let editable = page.is_some_and(|page| page.editable) && connected;
     let columns = page.map(|page| page.columns.clone()).unwrap_or_default();
     let offset = page.map(|page| page.offset).unwrap_or(0);
-    let limit = page
-        .map(|page| page.limit)
-        .unwrap_or(crate::app::PAGE_LIMIT);
+    let limit = page.map(|page| page.limit).unwrap_or(app.page_limit);
     let has_more = page.is_some_and(|page| page.has_more);
     let total_rows = page
         .and_then(|page| page.total_rows)

@@ -158,6 +158,13 @@ impl KoyoApp {
             idle_pool_ttl_secs: saved
                 .idle_pool_ttl_secs
                 .clamp(MIN_IDLE_POOL_TTL_SECS, MAX_IDLE_POOL_TTL_SECS),
+            page_limit: saved.page_limit.clamp(MIN_PAGE_LIMIT, MAX_PAGE_LIMIT),
+            query_timeout_secs: saved
+                .query_timeout_secs
+                .clamp(MIN_QUERY_TIMEOUT_SECS, MAX_QUERY_TIMEOUT_SECS),
+            history_limit: saved
+                .history_limit
+                .clamp(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT),
             ai_config_json,
             ai_model,
             ai_config_error,
@@ -181,6 +188,7 @@ impl KoyoApp {
             quick_open: None,
             next_tab_id: 1,
         };
+        app.history.truncate(app.history_limit);
         cx.spawn(async move |this, cx| {
             while let Some(error) = save_error_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {

@@ -4,7 +4,9 @@ use gpui_kit::prelude::*;
 
 use super::notifications::ToastCategory;
 use crate::app::{
-    KoyoApp, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MIN_IDLE_POOL_TTL_SECS, SettingsSection,
+    KoyoApp, MAX_HISTORY_LIMIT, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MAX_PAGE_LIMIT,
+    MAX_QUERY_TIMEOUT_SECS, MIN_HISTORY_LIMIT, MIN_IDLE_POOL_TTL_SECS, MIN_PAGE_LIMIT,
+    MIN_QUERY_TIMEOUT_SECS, SettingsSection,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +78,25 @@ impl KoyoApp {
     pub(crate) fn set_idle_pool_ttl_secs(&mut self, seconds: u64, cx: &mut Context<Self>) {
         self.idle_pool_ttl_secs = seconds.clamp(MIN_IDLE_POOL_TTL_SECS, MAX_IDLE_POOL_TTL_SECS);
         self.trim_idle_pool(cx);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_page_limit(&mut self, rows: u32, cx: &mut Context<Self>) {
+        self.page_limit = rows.clamp(MIN_PAGE_LIMIT, MAX_PAGE_LIMIT);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_query_timeout_secs(&mut self, seconds: u64, cx: &mut Context<Self>) {
+        self.query_timeout_secs = seconds.clamp(MIN_QUERY_TIMEOUT_SECS, MAX_QUERY_TIMEOUT_SECS);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_history_limit(&mut self, entries: usize, cx: &mut Context<Self>) {
+        self.history_limit = entries.clamp(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
+        self.history.truncate(self.history_limit);
         self.persist_state(cx);
         cx.notify();
     }

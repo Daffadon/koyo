@@ -40,6 +40,7 @@ impl KoyoApp {
         table.operation_id = Some(operation_id);
         let schema = table.schema.clone();
         let name = table.table.clone();
+        let page_limit = table.page_limit;
         let filters_for_task = filters.clone();
         let sort_for_task = sort.clone();
         let count_total = offset == 0 || table.total_rows_cache.is_none();
@@ -66,7 +67,7 @@ impl KoyoApp {
                             schema,
                             name,
                             offset,
-                            PAGE_LIMIT,
+                            page_limit,
                             filters_for_task,
                             sort_for_task,
                             count_total,

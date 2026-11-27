@@ -92,6 +92,7 @@ async fn export_table_csv(
     table: String,
     first_page: u32,
     last_page: Option<u32>,
+    page_limit: u32,
     filters: Vec<TableFilter>,
     sort: Option<TableSort>,
     path: PathBuf,
@@ -111,7 +112,7 @@ async fn export_table_csv(
             }
             let offset = page_number
                 .saturating_sub(1)
-                .checked_mul(PAGE_LIMIT)
+                .checked_mul(page_limit)
                 .ok_or_else(|| "Page range is too large.".to_string())?;
             let operation_id = Uuid::new_v4();
             let page_manager = manager.clone();
@@ -133,7 +134,7 @@ async fn export_table_csv(
                         page_schema,
                         page_table,
                         offset,
-                        PAGE_LIMIT,
+                        page_limit,
                         page_filters,
                         page_sort,
                         false,
@@ -258,6 +259,7 @@ mod tests {
             "people".into(),
             1,
             None,
+            50,
             Vec::new(),
             None,
             csv_path.clone(),

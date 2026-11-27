@@ -19,12 +19,13 @@ impl KoyoApp {
         let Some(page) = table.page.as_ref() else {
             return;
         };
-        let current_page = page.offset / PAGE_LIMIT + 1;
+        let page_limit = page.limit.max(1);
+        let current_page = page.offset / page_limit + 1;
         let total_pages = table
             .total_rows_cache
             .map(|total| {
                 total
-                    .div_ceil(u64::from(PAGE_LIMIT))
+                    .div_ceil(u64::from(page_limit))
                     .min(u64::from(u32::MAX)) as u32
             })
             .unwrap_or(0);
@@ -106,8 +107,10 @@ impl KoyoApp {
         if table.exporting {
             return;
         }
-        let current_page = table.page.as_ref().map(|page| page.offset / PAGE_LIMIT + 1);
-        let Some(current_page) = current_page else {
+        let Some((current_page, page_limit)) = table.page.as_ref().map(|page| {
+            let limit = page.limit.max(1);
+            (page.offset / limit + 1, limit)
+        }) else {
             if let Some(dialog) = self.export.as_mut() {
                 dialog.error = "Load a table page before downloading.".into();
             }
@@ -118,7 +121,7 @@ impl KoyoApp {
             .total_rows_cache
             .map(|total| {
                 total
-                    .div_ceil(u64::from(PAGE_LIMIT))
+                    .div_ceil(u64::from(page_limit))
                     .min(u64::from(u32::MAX)) as u32
             })
             .unwrap_or(0);
@@ -201,6 +204,7 @@ impl KoyoApp {
                     table_name,
                     first_page,
                     last_page,
+                    page_limit,
                     filters,
                     sort,
                     path_for_task,

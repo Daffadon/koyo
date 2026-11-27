@@ -23,7 +23,15 @@ use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-pub(crate) const PAGE_LIMIT: u32 = 100;
+pub(crate) const DEFAULT_PAGE_LIMIT: u32 = 100;
+pub(crate) const MIN_PAGE_LIMIT: u32 = 25;
+pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
+pub(crate) const DEFAULT_QUERY_TIMEOUT_SECS: u64 = 600;
+pub(crate) const MIN_QUERY_TIMEOUT_SECS: u64 = 30;
+pub(crate) const MAX_QUERY_TIMEOUT_SECS: u64 = 3600;
+pub(crate) const DEFAULT_HISTORY_LIMIT: usize = 100;
+pub(crate) const MIN_HISTORY_LIMIT: usize = 10;
+pub(crate) const MAX_HISTORY_LIMIT: usize = 1000;
 pub(crate) const QUICK_OPEN_RESULT_LIMIT: usize = 100;
 pub(crate) const DEFAULT_COLUMN_WIDTH: f32 = 170.0;
 pub(crate) const RESULT_COLUMN_WIDTH: f32 = 180.0;
@@ -132,6 +140,9 @@ pub(crate) fn key_is_truncated(page: &TablePage, row: &GridRow) -> bool {
 pub(crate) struct TableTab {
     pub(crate) schema: String,
     pub(crate) table: String,
+    /// Fixed at tab creation so changing the setting cannot shift offsets
+    /// underneath staged edits or an in-flight export.
+    pub(crate) page_limit: u32,
     pub(crate) mode: TableMode,
     pub(crate) foreign_keys: Vec<ForeignKeyInfo>,
     pub(crate) foreign_keys_loading: bool,
@@ -335,6 +346,9 @@ pub(crate) struct KoyoApp {
     pub(crate) notifications: NotificationPreferences,
     pub(crate) idle_pool_size: usize,
     pub(crate) idle_pool_ttl_secs: u64,
+    pub(crate) page_limit: u32,
+    pub(crate) query_timeout_secs: u64,
+    pub(crate) history_limit: usize,
     pub(crate) ai_config_json: String,
     pub(crate) ai_model: String,
     pub(crate) ai_config_error: String,

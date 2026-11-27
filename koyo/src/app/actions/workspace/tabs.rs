@@ -127,6 +127,7 @@ impl KoyoApp {
             Table {
                 schema: String,
                 table: String,
+                page_limit: u32,
                 mode: TableMode,
                 foreign_keys: Vec<koyo_core::models::ForeignKeyInfo>,
                 indexes: Vec<koyo_core::models::TableIndexInfo>,
@@ -161,6 +162,7 @@ impl KoyoApp {
             TabBody::Table(table) => DuplicateBody::Table {
                 schema: table.schema.clone(),
                 table: table.table.clone(),
+                page_limit: table.page_limit,
                 mode: table.mode,
                 foreign_keys: table.foreign_keys.clone(),
                 indexes: table.indexes.clone(),
@@ -193,6 +195,7 @@ impl KoyoApp {
             DuplicateBody::Table {
                 schema,
                 table,
+                page_limit,
                 mode,
                 foreign_keys,
                 indexes,
@@ -209,6 +212,7 @@ impl KoyoApp {
                 };
                 let mut tab = self.make_table_tab(profile, schema, table, window, cx);
                 if let TabBody::Table(table) = &mut tab.body {
+                    table.page_limit = page_limit;
                     table.mode = mode;
                     table.foreign_keys = foreign_keys;
                     table.foreign_keys_loading = false;
@@ -406,6 +410,7 @@ impl KoyoApp {
             body: TabBody::Table(TableTab {
                 schema,
                 table,
+                page_limit: self.page_limit,
                 mode: TableMode::Data,
                 foreign_keys: Vec::new(),
                 foreign_keys_loading: false,

@@ -7,25 +7,29 @@ use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
 
 use super::ai::{AiMessage, AiThread, DEFAULT_AI_CONFIG, DEFAULT_AI_WIDTH};
-use super::{DEFAULT_IDLE_POOL_SIZE, DEFAULT_IDLE_POOL_TTL_SECS, DEFAULT_SIDEBAR_WIDTH};
+use super::{
+    DEFAULT_HISTORY_LIMIT, DEFAULT_IDLE_POOL_SIZE, DEFAULT_IDLE_POOL_TTL_SECS, DEFAULT_PAGE_LIMIT,
+    DEFAULT_QUERY_TIMEOUT_SECS, DEFAULT_SIDEBAR_WIDTH,
+};
 
 const STATE_FILE: &str = "state.enc";
 const SAVE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_STATE_FILE: &str = "state.json";
-pub(crate) const HISTORY_LIMIT: usize = 100;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsSection {
     #[default]
     Appearance,
+    Data,
     Notifications,
     Connections,
     About,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [Self; 4] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::Appearance,
+        Self::Data,
         Self::Notifications,
         Self::Connections,
         Self::About,
@@ -34,6 +38,7 @@ impl SettingsSection {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Data => "Data & SQL",
             Self::Notifications => "Notifications",
             Self::Connections => "Connections",
             Self::About => "About",
@@ -43,6 +48,7 @@ impl SettingsSection {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Self::Appearance => "Pick the palette for the workspace, tables, and chrome.",
+            Self::Data => "Set table page size, query timeout, and history depth.",
             Self::Notifications => "Choose which events show a toast.",
             Self::Connections => "Set how long clean sessions wait for reuse.",
             Self::About => "Version, executable checksum, and local log location.",
@@ -82,6 +88,12 @@ pub(crate) struct PersistedState {
     pub(crate) idle_pool_size: usize,
     #[serde(default = "default_idle_pool_ttl_secs")]
     pub(crate) idle_pool_ttl_secs: u64,
+    #[serde(default = "default_page_limit")]
+    pub(crate) page_limit: u32,
+    #[serde(default = "default_query_timeout_secs")]
+    pub(crate) query_timeout_secs: u64,
+    #[serde(default = "default_history_limit")]
+    pub(crate) history_limit: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,6 +139,9 @@ impl Default for PersistedState {
             notifications: NotificationPreferences::default(),
             idle_pool_size: default_idle_pool_size(),
             idle_pool_ttl_secs: default_idle_pool_ttl_secs(),
+            page_limit: default_page_limit(),
+            query_timeout_secs: default_query_timeout_secs(),
+            history_limit: default_history_limit(),
         }
     }
 }
@@ -385,6 +400,18 @@ fn default_idle_pool_ttl_secs() -> u64 {
     DEFAULT_IDLE_POOL_TTL_SECS
 }
 
+fn default_page_limit() -> u32 {
+    DEFAULT_PAGE_LIMIT
+}
+
+fn default_query_timeout_secs() -> u64 {
+    DEFAULT_QUERY_TIMEOUT_SECS
+}
+
+fn default_history_limit() -> usize {
+    DEFAULT_HISTORY_LIMIT
+}
+
 fn default_next_ai_thread_id() -> u64 {
     1
 }
@@ -435,6 +462,9 @@ mod tests {
             },
             idle_pool_size: 2,
             idle_pool_ttl_secs: 900,
+            page_limit: 50,
+            query_timeout_secs: 60,
+            history_limit: 250,
             workspace: WorkspaceSnapshot {
                 split: Some("horizontal".into()),
                 primary: vec![TabSnapshot::Query {
@@ -479,6 +509,9 @@ mod tests {
         assert!(decoded.notifications.exports);
         assert_eq!(decoded.idle_pool_size, 2);
         assert_eq!(decoded.idle_pool_ttl_secs, 900);
+        assert_eq!(decoded.page_limit, 50);
+        assert_eq!(decoded.query_timeout_secs, 60);
+        assert_eq!(decoded.history_limit, 250);
         assert_eq!(decoded.workspace.secondary.len(), 1);
         assert!(decoded.workspace.focus_secondary);
     }
@@ -508,6 +541,12 @@ mod tests {
             state.idle_pool_ttl_secs,
             crate::app::DEFAULT_IDLE_POOL_TTL_SECS
         );
+        assert_eq!(state.page_limit, crate::app::DEFAULT_PAGE_LIMIT);
+        assert_eq!(
+            state.query_timeout_secs,
+            crate::app::DEFAULT_QUERY_TIMEOUT_SECS
+        );
+        assert_eq!(state.history_limit, crate::app::DEFAULT_HISTORY_LIMIT);
     }
 
     #[test]
@@ -647,6 +686,7 @@ mod tests {
             SettingsSection::ALL,
             [
                 SettingsSection::Appearance,
+                SettingsSection::Data,
                 SettingsSection::Notifications,
                 SettingsSection::Connections,
                 SettingsSection::About

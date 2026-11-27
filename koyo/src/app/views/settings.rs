@@ -40,6 +40,43 @@ fn preference_row(
         .into_any_element()
 }
 
+fn option_row<T: Copy + PartialEq + 'static>(
+    title: &'static str,
+    detail: &'static str,
+    current: T,
+    options: &[(T, &str)],
+    set: fn(&mut KoyoApp, T, &mut Context<KoyoApp>),
+    palette: &Palette,
+    cx: &mut Context<KoyoApp>,
+) -> AnyElement {
+    v_flex()
+        .gap_1()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(div().text_xs().text_color(palette.muted).child(detail))
+        .child(
+            h_flex()
+                .items_center()
+                .gap_2()
+                .children(options.iter().enumerate().map(|(index, (value, label))| {
+                    let value = *value;
+                    Button::new((title, index))
+                        .compact()
+                        .label(*label)
+                        .when(current == value, |this| this.primary())
+                        .when(current != value, |this| this.ghost())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            set(this, value, cx);
+                        }))
+                })),
+        )
+        .into_any_element()
+}
+
 /// Small palette sample for a theme row: the background fills the card, the
 /// sidebar marks the rail, and the strip previews the action gradient.
 fn theme_preview(choice: ThemeChoice, palette: &Palette) -> AnyElement {
@@ -228,6 +265,44 @@ fn appearance_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) 
                 .enumerate()
                 .map(|(index, choice)| theme_row(app, choice, index, palette, cx)),
         )
+        .into_any_element()
+}
+
+fn data_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) -> AnyElement {
+    v_flex()
+        .gap_4()
+        .child(option_row(
+            "Table page size",
+            "Rows loaded per page in newly opened table tabs.",
+            app.page_limit,
+            &[(50, "50"), (100, "100"), (200, "200")],
+            KoyoApp::set_page_limit,
+            palette,
+            cx,
+        ))
+        .child(option_row(
+            "Query timeout",
+            "Cancel a running query after this duration.",
+            app.query_timeout_secs,
+            &[
+                (60, "1 min"),
+                (300, "5 min"),
+                (600, "10 min"),
+                (1800, "30 min"),
+            ],
+            KoyoApp::set_query_timeout_secs,
+            palette,
+            cx,
+        ))
+        .child(option_row(
+            "Query history",
+            "Newest distinct SQL statements kept. Lowering this trims history now.",
+            app.history_limit,
+            &[(50, "50"), (100, "100"), (250, "250"), (500, "500")],
+            KoyoApp::set_history_limit,
+            palette,
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -478,6 +553,7 @@ pub(super) fn render_settings(
     let section = app.settings_section;
     let body = match section {
         SettingsSection::Appearance => appearance_body(app, palette, cx),
+        SettingsSection::Data => data_body(app, palette, cx),
         SettingsSection::Notifications => notifications_body(app, palette, cx),
         SettingsSection::Connections => connections_body(app, palette, cx),
         SettingsSection::About => about_body(palette, cx),

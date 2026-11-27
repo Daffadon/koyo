@@ -12,8 +12,6 @@ use uuid::Uuid;
 use super::notifications::ToastCategory;
 use crate::app::*;
 
-const QUERY_TIMEOUT: Duration = Duration::from_secs(600);
-
 fn definition_from_output(
     engine: Engine,
     kind: SchemaObjectKind,
@@ -239,6 +237,7 @@ impl KoyoApp {
         let started = Instant::now();
         let manager = self.manager.clone();
         let session_id = connection.session_id;
+        let query_timeout = Duration::from_secs(self.query_timeout_secs);
         self.spawn_task(
             cx,
             tab_id,
@@ -246,8 +245,8 @@ impl KoyoApp {
                 let cancel_manager = manager.clone();
                 async move {
                     super::connections::run_with_cancel(
-                        QUERY_TIMEOUT,
-                        "Query timed out after 10 minutes. Cancel was requested.",
+                        query_timeout,
+                        "Query timed out. Cancel was requested.",
                         &cancel_manager,
                         session_id,
                         operation_id,
@@ -664,7 +663,7 @@ impl KoyoApp {
                 at: unix_seconds(),
             },
         );
-        self.history.truncate(HISTORY_LIMIT);
+        self.history.truncate(self.history_limit);
         self.persist_state(cx);
     }
 

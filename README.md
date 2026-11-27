@@ -28,7 +28,7 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Multiple result sets per execution, shown as a data grid or as pretty-printed JSON, one object per row.
 - Copy the active result set as CSV or JSON from the result options menu, download it as a CSV file, copy individual cells, or copy rows as TSV.
 - Drag column edges to resize query-result columns.
-- Persistent query history: search by SQL, profile, or result, collapse the panel, and load or re-run an old statement. History keeps the latest 100 distinct SQL/profile pairs.
+- Persistent query history: search by SQL, profile, or result, collapse the panel, and load or re-run an old statement. History keeps the latest 50–500 distinct SQL/profile pairs, configurable in Settings.
 - Each result set is capped at 1,000 displayed rows.
 
 ### Table browser and data editing
@@ -58,8 +58,8 @@ Koyo is for everyday work: run SQL with completion and history, inspect schemas,
 - Split panes, tab drag between panes, resizable panes and sidebars, and resizable table columns.
 - Reorder tabs with **Ctrl+Shift+PageUp/PageDown** or **Cmd+Shift+PageUp/PageDown**, or drag any part of a tab onto another tab. Drag onto another pane to move it there. **Ctrl/Cmd+T** opens a tab; **Ctrl/Cmd+W** closes the active tab; **Ctrl+Tab** and **Ctrl+Shift+Tab** cycle tabs. **Ctrl/Cmd+P** quick-opens a table by schema or name; use Up/Down and Enter.
 - The idle pool defaults to four clean sessions, one per profile, with a five-minute TTL. Settings changes the cap and TTL, can close all idle sessions, and shows the current count. Parked sessions are probed every fifteen seconds; dead entries are dropped before reuse.
-- Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast.
-- Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a blurred twilight comet gradient. Settings groups appearance, notifications, idle connections, and an About page in a two-pane dialog.
+- Toast notifications report connect, disconnect, connection lost, query completion, table edits, and CSV exports. Settings toggles each category or silences every toast. Settings also controls the default table page size (50, 100, or 200 rows), query timeout, and query-history depth.
+- Three themes: Dark, Light, and Kimi no Nawa. Dark stays black with comet-gradient actions; Kimi no Nawa adds a blurred twilight comet gradient. Settings groups appearance, data and SQL limits, notifications, idle connections, and an About page in a two-pane dialog.
 - Theme, sidebar state and width, split layout, active tabs, open tabs, and notification preferences restore on launch. Restored tabs start disconnected and reconnect on demand.
 - Destructive actions require confirmation: closing with unsaved SQL, an open transaction, an active export, or staged edits; deleting a connection; clearing query history. The SQL editor warns before a plain unfiltered `DELETE`, `UPDATE`, `TRUNCATE`, or `DROP`.
 - Koyo writes app diagnostics to `koyo.log` in the config directory. Info/warn/error events and panics are logged; the file rotates at 5 MB. Settings → About shows the app version, executable SHA-256, log path, and config path.
