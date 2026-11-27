@@ -28,18 +28,27 @@ impl KoyoApp {
         let Some(page) = table.page.as_ref() else {
             return;
         };
+        if !page.editable {
+            return;
+        }
         let Some(info) = page.columns.get(column) else {
             return;
         };
-        if page.rows.get(row).is_none() || info.generated || info.identity {
+        let Some(row_data) = page.rows.get(row) else {
+            return;
+        };
+        if info.generated || info.identity {
             return;
         }
-        if page.rows[row]
-            .truncated
-            .get(column)
-            .copied()
-            .unwrap_or(false)
-        {
+        if key_is_truncated(page, row_data) {
+            this_notice(
+                &mut self.tabs[index],
+                "The primary key was truncated for display. Filter the row before editing it.",
+            );
+            cx.notify();
+            return;
+        }
+        if row_data.truncated.get(column).copied().unwrap_or(false) {
             this_notice(
                 &mut self.tabs[index],
                 "This cell was truncated for display. Filter the row before editing it.",
@@ -47,19 +56,20 @@ impl KoyoApp {
             cx.notify();
             return;
         }
+        let original_value = row_data.values.get(column).cloned().flatten();
         let current = table
             .staged
             .iter()
             .find_map(|change| match change {
-                StagedChange::Update { key, values, .. } if key == &page.rows[row].key => Some(
+                StagedChange::Update { key, values, .. } if key == &row_data.key => Some(
                     values
                         .get(&info.name)
                         .cloned()
-                        .unwrap_or_else(|| page.rows[row].values[column].clone()),
+                        .unwrap_or_else(|| original_value.clone()),
                 ),
                 _ => None,
             })
-            .unwrap_or_else(|| page.rows[row].values[column].clone());
+            .unwrap_or_else(|| original_value.clone());
         let is_null = current.is_none();
         let text = current.unwrap_or_default();
         let input = cx.new(|cx| {
@@ -69,7 +79,6 @@ impl KoyoApp {
                 .auto_grow(6, 18)
         });
         let handle = input.read(cx).focus_handle(cx);
-        let row_data = &page.rows[row];
         self.cell_edit = Some(CellEdit {
             tab_id,
             target: CellTarget::Update {
@@ -78,7 +87,7 @@ impl KoyoApp {
                 original: row_data.values.clone(),
                 truncated: row_data.truncated.clone(),
                 column: info.name.clone(),
-                original_value: row_data.values[column].clone(),
+                original_value,
             },
             input,
             is_null,
@@ -111,6 +120,9 @@ impl KoyoApp {
         let Some(page) = table.page.as_ref() else {
             return;
         };
+        if !page.editable {
+            return;
+        }
         let Some(info) = page.columns.get(column) else {
             return;
         };
@@ -170,12 +182,13 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_cell_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_cell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cell_edit = None;
+        self.root_focus.focus(window, cx);
         cx.notify();
     }
 
-    pub(crate) fn apply_cell_editor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn apply_cell_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = self.cell_edit.as_ref() else {
             return;
         };
@@ -208,6 +221,7 @@ impl KoyoApp {
         let is_null = edit.is_null;
         let is_default = edit.insert_is_default;
         self.cell_edit = None;
+        self.root_focus.focus(window, cx);
         self.update_cell_value(tab_id, target, is_null, is_default, value, cx);
         cx.notify();
     }
@@ -227,7 +241,6 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        let page = table.page.clone();
         match target {
             CellTarget::Update {
                 key,
@@ -269,10 +282,12 @@ impl KoyoApp {
                 }
             }
             CellTarget::Insert { local_id, column } => {
-                let Some(page) = page else {
-                    return;
-                };
-                let Some(info) = page.columns.get(column) else {
+                let Some(column_name) = table
+                    .page
+                    .as_ref()
+                    .and_then(|page| page.columns.get(column))
+                    .map(|info| info.name.clone())
+                else {
                     return;
                 };
                 let Some(change) = table.staged.iter_mut().find_map(|change| match change {
@@ -282,11 +297,11 @@ impl KoyoApp {
                     return;
                 };
                 if is_default {
-                    change.values.remove(&info.name);
+                    change.values.remove(&column_name);
                 } else if is_null {
-                    change.values.insert(info.name.clone(), None);
+                    change.values.insert(column_name, None);
                 } else {
-                    change.values.insert(info.name.clone(), Some(value));
+                    change.values.insert(column_name, Some(value));
                 }
             }
         }

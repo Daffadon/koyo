@@ -110,6 +110,7 @@ pub(crate) struct QueryTab {
     /// from SQL the user typed before the first connection completed.
     pub(crate) starter: SharedString,
     pub(crate) output: Option<QueryOutput>,
+    pub(crate) cached_json_result: RefCell<Option<(usize, Rc<Vec<String>>, f32)>>,
     pub(crate) active_result: usize,
     pub(crate) result_view: ResultView,
     pub(crate) error: String,
@@ -167,6 +168,8 @@ pub(crate) struct TableTab {
     pub(crate) resize_column: Option<usize>,
     pub(crate) column_resized: bool,
     pub(crate) exporting: bool,
+    pub(crate) export_generation: u64,
+    pub(crate) export_abort: Option<tokio::task::AbortHandle>,
 }
 
 /// A connected session kept alive after its last tab closes. Tabs can park
@@ -187,6 +190,17 @@ pub(crate) struct CatalogSnapshot {
     pub(crate) schema_objects: Vec<SchemaObject>,
     pub(crate) metadata_groups: Vec<MetadataGroup>,
     pub(crate) columns: Vec<ColumnCatalogEntry>,
+}
+
+impl CatalogSnapshot {
+    pub(crate) fn from_tab(tab: &Tab) -> Self {
+        Self {
+            tables: tab.tables.clone(),
+            schema_objects: tab.schema_objects.clone(),
+            metadata_groups: tab.metadata_groups.clone(),
+            columns: tab.columns.clone(),
+        }
+    }
 }
 
 pub(crate) struct Tab {
@@ -326,6 +340,7 @@ pub(crate) struct KoyoApp {
     pub(crate) profile_filter: Entity<InputState>,
     pub(crate) split: Option<SplitAxis>,
     pub(crate) split_ratio: f32,
+    pub(crate) split_resizing: bool,
     pub(crate) focus: Pane,
     pub(crate) root_focus: FocusHandle,
     pub(crate) window_handle: gpui_kit::AnyWindowHandle,

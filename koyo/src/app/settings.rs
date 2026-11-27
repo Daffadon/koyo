@@ -16,6 +16,8 @@ use super::{
 const STATE_FILE: &str = "state.enc";
 const SAVE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_STATE_FILE: &str = "state.json";
+const MAX_HISTORY_ENTRY_BYTES: usize = 64 * 1024;
+const MAX_HISTORY_TOTAL_BYTES: usize = 512 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum SettingsSection {
@@ -81,7 +83,6 @@ pub(crate) struct PersistedState {
     pub(crate) ai_active_thread: u64,
     #[serde(default = "default_next_ai_thread_id")]
     pub(crate) next_ai_thread_id: u64,
-    pub(crate) split: Option<String>,
     pub(crate) split_ratio: f32,
     pub(crate) history: Vec<QueryHistoryEntry>,
     #[serde(default)]
@@ -138,7 +139,6 @@ impl Default for PersistedState {
             ai_threads: Vec::new(),
             ai_active_thread: 0,
             next_ai_thread_id: 1,
-            split: None,
             split_ratio: 0.5,
             history: Vec::new(),
             history_collapsed: false,
@@ -162,6 +162,27 @@ pub(crate) struct QueryHistoryEntry {
     pub(crate) success: bool,
     pub(crate) duration_ms: u64,
     pub(crate) at: u64,
+}
+
+/// Cap query history by entry count, per-entry SQL size, and total SQL bytes
+/// so large pasted scripts cannot bloat `state.enc` on every save.
+pub(crate) fn trim_history(history: &mut Vec<QueryHistoryEntry>, limit: usize) {
+    history.truncate(limit);
+    let mut total_bytes = 0usize;
+    let mut keep = 0usize;
+    for entry in history.iter_mut() {
+        if entry.sql.len() > MAX_HISTORY_ENTRY_BYTES {
+            let cut = entry.sql.floor_char_boundary(MAX_HISTORY_ENTRY_BYTES);
+            entry.sql.truncate(cut);
+        }
+        let next_bytes = total_bytes.saturating_add(entry.sql.len());
+        if keep > 0 && next_bytes > MAX_HISTORY_TOTAL_BYTES {
+            break;
+        }
+        total_bytes = next_bytes;
+        keep += 1;
+    }
+    history.truncate(keep);
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -282,9 +303,7 @@ impl StateSaveQueue {
 
     fn finish(&self, generation: u64, error: Option<String>) {
         let mut queue = self.lock();
-        if error.is_some() {
-            queue.error = error;
-        }
+        queue.error = error;
         queue.saved_generation = generation;
         self.wake.notify_all();
     }
@@ -427,9 +446,9 @@ fn default_next_ai_thread_id() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AiMessage, AiThread, NotificationPreferences, PersistedState, QueryHistoryEntry,
-        SettingsSection, SettingsStore, StateSaveQueue, TabSnapshot, WorkspaceSnapshot,
-        spawn_state_save_worker,
+        AiMessage, AiThread, MAX_HISTORY_ENTRY_BYTES, MAX_HISTORY_TOTAL_BYTES,
+        NotificationPreferences, PersistedState, QueryHistoryEntry, SettingsSection, SettingsStore,
+        StateSaveQueue, TabSnapshot, WorkspaceSnapshot, spawn_state_save_worker, trim_history,
     };
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -451,7 +470,6 @@ mod tests {
             }],
             ai_active_thread: 7,
             next_ai_thread_id: 8,
-            split: Some("horizontal".into()),
             split_ratio: 0.6,
             history: vec![QueryHistoryEntry {
                 sql: "select 1".into(),
@@ -657,6 +675,40 @@ mod tests {
         let loaded = store.load().expect("load saved state").state;
         assert_eq!(loaded.theme, "light");
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn save_queue_clears_previous_error_on_success() {
+        let queue = StateSaveQueue::default();
+        queue.finish(1, Some("transient failure".into()));
+        queue.finish(2, None);
+        let guard = queue.lock();
+        assert_eq!(guard.saved_generation, 2);
+        assert_eq!(guard.error, None);
+    }
+
+    #[test]
+    fn trim_history_caps_entry_and_total_bytes() {
+        let entry = |sql: String| QueryHistoryEntry {
+            sql,
+            profile_id: None,
+            profile_name: "Local".into(),
+            success: true,
+            duration_ms: 1,
+            at: 1,
+        };
+        let mut history = (0..12)
+            .map(|_| entry("a".repeat(MAX_HISTORY_ENTRY_BYTES + 100)))
+            .collect::<Vec<_>>();
+        trim_history(&mut history, 100);
+        assert!(
+            history
+                .iter()
+                .all(|item| item.sql.len() <= MAX_HISTORY_ENTRY_BYTES)
+        );
+        let total: usize = history.iter().map(|item| item.sql.len()).sum();
+        assert!(total <= MAX_HISTORY_TOTAL_BYTES);
+        assert!(!history.is_empty());
     }
 
     #[test]

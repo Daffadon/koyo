@@ -263,6 +263,7 @@ pub(super) fn render_grid(
 
 /// Render one virtual row. Database rows come first and staged inserts follow
 /// them, matching the order the grid used before it was virtualized.
+#[allow(clippy::too_many_arguments)]
 fn render_virtual_row(
     tab_id: u64,
     page: &TablePage,
@@ -320,6 +321,7 @@ fn render_virtual_row(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_data_row(
     tab_id: u64,
     page: &TablePage,
@@ -338,6 +340,7 @@ fn render_data_row(
 ) -> AnyElement {
     let key = &row.key;
     let selected = selected_keys.contains(key);
+    let key_truncated = key_is_truncated(page, row);
     let deleted = staged.iter().any(|change| match change {
         StagedChange::Delete {
             key: staged_key, ..
@@ -383,9 +386,10 @@ fn render_data_row(
     for (column_index, column) in page.columns.iter().enumerate() {
         let value = update_values
             .and_then(|values| values.get(&column.name).cloned())
-            .unwrap_or_else(|| row.values[column_index].clone());
+            .unwrap_or_else(|| row.values.get(column_index).cloned().flatten());
         let can_edit = editable
             && !deleted
+            && !key_truncated
             && !column.generated
             && !column.identity
             && !row.truncated.get(column_index).copied().unwrap_or(false);
@@ -470,7 +474,6 @@ fn render_data_row(
         }));
     }
 
-    let key_truncated = key_is_truncated(page, row);
     let selectable = editable && connected && !loading && !deleted && !key_truncated;
     let app = cx.entity();
     let selection = Checkbox::new(SharedString::from(format!(
@@ -569,13 +572,14 @@ fn row_copy_text(page: &TablePage, staged: &[StagedChange], row_index: usize) ->
         .map(|(column_index, column)| {
             update_values
                 .and_then(|values| values.get(&column.name).cloned())
-                .unwrap_or_else(|| row.values[column_index].clone())
+                .unwrap_or_else(|| row.values.get(column_index).cloned().flatten())
                 .unwrap_or_default()
         })
         .collect::<Vec<_>>()
         .join("\t")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_insert_row(
     tab_id: u64,
     page: &TablePage,

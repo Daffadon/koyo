@@ -49,24 +49,20 @@ pub struct ConnectionProfile {
     pub sqlite_path: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct ProfileInput {
     pub id: Option<Uuid>,
     pub name: String,
-    #[serde(default)]
     pub engine: Engine,
     pub host: String,
     pub port: u16,
     pub database: String,
     pub username: String,
     pub ssl_mode: SslMode,
-    #[serde(default)]
     pub sqlite_path: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ConnectionInfo {
     pub session_id: Uuid,
     pub profile: ConnectionProfile,
@@ -74,16 +70,14 @@ pub struct ConnectionInfo {
     pub current_user: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TableSummary {
     pub schema: String,
     pub name: String,
     pub editable: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchemaObjectKind {
     Table,
     View,
@@ -91,16 +85,14 @@ pub enum SchemaObjectKind {
     Trigger,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct SchemaObject {
     pub schema: String,
     pub name: String,
     pub kind: SchemaObjectKind,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ForeignKeyInfo {
     pub schema: String,
     pub table: String,
@@ -111,8 +103,7 @@ pub struct ForeignKeyInfo {
     pub constraint_name: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TableIndexInfo {
     pub name: String,
     pub columns: Vec<String>,
@@ -120,26 +111,22 @@ pub struct TableIndexInfo {
     pub primary: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct MetadataItem {
     pub name: String,
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct MetadataGroup {
     pub name: String,
     pub items: Vec<MetadataItem>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
-    #[serde(skip)]
     pub filter_type: String,
     pub filter_kind: FilterKind,
     pub sortable: bool,
@@ -149,8 +136,7 @@ pub struct ColumnInfo {
     pub identity: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterKind {
     Text,
     Number,
@@ -159,16 +145,14 @@ pub enum FilterKind {
     Other,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TableFilter {
     pub column: String,
     pub operator: FilterOperator,
     pub value: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterOperator {
     Contains,
     Equals,
@@ -183,25 +167,21 @@ pub enum FilterOperator {
     IsFalse,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TableSort {
     pub column: String,
     pub descending: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct GridRow {
     pub version: String,
     pub key: Vec<Option<String>>,
     pub values: Vec<Option<String>>,
-    #[serde(default)]
     pub truncated: Vec<bool>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct TablePage {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<GridRow>,
@@ -212,31 +192,27 @@ pub struct TablePage {
     pub editable: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ColumnCatalogEntry {
     pub schema: String,
     pub table: String,
     pub column: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct QueryResultSet {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<Option<String>>>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct QueryOutput {
     pub result_sets: Vec<QueryResultSet>,
     pub affected_rows: Vec<u64>,
     pub truncated: bool,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[derive(Debug)]
 pub enum GridChange {
     Insert {
         values: BTreeMap<String, Option<String>>,
@@ -245,23 +221,18 @@ pub enum GridChange {
         key: Vec<Option<String>>,
         version: String,
         values: BTreeMap<String, Option<String>>,
-        #[serde(default)]
         original: Vec<Option<String>>,
-        #[serde(default)]
         truncated: Vec<bool>,
     },
     Delete {
         key: Vec<Option<String>>,
         version: String,
-        #[serde(default)]
         original: Vec<Option<String>>,
-        #[serde(default)]
         truncated: Vec<bool>,
     },
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct ApplySummary {
     pub applied: usize,
 }

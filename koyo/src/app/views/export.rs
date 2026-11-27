@@ -84,9 +84,9 @@ pub(super) fn render_export(
         .flex()
         .items_center()
         .justify_center()
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
-                this.close_table_export(cx);
+                this.close_table_export(window, cx);
             }
         }))
         .child(
@@ -95,8 +95,8 @@ pub(super) fn render_export(
                 .absolute()
                 .inset_0()
                 .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.close_table_export(cx);
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_table_export(window, cx);
                 })),
         )
         .child(
@@ -145,8 +145,8 @@ pub(super) fn render_export(
                                 .icon(IconName::Close)
                                 .accessibility_label("Close CSV download")
                                 .tooltip("Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_table_export(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_table_export(window, cx);
                                 })),
                         ),
                 )
@@ -198,8 +198,8 @@ pub(super) fn render_export(
                             Button::new("export-cancel")
                                 .secondary()
                                 .label("Cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_table_export(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_table_export(window, cx);
                                 })),
                         )
                         .child(

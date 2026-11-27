@@ -48,6 +48,7 @@ impl KoyoApp {
 
         let manager = self.manager.clone();
         let session_id = connection.session_id;
+        let engine = connection.profile.engine;
         self.spawn_task(
             cx,
             tab_id,
@@ -59,6 +60,7 @@ impl KoyoApp {
                     &cancel_manager,
                     session_id,
                     operation_id,
+                    engine,
                     async move {
                         database::load_table_page(
                             &manager,
@@ -89,19 +91,39 @@ impl KoyoApp {
                 }
                 table.operation_id = None;
                 table.loading = false;
+                let mut retry_offset = None;
                 let error = match result {
                     Ok(page) => {
                         if let Some(total) = page.total_rows {
                             table.total_rows_cache = Some(total);
                         }
+                        if page.offset > 0 && page.rows.is_empty() {
+                            let limit = page.limit.max(1);
+                            let last_offset = match page.total_rows.or(table.total_rows_cache) {
+                                Some(0) => 0,
+                                Some(total) => {
+                                    (total.saturating_sub(1).min(u64::from(u32::MAX)) as u32
+                                        / limit)
+                                        * limit
+                                }
+                                None => page.offset.saturating_sub(limit),
+                            };
+                            if last_offset < page.offset {
+                                retry_offset = Some(last_offset);
+                            }
+                        }
                         table.page = Some(page);
                         table.selected_keys.clear();
-                        table.filters = filters;
-                        table.sort = sort;
+                        table.filters = filters.clone();
+                        table.sort = sort.clone();
                         None
                     }
                     Err(error) => Some(error),
                 };
+                if let Some(retry_offset) = retry_offset {
+                    this.load_page(tab_id, retry_offset, filters, sort, cx);
+                    return;
+                }
                 if let Some(error) = error {
                     log::error!("table page load failed on session {session_id}: {error}");
                     if database::is_connection_lost(&error) {
@@ -181,6 +203,10 @@ impl KoyoApp {
         let Some(connection) = self.tabs[index].connection.clone() else {
             return;
         };
+        let session_id = connection.session_id;
+        if self.session_is_busy(session_id) {
+            return;
+        }
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
@@ -189,7 +215,6 @@ impl KoyoApp {
         }
         let schema = table.schema.clone();
         let table_name = table.table.clone();
-        let session_id = connection.session_id;
         table.foreign_keys_loading = true;
         table.diagram_metadata_loaded = true;
         table.diagram_generation = table.diagram_generation.wrapping_add(1);
@@ -199,10 +224,18 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                let foreign_keys =
-                    database::list_foreign_keys(&manager, session_id, &schema, &table_name).await?;
-                let indexes =
-                    database::list_indexes(&manager, session_id, &schema, &table_name).await?;
+                let foreign_keys = tokio::time::timeout(
+                    TABLE_IO_TIMEOUT,
+                    database::list_foreign_keys(&manager, session_id, &schema, &table_name),
+                )
+                .await
+                .map_err(|_| "Loading diagram metadata timed out.".to_string())??;
+                let indexes = tokio::time::timeout(
+                    TABLE_IO_TIMEOUT,
+                    database::list_indexes(&manager, session_id, &schema, &table_name),
+                )
+                .await
+                .map_err(|_| "Loading diagram metadata timed out.".to_string())??;
                 Ok::<_, String>((foreign_keys, indexes))
             },
             move |this, cx, result| {
@@ -217,7 +250,7 @@ impl KoyoApp {
                 {
                     return;
                 }
-                if let TabBody::Table(table) = &mut this.tabs[index].body {
+                let error = if let TabBody::Table(table) = &mut this.tabs[index].body {
                     if table.diagram_generation != generation {
                         return;
                     }
@@ -226,11 +259,25 @@ impl KoyoApp {
                         Ok((foreign_keys, indexes)) => {
                             table.foreign_keys = foreign_keys;
                             table.indexes = indexes;
+                            None
                         }
                         Err(error) => {
                             table.diagram_metadata_loaded = false;
-                            this.tabs[index].notice = error;
+                            Some(error)
                         }
+                    }
+                } else {
+                    None
+                };
+                if let Some(error) = error {
+                    if database::is_connection_lost(&error) {
+                        this.mark_connection_lost(
+                            session_id,
+                            "Connection lost while loading diagram metadata. Reconnect to continue.",
+                            cx,
+                        );
+                    } else {
+                        this.tabs[index].notice = error;
                     }
                 }
                 cx.notify();
@@ -280,7 +327,7 @@ impl KoyoApp {
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
-        if table.staged.is_empty() == false {
+        if !table.staged.is_empty() {
             this_notice(
                 &mut self.tabs[index],
                 "Apply or discard staged edits to sort.",
@@ -410,7 +457,6 @@ impl KoyoApp {
                 return;
             }
         };
-        table.filters = filters.clone();
         let sort = table.sort.clone();
         self.load_page(tab_id, 0, filters, sort, cx);
     }
@@ -443,6 +489,20 @@ impl KoyoApp {
                 move |this, cx| {
                     this.discard_changes(tab_id, cx);
                     this.clear_filters_now(tab_id, cx);
+                    let window_handle = this.window_handle;
+                    if let Some(filter_input) = this
+                        .tab_index(tab_id)
+                        .and_then(|index| this.tabs[index].body.table())
+                        .map(|table| table.filter_input.clone())
+                    {
+                        cx.defer(move |cx| {
+                            let _ = cx.update_window(window_handle, |_, window, cx| {
+                                filter_input.update(cx, |input, cx| {
+                                    input.set_value("", window, cx);
+                                });
+                            });
+                        });
+                    }
                 },
             );
             return;
@@ -508,8 +568,6 @@ impl KoyoApp {
         if table.loading {
             return;
         }
-        // Refresh is the user's explicit request for current data.
-        table.total_rows_cache = None;
         let offset = table.page.as_ref().map(|page| page.offset).unwrap_or(0);
         let filters = table.filters.clone();
         let sort = table.sort.clone();
@@ -522,10 +580,17 @@ impl KoyoApp {
                 "Reloading this page discards staged edits.",
                 move |this, cx| {
                     this.discard_changes(tab_id, cx);
+                    if let Some(index) = this.tab_index(tab_id)
+                        && let TabBody::Table(table) = &mut this.tabs[index].body
+                    {
+                        table.total_rows_cache = None;
+                    }
                     this.load_page(tab_id, offset, filters.clone(), sort.clone(), cx);
                 },
             );
         } else {
+            // Refresh is the user's explicit request for current data.
+            table.total_rows_cache = None;
             self.load_page(tab_id, offset, filters, sort, cx);
         }
     }

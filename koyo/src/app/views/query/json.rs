@@ -1,6 +1,7 @@
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::models::QueryResultSet;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::result_json_scroll_handle;
@@ -10,22 +11,34 @@ const JSON_LINE_HEIGHT: f32 = 22.0;
 
 pub(super) fn result_json(
     result: &QueryResultSet,
+    cached: &RefCell<Option<(usize, Rc<Vec<String>>, f32)>>,
     tab_id: u64,
     result_index: usize,
     palette: &Palette,
     mono: &SharedString,
     _cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
-    let lines = Rc::new(json_result_lines(result));
+    let (lines, width) = {
+        let mut cache = cached.borrow_mut();
+        if let Some((cached_index, lines, width)) = cache.as_ref()
+            && *cached_index == result_index
+        {
+            (Rc::clone(lines), *width)
+        } else {
+            let lines = Rc::new(json_result_lines(result));
+            let widest = lines
+                .iter()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(2);
+            // monospace 14px text is roughly 8px/character; keep a comfortable gutter.
+            let width = ((widest as f32) * 8.0 + 48.0).max(420.0);
+            *cache = Some((result_index, Rc::clone(&lines), width));
+            (lines, width)
+        }
+    };
     let scroll_handle = result_json_scroll_handle(tab_id, result_index);
     let palette = *palette;
-    let widest = lines
-        .iter()
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(2);
-    // monospace 14px text is roughly 8px/character; keep a comfortable gutter.
-    let width = ((widest as f32) * 8.0 + 48.0).max(420.0);
     let lines_for_render = Rc::clone(&lines);
     let list = uniform_list(
         SharedString::from(format!("result-json-lines-{tab_id}-{result_index}")),

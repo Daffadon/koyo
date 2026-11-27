@@ -9,6 +9,9 @@ fn table_matches(table: &TableSummary, query: &str) -> bool {
     query.is_empty()
         || table.name.to_lowercase().contains(query)
         || table.schema.to_lowercase().contains(query)
+        || format!("{}.{}", table.schema, table.name)
+            .to_lowercase()
+            .contains(query)
 }
 
 impl KoyoApp {
@@ -96,8 +99,14 @@ impl KoyoApp {
             return;
         };
         let query = open.input.read(cx).value().to_string();
-        let selected = open.selected;
-        let Some(table) = self.quick_open_matches(&query).get(selected).cloned() else {
+        let matches = self.quick_open_matches(&query);
+        if matches.is_empty() {
+            return;
+        }
+        let selected = open
+            .selected
+            .min(matches.len().min(QUICK_OPEN_RESULT_LIMIT).saturating_sub(1));
+        let Some(table) = matches.get(selected).cloned() else {
             return;
         };
         self.close_quick_open(window, cx);
@@ -124,6 +133,7 @@ mod tests {
         assert!(table_matches(&users, ""));
         assert!(table_matches(&users, "user"));
         assert!(table_matches(&users, "public"));
+        assert!(table_matches(&users, "public.users"));
         assert!(!table_matches(&users, "orders"));
     }
 }

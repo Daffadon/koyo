@@ -1,4 +1,4 @@
-use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
+use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT, TableMeta};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
@@ -22,30 +22,44 @@ pub struct OracleSession {
     connection: Arc<Mutex<Connection>>,
 }
 
+fn validate_easy_connect_part(value: &str, label: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("Oracle {label} is required."));
+    }
+    if trimmed.chars().any(|ch| {
+        ch.is_control()
+            || ch.is_whitespace()
+            || matches!(ch, '?' | '/' | '\\' | '(' | ')' | ',' | '@' | '=')
+    }) {
+        return Err(format!("Oracle {label} contains invalid characters."));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn build_connect_string(profile: &ConnectionProfile) -> Result<String, String> {
+    let host = validate_easy_connect_part(&profile.host, "host")?;
+    let service = validate_easy_connect_part(&profile.database, "service name")?;
+    if profile.ssl_mode == SslMode::VerifyFull {
+        Ok(format!(
+            "tcps://{host}:{}/{service}?ssl_server_dn_match=true",
+            profile.port
+        ))
+    } else {
+        Ok(format!("{host}:{}/{service}", profile.port))
+    }
+}
+
 pub async fn connect(
     profile: &ConnectionProfile,
     password: &str,
 ) -> Result<(OracleSession, String, String), String> {
-    let profile = profile.clone();
+    let connect_string = build_connect_string(profile)?;
+    let username = profile.username.trim().to_string();
     let password = password.to_string();
     blocking(move || {
-        let connect_string = if profile.ssl_mode == SslMode::VerifyFull {
-            format!(
-                "tcps://{}:{}/{}",
-                profile.host.trim(),
-                profile.port,
-                profile.database.trim()
-            )
-        } else {
-            format!(
-                "{}:{}/{}",
-                profile.host.trim(),
-                profile.port,
-                profile.database.trim()
-            )
-        };
         let config = oracledb::Config::default()
-            .set_credentials(profile.username.trim(), &password)
+            .set_credentials(&username, &password)
             .set_connect_string(&connect_string)
             .map_err(|error| format!("Oracle connect string is invalid: {error}"))?
             .set_driver_name("Koyo");
@@ -125,6 +139,7 @@ pub async fn list_columns(session: &OracleSession) -> Result<Vec<ColumnCatalogEn
             "SELECT owner, table_name, column_name
              FROM all_tab_columns
              WHERE owner NOT IN {SYSTEM_SCHEMAS}
+               AND table_name NOT LIKE 'BIN$%'
              ORDER BY owner, table_name, column_id"
         );
         let rows = connection
@@ -258,15 +273,16 @@ pub async fn list_indexes(
     blocking(move || {
         let connection = lock(&connection)?;
         let sql = "SELECT i.index_name, ic.column_name, i.uniqueness,
-                          CASE WHEN c.constraint_type = 'P' THEN 1 ELSE 0 END
+                          CASE WHEN EXISTS (
+                              SELECT 1 FROM all_constraints c
+                              WHERE c.owner = i.table_owner
+                                AND c.table_name = i.table_name
+                                AND c.index_name = i.index_name
+                                AND c.constraint_type = 'P'
+                          ) THEN 1 ELSE 0 END
                    FROM all_indexes i
                    JOIN all_ind_columns ic
                      ON ic.index_owner = i.owner AND ic.index_name = i.index_name
-                   LEFT JOIN all_constraints c
-                     ON c.owner = i.table_owner
-                    AND c.table_name = i.table_name
-                    AND c.index_name = i.index_name
-                    AND c.constraint_type IN ('P', 'U')
                    WHERE i.table_owner = :1 AND i.table_name = :2
                    ORDER BY i.index_name, ic.column_position";
         let params: Vec<Option<String>> = vec![Some(schema), Some(table)];
@@ -384,7 +400,11 @@ pub async fn list_database_metadata(session: &OracleSession) -> Result<Vec<Metad
                 },
                 MetadataItem {
                     name: "Container".into(),
-                    detail: row.get::<String>(2).map_err(|error| error.to_string())?,
+                    detail: row
+                        .get::<Option<String>>(2)
+                        .map_err(|error| error.to_string())?
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| "non-CDB".into()),
                 },
                 MetadataItem {
                     name: "Current User".into(),
@@ -497,7 +517,7 @@ fn load_page_sync(
     let selected = meta
         .columns
         .iter()
-        .map(|column| quote_identifier(&column.name))
+        .map(page_column_expression)
         .collect::<Vec<_>>()
         .join(", ");
     let mut params = Vec::new();
@@ -559,10 +579,10 @@ fn load_page_sync(
         let mut values = Vec::with_capacity(meta.columns.len());
         let mut truncated = Vec::with_capacity(meta.columns.len());
         for index in 0..meta.columns.len() {
-            let value = cell_text(&row, index)?;
+            let (value, placeholder) = cell_text_flagged(&row, index)?;
             let (value, clipped) = budget.page_cell_flagged(value);
             values.push(value);
-            truncated.push(clipped);
+            truncated.push(clipped || placeholder);
         }
         let key: Vec<Option<String>> = meta
             .primary_indices
@@ -645,7 +665,7 @@ fn apply_changes_sync(
 
 fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, String> {
     let keyword = first_keyword(sql);
-    let is_query = matches!(keyword.as_str(), "select" | "with" | "explain");
+    let is_query = matches!(keyword.as_str(), "select" | "with");
     if !is_query {
         let result = connection
             .execute(sql, &[])
@@ -690,18 +710,7 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
     })
 }
 
-struct OracleMeta {
-    columns: Vec<ColumnInfo>,
-    primary_indices: Vec<usize>,
-}
-
-impl OracleMeta {
-    fn editable(&self) -> bool {
-        !self.primary_indices.is_empty()
-    }
-}
-
-fn load_meta(connection: &Connection, schema: &str, table: &str) -> Result<OracleMeta, String> {
+fn load_meta(connection: &Connection, schema: &str, table: &str) -> Result<TableMeta, String> {
     let params: [&dyn oracledb::ToDbValue; 2] = [&schema, &table];
     let rows = connection
         .query(
@@ -746,7 +755,15 @@ fn load_meta(connection: &Connection, schema: &str, table: &str) -> Result<Oracl
             filter_kind: common::filter_kind(&base_type),
             sortable: !matches!(
                 base_type.as_str(),
-                "BLOB" | "CLOB" | "NCLOB" | "JSON" | "XMLTYPE" | "OBJECT" | "BFILE"
+                "BLOB"
+                    | "CLOB"
+                    | "NCLOB"
+                    | "JSON"
+                    | "XMLTYPE"
+                    | "OBJECT"
+                    | "BFILE"
+                    | "LONG"
+                    | "LONG RAW"
             ),
             nullable: row
                 .get::<String>(5)
@@ -766,23 +783,29 @@ fn load_meta(connection: &Connection, schema: &str, table: &str) -> Result<Oracl
     if columns.is_empty() {
         return Err("Table has no visible columns.".into());
     }
-    let primary_indices = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| column.primary_key)
-        .map(|(index, _)| index)
-        .collect();
-    Ok(OracleMeta {
-        columns,
-        primary_indices,
-    })
+    Ok(TableMeta::new(columns, None))
+}
+
+fn page_column_expression(column: &ColumnInfo) -> String {
+    let identifier = quote_identifier(&column.name);
+    let limit = common::MAX_CELL_CHARS;
+    if matches!(
+        column.filter_type.as_str(),
+        "VARCHAR2" | "NVARCHAR2" | "CHAR" | "NCHAR"
+    ) {
+        format!(
+            "CASE WHEN LENGTH({identifier}) > {limit} THEN SUBSTR({identifier}, 1, {limit}) || ' [truncated]' ELSE {identifier} END"
+        )
+    } else {
+        identifier
+    }
 }
 
 fn first_keyword(sql: &str) -> String {
     let bytes = sql.as_bytes();
     let mut index = 0;
     loop {
-        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+        while index < bytes.len() && (bytes[index].is_ascii_whitespace() || bytes[index] == b'(') {
             index += 1;
         }
         if index + 1 < bytes.len() && bytes[index] == b'-' && bytes[index + 1] == b'-' {
@@ -860,15 +883,8 @@ fn build_filter_predicate(
             | FilterOperator::GreaterThanOrEqual => {
                 let value = value
                     .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
-                let operator = match filter.operator {
-                    FilterOperator::Equals => "=",
-                    FilterOperator::NotEquals => "<>",
-                    FilterOperator::LessThan => "<",
-                    FilterOperator::LessThanOrEqual => "<=",
-                    FilterOperator::GreaterThan => ">",
-                    FilterOperator::GreaterThanOrEqual => ">=",
-                    _ => unreachable!(),
-                };
+                let operator =
+                    common::comparison_sql(filter.operator).expect("comparison operator");
                 params.push(Some(value.to_string()));
                 let placeholder = format!(":{}", params.len());
                 format!(
@@ -878,19 +894,42 @@ fn build_filter_predicate(
             }
             FilterOperator::IsNull => format!("{identifier} IS NULL"),
             FilterOperator::IsNotNull => format!("{identifier} IS NOT NULL"),
-            FilterOperator::IsTrue => format!("{identifier} = 1"),
-            FilterOperator::IsFalse => format!("{identifier} = 0"),
+            FilterOperator::IsTrue => format!("{identifier} IS TRUE"),
+            FilterOperator::IsFalse => format!("{identifier} IS FALSE"),
         };
         predicates.push(predicate);
     }
     Ok((!predicates.is_empty()).then(|| predicates.join(" AND ")))
 }
 
+fn ensure_editable_oracle_column(column: &ColumnInfo) -> Result<(), String> {
+    common::ensure_writable(column)?;
+    if is_placeholder_column(column) {
+        return Err(format!(
+            "Column {} ({}) cannot be edited in the grid.",
+            column.name, column.filter_type
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_oracle_value(
+    column: &ColumnInfo,
+    value: Option<String>,
+) -> Result<Option<String>, String> {
+    let base_type = column.filter_type.to_ascii_uppercase();
+    if base_type == "RAW" || base_type == "LONG RAW" {
+        Ok(common::ensure_binary_hex(&value)?.map(str::to_string))
+    } else {
+        Ok(value)
+    }
+}
+
 fn build_insert(
     connection: &Connection,
     schema: &str,
     table: &str,
-    meta: &OracleMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
 ) -> Result<u64, String> {
     let mut names = Vec::with_capacity(values.len());
@@ -898,11 +937,12 @@ fn build_insert(
     let mut params = Vec::with_capacity(values.len());
     for (name, value) in values {
         let column = common::find_column(&meta.columns, &name)?;
-        common::ensure_writable(column)?;
+        ensure_editable_oracle_column(column)?;
+        let bound = prepare_oracle_value(column, value)?;
         names.push(quote_identifier(&name));
         let placeholder = format!(":{}", params.len() + 1);
         placeholders.push(bind_expression(column, &placeholder));
-        params.push(value);
+        params.push(bound);
     }
     if names.is_empty() {
         let column = meta
@@ -940,7 +980,7 @@ fn build_update(
     connection: &Connection,
     schema: &str,
     table: &str,
-    meta: &OracleMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
     truncated: &[bool],
@@ -955,16 +995,17 @@ fn build_update(
     let mut params = Vec::with_capacity(values.len() + original.len());
     for (name, value) in values {
         let column = common::find_column(&meta.columns, &name)?;
-        common::ensure_writable(column)?;
+        ensure_editable_oracle_column(column)?;
+        let bound = prepare_oracle_value(column, value)?;
         let placeholder = format!(":{}", params.len() + 1);
         assignments.push(format!(
             "{} = {}",
             quote_identifier(&name),
             bind_expression(column, &placeholder)
         ));
-        params.push(value);
+        params.push(bound);
     }
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
+    let predicate = original_predicate(meta, &original, truncated, &mut params)?;
     let params = params
         .iter()
         .map(|value| value as &dyn oracledb::ToDbValue)
@@ -984,7 +1025,7 @@ fn build_delete(
     connection: &Connection,
     schema: &str,
     table: &str,
-    meta: &OracleMeta,
+    meta: &TableMeta,
     original: Vec<Option<String>>,
     truncated: &[bool],
 ) -> Result<u64, String> {
@@ -992,7 +1033,7 @@ fn build_delete(
         return Err("The table shape changed. Reload before retrying.".into());
     }
     let mut params = Vec::with_capacity(original.len());
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
+    let predicate = original_predicate(meta, &original, truncated, &mut params)?;
     let params = params
         .iter()
         .map(|value| value as &dyn oracledb::ToDbValue)
@@ -1011,12 +1052,14 @@ fn bind_expression(column: &ColumnInfo, placeholder: &str) -> String {
     let base_type = column.filter_type.to_ascii_uppercase();
     if base_type == "DATE" {
         format!("CAST(TO_TIMESTAMP({placeholder}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9') AS DATE)")
-    } else if base_type.contains("TIMESTAMP") && base_type.contains("WITH LOCAL TIME ZONE") {
-        format!("TO_TIMESTAMP_TZ({placeholder}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9')")
-    } else if base_type.contains("TIMESTAMP") && base_type.contains("WITH TIME ZONE") {
+    } else if base_type.contains("TIMESTAMP")
+        && (base_type.contains("WITH LOCAL TIME ZONE") || base_type.contains("WITH TIME ZONE"))
+    {
         format!("TO_TIMESTAMP_TZ({placeholder}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9TZH:TZM')")
     } else if base_type.starts_with("TIMESTAMP") {
         format!("TO_TIMESTAMP({placeholder}, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF9')")
+    } else if base_type == "BOOLEAN" {
+        format!("TO_BOOLEAN({placeholder})")
     } else if matches!(
         base_type.as_str(),
         "NUMBER" | "INTEGER" | "FLOAT" | "BINARY_INTEGER"
@@ -1034,12 +1077,14 @@ fn bind_expression(column: &ColumnInfo, placeholder: &str) -> String {
 }
 
 fn original_predicate(
-    columns: &[ColumnInfo],
+    meta: &TableMeta,
     original: &[Option<String>],
     truncated: &[bool],
     params: &mut Vec<Option<String>>,
-) -> String {
-    columns
+) -> Result<String, String> {
+    common::ensure_untruncated_primary_keys(&meta.primary_indices, truncated)?;
+    let predicates = meta
+        .columns
         .iter()
         .zip(original)
         .enumerate()
@@ -1053,18 +1098,29 @@ fn original_predicate(
             let bind = bind_expression(column, &placeholder);
             format!("DECODE({identifier}, {bind}, 1, 0) = 1")
         })
-        .collect::<Vec<_>>()
-        .join(" AND ")
+        .collect::<Vec<_>>();
+    if predicates.is_empty() {
+        return Err("Row cannot be matched because all comparable columns were truncated.".into());
+    }
+    Ok(predicates.join(" AND "))
 }
 
-fn is_comparable(column: &ColumnInfo) -> bool {
-    !matches!(
+fn is_placeholder_column(column: &ColumnInfo) -> bool {
+    matches!(
         column.filter_type.as_str(),
         "CLOB" | "NCLOB" | "BLOB" | "BFILE" | "JSON" | "XMLTYPE" | "OBJECT"
     )
 }
 
+fn is_comparable(column: &ColumnInfo) -> bool {
+    !is_placeholder_column(column) && !matches!(column.filter_type.as_str(), "LONG" | "LONG RAW")
+}
+
 fn cell_text(row: &Row, index: usize) -> Result<Option<String>, String> {
+    Ok(cell_text_flagged(row, index)?.0)
+}
+
+fn cell_text_flagged(row: &Row, index: usize) -> Result<(Option<String>, bool), String> {
     let column = row
         .columns()
         .get(index)
@@ -1082,32 +1138,34 @@ fn cell_text(row: &Row, index: usize) -> Result<Option<String>, String> {
         | "DB_TYPE_ROWID"
         | "DB_TYPE_UROWID" => row
             .get::<Option<String>>(index)
+            .map(|value| (value, false))
             .map_err(|error| error.to_string()),
         "DB_TYPE_BINARY_FLOAT" => row
             .get::<Option<f32>>(index)
-            .map(|value| value.map(|value| value.to_string()))
+            .map(|value| (value.map(|value| value.to_string()), false))
             .map_err(|error| error.to_string()),
         "DB_TYPE_BINARY_DOUBLE" => row
             .get::<Option<f64>>(index)
-            .map(|value| value.map(|value| value.to_string()))
+            .map(|value| (value.map(|value| value.to_string()), false))
             .map_err(|error| error.to_string()),
         "DB_TYPE_DATE" | "DB_TYPE_TIMESTAMP" | "DB_TYPE_TIMESTAMP_TZ" | "DB_TYPE_TIMESTAMP_LTZ" => {
             row.get::<Option<OracleTimestamp>>(index)
-                .map(|value| value.map(|value| timestamp_text(&value)))
+                .map(|value| (value.map(|value| timestamp_text(&value)), false))
                 .map_err(|error| error.to_string())
         }
         "DB_TYPE_BOOLEAN" => row
             .get::<Option<bool>>(index)
-            .map(|value| value.map(|value| value.to_string()))
+            .map(|value| (value.map(|value| value.to_string()), false))
             .map_err(|error| error.to_string()),
         "DB_TYPE_RAW" | "DB_TYPE_LONG_RAW" => row
             .get::<Option<Vec<u8>>>(index)
-            .map(|value| value.map(|value| hex(&value)))
+            .map(|value| (value.map(|value| common::hex_encode(&value)), false))
             .map_err(|error| error.to_string()),
         "DB_TYPE_CLOB" | "DB_TYPE_NCLOB" | "DB_TYPE_BLOB" | "DB_TYPE_BFILE" | "DB_TYPE_JSON"
-        | "DB_TYPE_XMLTYPE" | "DB_TYPE_OBJECT" => Ok(Some(format!("[{type_name}]"))),
+        | "DB_TYPE_XMLTYPE" | "DB_TYPE_OBJECT" => Ok((Some(format!("[{type_name}]")), true)),
         _ => row
             .get::<Option<String>>(index)
+            .map(|value| (value, false))
             .map_err(|error| format!("{type_name}: {error}")),
     }
 }
@@ -1124,17 +1182,13 @@ fn timestamp_text(value: &OracleTimestamp) -> String {
         value.nanoseconds()
     );
     if value.is_utc() {
-        text.push('Z');
+        text.push_str("+00:00");
     }
     text
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn quote_relation(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_identifier(schema), quote_identifier(table))
+    common::quote_relation(schema, table, quote_identifier)
 }
 
 fn quote_identifier(identifier: &str) -> String {
@@ -1423,13 +1477,74 @@ mod truncation_predicate_tests {
 
     #[test]
     fn predicates_skip_truncated_columns() {
-        let columns = vec![column("ID", true), column("SECRET", false)];
+        let meta = TableMeta::new(vec![column("ID", true), column("SECRET", false)], None);
         let original = vec![Some("1".into()), Some("partial [truncated]".into())];
         let mut params = Vec::new();
-        let predicate = original_predicate(&columns, &original, &[false, true], &mut params);
+        let predicate =
+            original_predicate(&meta, &original, &[false, true], &mut params).expect("predicate");
 
         assert!(!predicate.contains("\"SECRET\""));
         assert!(predicate.contains("\"ID\""));
         assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn rejects_truncated_primary_keys() {
+        let meta = TableMeta::new(vec![column("ID", true), column("SECRET", false)], None);
+        let original = vec![Some("huge [truncated]".into()), Some("ok".into())];
+        let mut params = Vec::new();
+        assert!(original_predicate(&meta, &original, &[true, false], &mut params).is_err());
+    }
+
+    #[test]
+    fn connect_string_rejects_injection_and_enforces_dn_match() {
+        let mut profile = ConnectionProfile {
+            id: uuid::Uuid::new_v4(),
+            name: "ora".into(),
+            engine: crate::models::Engine::Oracle,
+            host: "db.example.com".into(),
+            port: 1521,
+            database: "FREEPDB1".into(),
+            username: "system".into(),
+            ssl_mode: SslMode::VerifyFull,
+            sqlite_path: String::new(),
+        };
+        assert_eq!(
+            build_connect_string(&profile).expect("valid"),
+            "tcps://db.example.com:1521/FREEPDB1?ssl_server_dn_match=true"
+        );
+        profile.database = "FREEPDB1?ssl_server_dn_match=false".into();
+        assert!(build_connect_string(&profile).is_err());
+        profile.database = "FREEPDB1".into();
+        profile.host = "evil/service".into();
+        assert!(build_connect_string(&profile).is_err());
+    }
+
+    #[test]
+    fn first_keyword_handles_parentheses_and_comments() {
+        assert_eq!(first_keyword("((SELECT 1 FROM dual))"), "select");
+        assert_eq!(
+            first_keyword("/* c */ (WITH t AS (SELECT 1) SELECT * FROM t)"),
+            "with"
+        );
+        assert_eq!(
+            first_keyword("EXPLAIN PLAN FOR SELECT 1 FROM dual"),
+            "explain"
+        );
+    }
+
+    #[test]
+    fn bind_expression_handles_tz_ltz_boolean_and_long_exclusions() {
+        let mut ltz = column("TS", false);
+        ltz.filter_type = "TIMESTAMP(6) WITH LOCAL TIME ZONE".into();
+        assert!(bind_expression(&ltz, ":1").contains("TZH:TZM"));
+
+        let mut boolean = column("ACTIVE", false);
+        boolean.filter_type = "BOOLEAN".into();
+        assert_eq!(bind_expression(&boolean, ":1"), "TO_BOOLEAN(:1)");
+
+        let mut long = column("BODY", false);
+        long.filter_type = "LONG".into();
+        assert!(!is_comparable(&long));
     }
 }

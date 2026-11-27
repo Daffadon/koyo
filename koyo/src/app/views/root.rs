@@ -20,7 +20,7 @@ impl Render for KoyoApp {
         self.normalize_panes();
         query::prune_scroll_handles(self);
         table::prune_scroll_handles(self);
-        widgets::prune_control_focus(self);
+        widgets::prune_control_focus(self, window);
         self.apply_pending_starters(window, cx);
 
         let palette = palette(self.theme_choice, cx);
@@ -106,7 +106,7 @@ impl Render for KoyoApp {
                     .items_center()
                     .gap_2()
                     .h_full()
-                    .child(widgets::logo_mark(&palette, 20.0))
+                    .child(widgets::logo_mark(20.0))
                     .child(
                         div()
                             .text_sm()
@@ -168,6 +168,15 @@ impl Render for KoyoApp {
                         this.child(divider).child(panel)
                     })
                     .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                        if !event.dragging()
+                            && (this.ai_resizing || this.sidebar_resizing || this.split_resizing)
+                        {
+                            this.ai_resizing = false;
+                            this.sidebar_resizing = false;
+                            this.split_resizing = false;
+                            this.persist_state(cx);
+                            return;
+                        }
                         if this.sidebar_resizing {
                             this.set_sidebar_width(
                                 f32::from(event.position.x) - SIDEBAR_DIVIDER_WIDTH / 2.0,
@@ -184,9 +193,10 @@ impl Render for KoyoApp {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            if this.ai_resizing || this.sidebar_resizing {
+                            if this.ai_resizing || this.sidebar_resizing || this.split_resizing {
                                 this.ai_resizing = false;
                                 this.sidebar_resizing = false;
+                                this.split_resizing = false;
                                 this.persist_state(cx);
                             }
                         }),
@@ -306,7 +316,7 @@ impl Render for KoyoApp {
             .when_some(cell_edit, |this, editor| this.child(editor))
             .when_some(export, |this, export| this.child(export))
             .when_some(settings, |this, settings| this.child(settings))
-            .when_some(confirm, |this, confirm| this.child(confirm))
             .when_some(quick_open, |this, quick_open| this.child(quick_open))
+            .when_some(confirm, |this, confirm| this.child(confirm))
     }
 }

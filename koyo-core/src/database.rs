@@ -1,7 +1,8 @@
 use crate::{
     common::{
-        QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT, TableMeta, ensure_filter_operator,
-        ensure_one_row, ensure_writable, find_column, quote_identifier,
+        MAX_AFFECTED_ROWS, MAX_RESULT_SETS, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT,
+        TableMeta, comparison_sql, ensure_filter_operator, ensure_one_row,
+        ensure_untruncated_primary_keys, ensure_writable, find_column, quote_identifier,
     },
     models::{
         ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionInfo, ConnectionProfile, Engine,
@@ -16,7 +17,6 @@ use futures_util::TryStreamExt;
 use rustls_tokio_postgres::{MakeRustlsConnect, config_platform_verifier};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio_postgres::{CancelToken, Client, SimpleQueryMessage, config::SslMode, types::ToSql};
@@ -29,13 +29,32 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<Uuid, Arc<SessionEntry>>>,
 }
 
+#[derive(Default)]
+struct OperationState {
+    active: Option<Uuid>,
+    cancelled: HashSet<Uuid>,
+}
+
 struct SessionEntry {
     session: Mutex<Option<DbSession>>,
     cancel: Mutex<Option<CancelState>>,
-    query_active: AtomicBool,
-    active_operation: std::sync::Mutex<Option<Uuid>>,
-    cancelled_operations: std::sync::Mutex<HashSet<Uuid>>,
+    operations: std::sync::Mutex<OperationState>,
     connection_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl SessionEntry {
+    fn new(
+        session: DbSession,
+        cancel: CancelState,
+        connection_task: Option<tokio::task::JoinHandle<()>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            session: Mutex::new(Some(session)),
+            cancel: Mutex::new(Some(cancel)),
+            operations: std::sync::Mutex::new(OperationState::default()),
+            connection_task: std::sync::Mutex::new(connection_task),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -67,49 +86,39 @@ enum DbSession {
 }
 
 struct QueryGuard<'a> {
-    active: &'a AtomicBool,
-    operation: &'a std::sync::Mutex<Option<Uuid>>,
+    operations: &'a std::sync::Mutex<OperationState>,
     operation_id: Uuid,
 }
 
 impl<'a> QueryGuard<'a> {
-    fn begin(
-        active: &'a AtomicBool,
-        operation: &'a std::sync::Mutex<Option<Uuid>>,
+    fn try_begin(
+        operations: &'a std::sync::Mutex<OperationState>,
         operation_id: Uuid,
-    ) -> Self {
-        active.store(true, Ordering::SeqCst);
-        let mut slot = operation
+    ) -> Result<Self, String> {
+        let mut state = operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *slot = Some(operation_id);
-        Self {
-            active,
-            operation,
-            operation_id,
+        if state.cancelled.remove(&operation_id) {
+            return Err("Operation was cancelled before it started.".into());
         }
+        state.active = Some(operation_id);
+        Ok(Self {
+            operations,
+            operation_id,
+        })
     }
 }
 
 impl Drop for QueryGuard<'_> {
     fn drop(&mut self) {
-        let mut slot = self
-            .operation
+        let mut state = self
+            .operations
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if *slot == Some(self.operation_id) {
-            *slot = None;
+        if state.active == Some(self.operation_id) {
+            state.active = None;
         }
-        self.active.store(false, Ordering::SeqCst);
     }
-}
-
-fn operation_cancelled_before_start(entry: &SessionEntry, operation_id: Uuid) -> bool {
-    entry
-        .cancelled_operations
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&operation_id)
 }
 
 async fn get_session(
@@ -135,20 +144,13 @@ pub async fn connect(
 
     match profile.engine {
         Engine::Sqlite => {
-            let (session, server_version) = sqlite::connect(&profile.sqlite_path)?;
+            let (session, server_version) = sqlite::connect(&profile.sqlite_path).await?;
             let cancel = CancelState::Sqlite {
                 interrupt: session.interrupt.clone(),
             };
             manager.sessions.lock().await.insert(
                 session_id,
-                Arc::new(SessionEntry {
-                    session: Mutex::new(Some(DbSession::Sqlite(session))),
-                    cancel: Mutex::new(Some(cancel)),
-                    query_active: AtomicBool::new(false),
-                    active_operation: std::sync::Mutex::new(None),
-                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
-                    connection_task: std::sync::Mutex::new(None),
-                }),
+                SessionEntry::new(DbSession::Sqlite(session), cancel, None),
             );
             return Ok(ConnectionInfo {
                 session_id,
@@ -166,14 +168,7 @@ pub async fn connect(
             };
             manager.sessions.lock().await.insert(
                 session_id,
-                Arc::new(SessionEntry {
-                    session: Mutex::new(Some(DbSession::Mysql(session))),
-                    cancel: Mutex::new(Some(cancel)),
-                    query_active: AtomicBool::new(false),
-                    active_operation: std::sync::Mutex::new(None),
-                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
-                    connection_task: std::sync::Mutex::new(None),
-                }),
+                SessionEntry::new(DbSession::Mysql(session), cancel, None),
             );
             return Ok(ConnectionInfo {
                 session_id,
@@ -184,21 +179,14 @@ pub async fn connect(
         }
         Engine::SqlServer => {
             let (session, server_version, current_user, config) =
-                mssql::connect(&profile, password, profile.engine).await?;
+                mssql::connect(&profile, password).await?;
             let cancel = CancelState::Mssql {
                 config,
                 spid: session.spid,
             };
             manager.sessions.lock().await.insert(
                 session_id,
-                Arc::new(SessionEntry {
-                    session: Mutex::new(Some(DbSession::Mssql(session))),
-                    cancel: Mutex::new(Some(cancel)),
-                    query_active: AtomicBool::new(false),
-                    active_operation: std::sync::Mutex::new(None),
-                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
-                    connection_task: std::sync::Mutex::new(None),
-                }),
+                SessionEntry::new(DbSession::Mssql(session), cancel, None),
             );
             return Ok(ConnectionInfo {
                 session_id,
@@ -212,14 +200,7 @@ pub async fn connect(
                 oracle::connect(&profile, password).await?;
             manager.sessions.lock().await.insert(
                 session_id,
-                Arc::new(SessionEntry {
-                    session: Mutex::new(Some(DbSession::Oracle(session))),
-                    cancel: Mutex::new(Some(CancelState::Oracle)),
-                    query_active: AtomicBool::new(false),
-                    active_operation: std::sync::Mutex::new(None),
-                    cancelled_operations: std::sync::Mutex::new(HashSet::new()),
-                    connection_task: std::sync::Mutex::new(None),
-                }),
+                SessionEntry::new(DbSession::Oracle(session), CancelState::Oracle, None),
             );
             return Ok(ConnectionInfo {
                 session_id,
@@ -294,14 +275,7 @@ pub async fn connect(
     };
     manager.sessions.lock().await.insert(
         session_id,
-        Arc::new(SessionEntry {
-            session: Mutex::new(Some(DbSession::Postgres(client))),
-            cancel: Mutex::new(Some(cancel)),
-            query_active: AtomicBool::new(false),
-            active_operation: std::sync::Mutex::new(None),
-            cancelled_operations: std::sync::Mutex::new(HashSet::new()),
-            connection_task: std::sync::Mutex::new(connection_task),
-        }),
+        SessionEntry::new(DbSession::Postgres(client), cancel, connection_task),
     );
     Ok(ConnectionInfo {
         session_id,
@@ -318,10 +292,14 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take();
-    if entry.query_active.load(Ordering::SeqCst) {
-        if let Some(cancel) = entry.cancel.lock().await.clone() {
-            let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel)).await;
-        }
+    let has_active = entry
+        .operations
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .active
+        .is_some();
+    if has_active && let Some(cancel) = entry.cancel.lock().await.clone() {
+        let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(&cancel)).await;
     }
     if let Some(task) = connection_task {
         task.abort();
@@ -335,26 +313,30 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
             // session closes when that task releases it; a detached waiter
             // would keep the connection alive forever if the task never ends.
             *entry.cancel.lock().await = None;
-            entry.query_active.store(false, Ordering::SeqCst);
-            entry
-                .cancelled_operations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clear();
+            {
+                let mut ops = entry
+                    .operations
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                ops.active = None;
+                ops.cancelled.clear();
+            }
             manager.sessions.lock().await.remove(&session_id);
             return Err(
-                "A database operation is still running. Cancel it and try again.".to_string(),
+                "Session was detached while a database operation was still finishing.".to_string(),
             );
         }
     };
     *session = None;
     *entry.cancel.lock().await = None;
-    entry.query_active.store(false, Ordering::SeqCst);
-    entry
-        .cancelled_operations
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+    {
+        let mut ops = entry
+            .operations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        ops.active = None;
+        ops.cancelled.clear();
+    }
     manager.sessions.lock().await.remove(&session_id);
     Ok(())
 }
@@ -362,7 +344,9 @@ pub async fn disconnect(manager: &SessionManager, session_id: Uuid) -> Result<()
 pub async fn ping(manager: &SessionManager, session_id: Uuid) -> Result<(), String> {
     let entry = get_session(manager, session_id).await?;
     let ping = async {
-        let mut session_guard = entry.session.lock().await;
+        let Ok(mut session_guard) = entry.session.try_lock() else {
+            return Ok(());
+        };
         let session = session_guard
             .as_mut()
             .ok_or_else(|| "Session is no longer connected.".to_string())?;
@@ -371,7 +355,7 @@ pub async fn ping(manager: &SessionManager, session_id: Uuid) -> Result<(), Stri
                 .simple_query("SELECT 1")
                 .await
                 .map(|_| ())
-                .map_err(|error| error.to_string()),
+                .map_err(|error| format_pg_error(&error)),
             DbSession::Sqlite(sqlite_session) => sqlite::ping(sqlite_session).await,
             DbSession::Mysql(mysql_session) => mysql::ping(mysql_session).await,
             DbSession::Mssql(mssql_session) => mssql::ping(mssql_session).await,
@@ -389,20 +373,18 @@ pub async fn cancel_query(
     operation_id: Uuid,
 ) -> Result<bool, String> {
     let entry = get_session(manager, session_id).await?;
-    let active = *entry
-        .active_operation
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if !entry.query_active.load(Ordering::SeqCst) {
-        return Err("That operation is no longer running.".into());
-    }
-    if active != Some(operation_id) {
-        entry
-            .cancelled_operations
+    {
+        let mut ops = entry
+            .operations
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(operation_id);
-        return Ok(false);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if ops.active != Some(operation_id) {
+            if ops.cancelled.len() >= 64 {
+                ops.cancelled.clear();
+            }
+            ops.cancelled.insert(operation_id);
+            return Ok(false);
+        }
     }
     let cancel = entry
         .cancel
@@ -478,7 +460,7 @@ pub async fn list_tables(
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
 
     rows.into_iter()
         .map(|row| {
@@ -601,7 +583,7 @@ async fn list_indexes_pg(
             &[&schema, &table],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
 
     let mut indexes: Vec<TableIndexInfo> = Vec::new();
     for row in rows {
@@ -642,15 +624,16 @@ async fn list_columns_pg(client: &Client) -> Result<Vec<ColumnCatalogEntry>, Str
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(|row| ColumnCatalogEntry {
-            schema: row.get(0),
-            table: row.get(1),
-            column: row.get(2),
+        .map_err(|error| format_pg_error(&error))?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(ColumnCatalogEntry {
+                schema: row.try_get(0).map_err(|error| error.to_string())?,
+                table: row.try_get(1).map_err(|error| error.to_string())?,
+                column: row.try_get(2).map_err(|error| error.to_string())?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 async fn list_schema_objects_pg(client: &Client) -> Result<Vec<SchemaObject>, String> {
@@ -682,7 +665,7 @@ async fn list_schema_objects_pg(client: &Client) -> Result<Vec<SchemaObject>, St
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
 
     rows.into_iter()
         .map(|row| {
@@ -726,7 +709,7 @@ async fn list_foreign_keys_pg(
             &[&schema, &table],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
 
     rows.into_iter()
         .map(|row| {
@@ -789,7 +772,7 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let items = rows
         .into_iter()
         .map(|row| {
@@ -812,7 +795,7 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let items = rows
         .into_iter()
         .map(|row| {
@@ -835,7 +818,7 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let items = rows
         .into_iter()
         .map(|row| {
@@ -856,12 +839,15 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let version: String = row.try_get(0).map_err(|error| error.to_string())?;
     let database: String = row.try_get(1).map_err(|error| error.to_string())?;
     let user: String = row.try_get(2).map_err(|error| error.to_string())?;
     let encoding: String = row.try_get(3).map_err(|error| error.to_string())?;
-    let collation: String = row.try_get(4).map_err(|error| error.to_string())?;
+    let collation = row
+        .try_get::<_, Option<String>>(4)
+        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|| "default".into());
     groups.extend(metadata_group(
         "System Info",
         vec![
@@ -893,7 +879,7 @@ async fn list_database_metadata_pg(client: &Client) -> Result<Vec<MetadataGroup>
             &[],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let items = rows
         .into_iter()
         .map(|row| {
@@ -942,17 +928,13 @@ pub async fn load_table_page(
         "The session is busy with another statement. Wait for it to finish or cancel it."
             .to_string()
     })?;
-    if operation_cancelled_before_start(&entry, operation_id) {
-        return Err("Operation was cancelled before it started.".into());
-    }
+    let _active = QueryGuard::try_begin(&entry.operations, operation_id)?;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::load_page(
                 sqlite_session,
                 &schema,
@@ -966,8 +948,6 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::load_page(
                 mysql_session,
                 &schema,
@@ -981,8 +961,6 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::load_page(
                 mssql_session,
                 &schema,
@@ -996,8 +974,6 @@ pub async fn load_table_page(
             .await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::load_page(
                 oracle_session,
                 &schema,
@@ -1031,11 +1007,10 @@ pub async fn load_table_page(
 
     let total_rows = if count_total {
         let (count_sql, count_params) = build_table_count_query(&schema, &table, &meta, &filters)?;
-        let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
         let row = client
             .query_one(&count_sql, &sql_params(&count_params))
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format_pg_error(&error))?;
         Some(
             row.try_get::<_, i64>(0)
                 .map_err(|error| error.to_string())?
@@ -1044,13 +1019,10 @@ pub async fn load_table_page(
     } else {
         None
     };
-    let rows = {
-        let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
-        client
-            .query(&sql, &sql_params(&params))
-            .await
-            .map_err(|error| error.to_string())?
-    };
+    let rows = client
+        .query(&sql, &sql_params(&params))
+        .await
+        .map_err(|error| format_pg_error(&error))?;
     let mut page_rows = Vec::with_capacity(fetch_limit as usize);
     let mut budget = QueryBudget::new();
     for row in rows {
@@ -1168,8 +1140,9 @@ fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
     let limit = crate::common::MAX_CELL_CHARS;
     if column.filter_type == "bytea" {
+        let bytea_limit = (limit - 2) / 2;
         format!(
-            "CASE WHEN octet_length({identifier}) > {limit} THEN encode(substring({identifier} from 1 for {limit}), 'hex') || ' [truncated]' ELSE encode({identifier}, 'hex') END"
+            "CASE WHEN octet_length({identifier}) > {bytea_limit} THEN E'\\x' || encode(substring({identifier} from 1 for {bytea_limit}), 'hex') || ' [truncated]' ELSE E'\\x' || encode({identifier}, 'hex') END"
         )
     } else {
         let text = format!("{identifier}::text");
@@ -1208,15 +1181,7 @@ fn build_filter_predicate(
             | FilterOperator::GreaterThanOrEqual => {
                 let value = value
                     .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
-                let operator = match filter.operator {
-                    FilterOperator::Equals => "=",
-                    FilterOperator::NotEquals => "<>",
-                    FilterOperator::LessThan => "<",
-                    FilterOperator::LessThanOrEqual => "<=",
-                    FilterOperator::GreaterThan => ">",
-                    FilterOperator::GreaterThanOrEqual => ">=",
-                    _ => unreachable!(),
-                };
+                let operator = comparison_sql(filter.operator).expect("comparison operator");
                 params.push(Some(value.to_string()));
                 format!(
                     "{identifier} {operator} {}",
@@ -1263,10 +1228,10 @@ fn build_order_by(
     }
     if meta.primary_columns().next().is_none() {
         if is_view {
-            if let Some(column) = meta.columns.first() {
-                if sort_column.is_none_or(|sort| sort.name != column.name) {
-                    terms.push(format!("{} ASC", order_column(&column.name)));
-                }
+            if let Some(column) = meta.columns.iter().find(|column| {
+                column.sortable && sort_column.is_none_or(|sort| sort.name != column.name)
+            }) {
+                terms.push(format!("{} ASC", order_column(&column.name)));
             }
         } else {
             if meta.relation_kind.as_deref() == Some("p") {
@@ -1294,32 +1259,22 @@ pub async fn apply_grid_changes(
     }
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
-    if operation_cancelled_before_start(&entry, operation_id) {
-        return Err("Operation was cancelled before it started.".into());
-    }
+    let _active = QueryGuard::try_begin(&entry.operations, operation_id)?;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::apply_changes(sqlite_session, &schema, &table, changes).await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::apply_changes(mysql_session, &schema, &table, changes).await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::apply_changes(mssql_session, &schema, &table, changes).await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::apply_changes(oracle_session, &schema, &table, changes).await;
         }
     };
@@ -1334,11 +1289,10 @@ pub async fn apply_grid_changes(
         );
     }
 
-    let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
     let transaction = client
         .transaction()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     let mut applied = 0;
     for change in changes {
         match change {
@@ -1348,30 +1302,38 @@ pub async fn apply_grid_changes(
                 let count = transaction
                     .execute(&sql, &refs)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| format_pg_error(&error))?;
                 ensure_one_row(count)?;
             }
             GridChange::Update {
                 key,
                 version,
                 values,
+                truncated,
                 ..
             } => {
+                ensure_untruncated_primary_keys(&meta.primary_indices, &truncated)?;
                 let (sql, params) = build_update(&schema, &table, &meta, key, version, values)?;
                 let refs = sql_params(&params);
                 let count = transaction
                     .execute(&sql, &refs)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| format_pg_error(&error))?;
                 ensure_one_row(count)?;
             }
-            GridChange::Delete { key, version, .. } => {
+            GridChange::Delete {
+                key,
+                version,
+                truncated,
+                ..
+            } => {
+                ensure_untruncated_primary_keys(&meta.primary_indices, &truncated)?;
                 let (sql, params) = build_delete(&schema, &table, &meta, key, version)?;
                 let refs = sql_params(&params);
                 let count = transaction
                     .execute(&sql, &refs)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| format_pg_error(&error))?;
                 ensure_one_row(count)?;
             }
         }
@@ -1396,42 +1358,52 @@ pub async fn run_sql(
     }
     let entry = get_session(manager, session_id).await?;
     let mut session_guard = entry.session.lock().await;
-    if operation_cancelled_before_start(&entry, operation_id) {
-        return Err("Operation was cancelled before it started.".into());
-    }
+    let _active = QueryGuard::try_begin(&entry.operations, operation_id)?;
     let session = session_guard
         .as_mut()
         .ok_or_else(|| "Session is no longer connected.".to_string())?;
     let client = match session {
         DbSession::Postgres(client) => client,
         DbSession::Sqlite(sqlite_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return sqlite::run_sql(sqlite_session, &sql).await;
         }
         DbSession::Mysql(mysql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mysql::run_sql(mysql_session, &sql).await;
         }
         DbSession::Mssql(mssql_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return mssql::run_sql(mssql_session, &sql).await;
         }
         DbSession::Oracle(oracle_session) => {
-            let _active =
-                QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
             return oracle::run_sql(oracle_session, &sql).await;
         }
     };
     let cancel = entry.cancel.lock().await.clone();
-    let _active = QueryGuard::begin(&entry.query_active, &entry.active_operation, operation_id);
     collect_query(client, &sql, cancel.as_ref()).await
 }
 
-const MAX_RESULT_SETS: usize = 64;
-const MAX_AFFECTED_ROWS: usize = 64;
+async fn cancel_oversized_query(
+    cancel: Option<&CancelState>,
+    cancel_sent: &mut bool,
+    read_deadline: &mut Option<tokio::time::Instant>,
+) -> Result<(), String> {
+    if *cancel_sent {
+        return Ok(());
+    }
+    let Some(cancel) = cancel else {
+        return Err("Query exceeded result limits, but it cannot be cancelled.".into());
+    };
+    match tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(cancel)).await {
+        Ok(Ok(())) => {
+            *cancel_sent = true;
+            *read_deadline = Some(tokio::time::Instant::now() + DISCONNECT_TIMEOUT);
+            Ok(())
+        }
+        Ok(Err(error)) => Err(format!(
+            "Query exceeded result limits and cancellation failed: {error}"
+        )),
+        Err(_) => Err("Query exceeded result limits and cancellation timed out.".into()),
+    }
+}
 
 async fn collect_query(
     client: &Client,
@@ -1448,6 +1420,7 @@ async fn collect_query(
     let mut affected_rows = Vec::new();
     let mut budget = QueryBudget::new();
     let mut truncated = false;
+    let mut cancel_sent = false;
     let mut accept_rows = false;
     let mut read_deadline: Option<tokio::time::Instant> = None;
     loop {
@@ -1465,7 +1438,12 @@ async fn collect_query(
         let message = match message {
             Ok(Some(message)) => message,
             Ok(None) => break,
-            Err(_) if truncated => break,
+            Err(error)
+                if cancel_sent
+                    && error.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) =>
+            {
+                break;
+            }
             Err(error) => return Err(format_pg_error(&error)),
         };
         match message {
@@ -1473,6 +1451,7 @@ async fn collect_query(
                 if result_sets.len() >= MAX_RESULT_SETS || budget.exhausted() {
                     truncated = true;
                     accept_rows = false;
+                    cancel_oversized_query(cancel, &mut cancel_sent, &mut read_deadline).await?;
                     continue;
                 }
                 result_sets.push(QueryResultSet {
@@ -1494,25 +1473,9 @@ async fn collect_query(
                         values.push(budget.cell_str(row.get(index)));
                     }
                     result_set.rows.push(values);
-                } else if !truncated {
+                } else {
                     truncated = true;
-                    let Some(cancel) = cancel else {
-                        return Err("Query exceeded 1,000 rows, but it cannot be cancelled.".into());
-                    };
-                    match tokio::time::timeout(DISCONNECT_TIMEOUT, send_cancel(cancel)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => {
-                            return Err(format!(
-                                "Query exceeded 1,000 rows and cancellation failed: {error}"
-                            ));
-                        }
-                        Err(_) => {
-                            return Err(
-                                "Query exceeded 1,000 rows and cancellation timed out.".into()
-                            );
-                        }
-                    }
-                    read_deadline = Some(tokio::time::Instant::now() + DISCONNECT_TIMEOUT);
+                    cancel_oversized_query(cancel, &mut cancel_sent, &mut read_deadline).await?;
                 }
             }
             SimpleQueryMessage::CommandComplete(count) => {
@@ -1520,6 +1483,7 @@ async fn collect_query(
                     affected_rows.push(count);
                 } else {
                     truncated = true;
+                    cancel_oversized_query(cancel, &mut cancel_sent, &mut read_deadline).await?;
                 }
             }
             _ => {}
@@ -1544,15 +1508,22 @@ async fn collect_query(
     })
 }
 
-/// Postgres' top-level Display is only "db error"; the useful message,
-/// SQLSTATE, detail, hint, and position live on the nested `DbError`.
 async fn postgres_transaction_assigned(client: &Client) -> Result<bool, String> {
-    client
-        .query_one("SELECT txid_current_if_assigned() IS NOT NULL", &[])
-        .await
-        .map_err(|error| error.to_string())?
-        .try_get::<_, bool>(0)
-        .map_err(|error| error.to_string())
+    match client.simple_query("SAVEPOINT koyo_tx_check").await {
+        Ok(_) => {
+            let _ = client.simple_query("RELEASE SAVEPOINT koyo_tx_check").await;
+            Ok(true)
+        }
+        Err(error) => match error.code() {
+            Some(code) if *code == tokio_postgres::error::SqlState::NO_ACTIVE_SQL_TRANSACTION => {
+                Ok(false)
+            }
+            Some(code) if *code == tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION => {
+                Ok(true)
+            }
+            _ => Err(format_pg_error(&error)),
+        },
+    }
 }
 
 /// Whether an engine error means the session itself is gone, rather than the
@@ -1566,7 +1537,7 @@ pub fn is_connection_lost(error: &str) -> bool {
     // error must never tear down the whole profile just because a value in
     // its text happens to contain words like "socket error".
     if let Some(state) = lower.strip_prefix("sqlstate ") {
-        return state.starts_with("08") || state.starts_with("57p01");
+        return state.starts_with("08") || state.starts_with("57p");
     }
     // MySQL reports server errors as "ERROR <code> ...". Only known
     // connection/transport codes are fatal; syntax and constraint errors are
@@ -1603,10 +1574,14 @@ pub fn is_connection_lost(error: &str) -> bool {
         "did not stop after cancellation",
         "cancellation failed",
         "cancellation timed out",
+        "session is in the kill state",
+        "severe error occurred on the current command",
     ];
     PATTERNS.iter().any(|pattern| lower.contains(pattern))
 }
 
+/// Postgres' top-level Display is only "db error"; the useful message,
+/// SQLSTATE, detail, hint, and position live on the nested `DbError`.
 fn format_pg_error(error: &tokio_postgres::Error) -> String {
     let Some(db_error) = error.as_db_error() else {
         return error.to_string();
@@ -1636,6 +1611,7 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
                     pg_catalog.format_type(a.atttypid, NULL),
                     CASE COALESCE(base.typcategory, ty.typcategory)
                         WHEN 'S' THEN 'text'
+                        WHEN 'E' THEN 'text'
                         WHEN 'N' THEN 'number'
                         WHEN 'D' THEN 'temporal'
                         WHEN 'T' THEN 'temporal'
@@ -1650,9 +1626,11 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
                           AND oc.opcdefault
                           AND (
                               oc.opcintype = COALESCE(base.oid, ty.oid)
-                              -- varchar/char share text's btree opclass.
-                              OR (ty.typcategory = 'S'
+                              -- varchar/char share text's btree opclass; enums use anyenum.
+                              OR (COALESCE(base.typcategory, ty.typcategory) = 'S'
                                   AND oc.opcintype = 'pg_catalog.text'::regtype)
+                              OR (COALESCE(base.typcategory, ty.typcategory) = 'E'
+                                  AND oc.opcintype = 'pg_catalog.anyenum'::regtype)
                           )
                     ),
                     NOT a.attnotnull, a.attgenerated <> '', a.attidentity <> '',
@@ -1671,7 +1649,7 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
             &[&schema, &table],
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format_pg_error(&error))?;
     if rows.is_empty() {
         return Err(
             "Relation does not exist or is not a table, view, or materialized view.".into(),
@@ -1695,7 +1673,7 @@ async fn load_table_meta(client: &Client, schema: &str, table: &str) -> Result<T
         };
         let data_type: String = row.try_get(2).map_err(|error| error.to_string())?;
         let filter_type: String = row.try_get(3).map_err(|error| error.to_string())?;
-        if !valid_type_name(&data_type) || !valid_type_name(&filter_type) {
+        if !valid_type_name(&filter_type) {
             return Err("PostgreSQL returned an invalid column type name.".into());
         }
         columns.push(ColumnInfo {
@@ -1822,31 +1800,85 @@ fn append_key_predicate(
 }
 
 fn cast_placeholder(index: usize, column: &ColumnInfo) -> String {
-    format!("${index}::text::{}", column.filter_type)
+    let cast_type = match column.filter_type.as_str() {
+        "character" => "bpchar",
+        "character[]" => "bpchar[]",
+        "bit" => "bit varying",
+        "bit[]" => "bit varying[]",
+        other => other,
+    };
+    format!("${index}::text::{cast_type}")
 }
 
 fn valid_type_name(name: &str) -> bool {
-    if name.is_empty() {
+    let mut base = name;
+    while let Some(stripped) = base.strip_suffix("[]") {
+        base = stripped;
+    }
+    if base.is_empty() {
         return false;
     }
-    let mut quoted = false;
-    for character in name.chars() {
-        if character == '"' {
-            quoted = !quoted;
-            continue;
-        }
-        if quoted
-            || character.is_ascii_alphanumeric()
-            || matches!(
-                character,
-                '_' | '$' | ' ' | '(' | ')' | ',' | '.' | '[' | ']'
-            )
-        {
-            continue;
-        }
+    if matches!(
+        base,
+        "character varying"
+            | "double precision"
+            | "bit varying"
+            | "time without time zone"
+            | "time with time zone"
+            | "timestamp without time zone"
+            | "timestamp with time zone"
+    ) {
+        return true;
+    }
+    let Some((first, rest)) = consume_pg_ident(base) else {
+        return false;
+    };
+    if first.is_empty() {
         return false;
     }
-    !quoted
+    if rest.is_empty() {
+        return true;
+    }
+    let Some(after_dot) = rest.strip_prefix('.') else {
+        return false;
+    };
+    matches!(consume_pg_ident(after_dot), Some((second, "")) if !second.is_empty())
+}
+
+fn consume_pg_ident(input: &str) -> Option<(&str, &str)> {
+    let bytes = input.as_bytes();
+    if bytes.first() == Some(&b'"') {
+        let mut index = 1;
+        while index < bytes.len() {
+            if bytes[index] == b'"' {
+                if bytes.get(index + 1) == Some(&b'"') {
+                    index += 2;
+                    continue;
+                }
+                return Some((&input[..=index], &input[index + 1..]));
+            }
+            if bytes[index] == 0 {
+                return None;
+            }
+            index += 1;
+        }
+        None
+    } else {
+        let mut end = 0;
+        for (index, ch) in input.char_indices() {
+            let ok = if index == 0 {
+                ch.is_ascii_alphabetic() || ch == '_'
+            } else {
+                ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+            };
+            if ok {
+                end = index + ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        (end > 0).then(|| (&input[..end], &input[end..]))
+    }
 }
 
 fn sql_params(values: &[Option<String>]) -> Vec<&(dyn ToSql + Sync)> {
@@ -1857,29 +1889,31 @@ fn sql_params(values: &[Option<String>]) -> Vec<&(dyn ToSql + Sync)> {
 }
 
 fn quote_relation(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_identifier(schema), quote_identifier(table))
+    crate::common::quote_relation(schema, table, quote_identifier)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ColumnInfo, FilterKind, FilterOperator, QueryGuard, TableFilter, TableMeta, TableSort,
-        build_table_page_query, quote_identifier, valid_type_name,
+        ColumnInfo, FilterKind, FilterOperator, OperationState, QueryGuard, TableFilter, TableMeta,
+        TableSort, build_delete, build_insert, build_table_page_query, build_update,
+        cast_placeholder, page_column_expression, quote_identifier, valid_type_name,
     };
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
-    fn query_guard_tracks_only_its_own_operation() {
-        let active = AtomicBool::new(false);
-        let operation = std::sync::Mutex::new(None);
+    fn query_guard_tracks_and_respects_pre_start_cancellation() {
+        let state = std::sync::Mutex::new(OperationState::default());
         let id = uuid::Uuid::new_v4();
 
-        let guard = QueryGuard::begin(&active, &operation, id);
-        assert!(active.load(Ordering::SeqCst));
-        assert_eq!(*operation.lock().expect("operation lock"), Some(id));
+        let guard = QueryGuard::try_begin(&state, id).expect("begin");
+        assert_eq!(state.lock().expect("lock").active, Some(id));
         drop(guard);
-        assert!(!active.load(Ordering::SeqCst));
-        assert_eq!(*operation.lock().expect("operation lock"), None);
+        assert_eq!(state.lock().expect("lock").active, None);
+
+        let cancelled_id = uuid::Uuid::new_v4();
+        state.lock().expect("lock").cancelled.insert(cancelled_id);
+        assert!(QueryGuard::try_begin(&state, cancelled_id).is_err());
+        assert_eq!(state.lock().expect("lock").active, None);
     }
 
     fn column(
@@ -1913,13 +1947,79 @@ mod tests {
     #[test]
     fn validates_catalog_type_names() {
         assert!(valid_type_name("timestamp with time zone"));
-        assert!(valid_type_name("character varying(32)"));
+        assert!(valid_type_name("character varying"));
         assert!(valid_type_name("public.\"odd type\"[]"));
         assert!(valid_type_name("public.\"order-status\""));
         assert!(valid_type_name("public.\"price$\""));
+        assert!(!valid_type_name("character varying(32)"));
+        assert!(!valid_type_name("text OR pg_sleep(10) IS NULL"));
+        assert!(!valid_type_name("text UNION SELECT current_user"));
+        assert!(!valid_type_name("integer) AND EXISTS(SELECT 1"));
         assert!(!valid_type_name("text); SELECT pg_sleep(1); --"));
         assert!(!valid_type_name("\"unterminated"));
         assert!(!valid_type_name(""));
+    }
+
+    #[test]
+    fn casts_unbounded_bpchar_and_bit_and_prefixes_bytea_hex() {
+        let mut char_col = column("code", "character(10)", FilterKind::Text, true);
+        char_col.filter_type = "character".into();
+        assert_eq!(cast_placeholder(1, &char_col), "$1::text::bpchar");
+
+        let mut bit_col = column("flags", "bit(8)", FilterKind::Other, false);
+        bit_col.filter_type = "bit".into();
+        assert_eq!(cast_placeholder(2, &bit_col), "$2::text::bit varying");
+
+        let bytea_col = column("payload", "bytea", FilterKind::Other, true);
+        let expr = page_column_expression(&bytea_col);
+        assert!(expr.contains("E'\\x' || encode("));
+        assert!(expr.contains("32767"));
+    }
+
+    #[test]
+    fn views_skip_unsortable_first_column_in_order_by() {
+        let mut payload = column("payload", "json", FilterKind::Other, false);
+        payload.sortable = false;
+        let label = column("label", "text", FilterKind::Text, false);
+        let meta = table_meta(vec![payload, label], "v");
+        let (sql, _) =
+            build_table_page_query("public", "v", &meta, 0, 10, &[], None).expect("view order by");
+        assert!(sql.contains("ORDER BY \"v\".\"label\" ASC"));
+        assert!(!sql.contains("ORDER BY \"v\".\"payload\""));
+    }
+
+    #[test]
+    fn insert_update_delete_builders_validate_keys_and_columns() {
+        use std::collections::BTreeMap;
+        let meta = table_meta(
+            vec![
+                column("id", "integer", FilterKind::Number, true),
+                column("name", "text", FilterKind::Text, false),
+            ],
+            "r",
+        );
+        let (ins, params) =
+            build_insert("public", "items", &meta, BTreeMap::new()).expect("default insert");
+        assert_eq!(ins, "INSERT INTO \"public\".\"items\" DEFAULT VALUES");
+        assert!(params.is_empty());
+
+        let (del, del_params) =
+            build_delete("public", "items", &meta, vec![Some("1".into())], "9".into())
+                .expect("delete");
+        assert!(del.contains("DELETE FROM \"public\".\"items\" WHERE \"id\" = $1::text::integer AND xmin::text = $2::text"));
+        assert_eq!(del_params, vec![Some("1".into()), Some("9".into())]);
+
+        assert!(
+            build_update(
+                "public",
+                "items",
+                &meta,
+                vec![None],
+                "9".into(),
+                BTreeMap::from([("name".into(), Some("a".into()))])
+            )
+            .is_err()
+        );
     }
 
     #[test]

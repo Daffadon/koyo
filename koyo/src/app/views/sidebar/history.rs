@@ -185,7 +185,6 @@ impl KoyoApp {
                                             ),
                                     )
                                     .child(widgets::button_tooltip(
-                                        ("tooltip-history-run", index),
                                         Button::new(("history-run", index))
                                             .ghost()
                                             .compact()
@@ -219,7 +218,6 @@ impl KoyoApp {
                                     .items_center()
                                     .gap_1()
                                     .child(widgets::button_tooltip(
-                                        "tooltip-history-toggle",
                                         Button::new("history-toggle")
                                             .ghost()
                                             .compact()
@@ -251,7 +249,6 @@ impl KoyoApp {
                                     ),
                             )
                             .child(widgets::button_tooltip(
-                                "tooltip-clear-history",
                                 Button::new("clear-history")
                                     .ghost()
                                     .compact()

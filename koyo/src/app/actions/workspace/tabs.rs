@@ -189,6 +189,10 @@ impl KoyoApp {
                     });
                     query.starter = starter;
                     query.result_view = result_view;
+                    query
+                        .completion
+                        .borrow_mut()
+                        .replace(&tables, &schema_objects, &columns);
                 }
                 tab
             }
@@ -268,9 +272,10 @@ impl KoyoApp {
                 None => self.make_query_tab(None, window, cx),
             };
             let id = self.add_tab(tab, Pane::Secondary);
-            if self
-                .tab_index(id)
-                .is_some_and(|index| self.tabs[index].connection.is_some())
+            if let Some(index) = self.tab_index(id)
+                && let Some(connection) = self.tabs[index].connection.as_ref()
+                && self.tabs[index].tables.is_empty()
+                && !self.session_is_busy(connection.session_id)
             {
                 self.load_tables(id, cx);
             }
@@ -360,6 +365,7 @@ impl KoyoApp {
                 completion,
                 starter: starter.into(),
                 output: None,
+                cached_json_result: RefCell::new(None),
                 active_result: 0,
                 result_view: ResultView::Table,
                 error: String::new(),
@@ -435,6 +441,8 @@ impl KoyoApp {
                 resize_column: None,
                 column_resized: false,
                 exporting: false,
+                export_generation: 0,
+                export_abort: None,
             }),
         }
     }
@@ -447,12 +455,7 @@ impl KoyoApp {
                 (
                     tab.profile.clone(),
                     tab.connection.clone(),
-                    CatalogSnapshot {
-                        tables: tab.tables.clone(),
-                        schema_objects: tab.schema_objects.clone(),
-                        metadata_groups: tab.metadata_groups.clone(),
-                        columns: tab.columns.clone(),
-                    },
+                    CatalogSnapshot::from_tab(tab),
                 )
             });
         let (profile, mut shared, mut catalog) = source.unwrap_or_default();
@@ -550,14 +553,16 @@ impl KoyoApp {
         let Some(index) = self.tab_index(tab_id) else {
             return;
         };
+        if let TabBody::Table(table) = &mut self.tabs[index].body
+            && let Some(abort) = table.export_abort.take()
+        {
+            abort.abort();
+        }
         if let Some(connection) = self.tabs[index].connection.clone()
             && !self.session_in_use(connection.session_id, Some(tab_id))
         {
             let busy = self.session_transaction_open(connection.session_id)
-                || match &self.tabs[index].body {
-                    TabBody::Query(query) => query.running,
-                    TabBody::Table(table) => table.loading || table.exporting,
-                };
+                || self.session_is_busy(connection.session_id);
             if busy || self.idle_pool_size == 0 {
                 self.disconnect_session(connection.session_id);
             } else {
@@ -601,6 +606,13 @@ impl KoyoApp {
             .is_some_and(|edit| edit.tab_id == tab_id)
         {
             self.cell_edit = None;
+        }
+        if self
+            .export
+            .as_ref()
+            .is_some_and(|dialog| dialog.tab_id == tab_id)
+        {
+            self.export = None;
         }
         let pane = if self.primary_tabs.contains(&tab_id) {
             Some(Pane::Primary)
@@ -661,7 +673,7 @@ impl KoyoApp {
         let Some(source) = source else {
             return;
         };
-        let Some(mut target_index) = self
+        let Some(target_index) = self
             .pane_tab_ids(pane)
             .iter()
             .position(|id| *id == target_id)
@@ -682,21 +694,15 @@ impl KoyoApp {
                 }
             }
         }
-        if source == pane
-            && let Some(index) = self
-                .pane_tab_ids(pane)
-                .iter()
-                .position(|id| *id == target_id)
-        {
-            target_index = index;
-        }
         match pane {
             Pane::Primary => {
-                self.primary_tabs.insert(target_index, tab_id);
+                let index = target_index.min(self.primary_tabs.len());
+                self.primary_tabs.insert(index, tab_id);
                 self.primary_active = tab_id;
             }
             Pane::Secondary => {
-                self.secondary_tabs.insert(target_index, tab_id);
+                let index = target_index.min(self.secondary_tabs.len());
+                self.secondary_tabs.insert(index, tab_id);
                 self.secondary_active = tab_id;
             }
         }

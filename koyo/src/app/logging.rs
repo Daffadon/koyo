@@ -2,17 +2,20 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
 const LOG_FILE: &str = "koyo.log";
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
+struct LogState {
+    file: Option<File>,
+    bytes: u64,
+}
+
 struct FileLogger {
     path: PathBuf,
-    file: Mutex<File>,
-    bytes: AtomicU64,
+    state: Mutex<LogState>,
 }
 
 impl Log for FileLogger {
@@ -28,33 +31,37 @@ impl Log for FileLogger {
             return;
         }
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        if let Ok(mut file) = self.file.lock() {
-            let too_large = self.bytes.load(Ordering::Relaxed) > MAX_LOG_BYTES;
-            if too_large {
-                drop(file);
+        if let Ok(mut state) = self.state.lock() {
+            if state.bytes > MAX_LOG_BYTES {
+                // Close the handle while holding the mutex so Windows rename
+                // succeeds and concurrent log calls cannot interleave rotation.
+                drop(state.file.take());
                 rotate_log(&self.path);
+                state.bytes = 0;
+            }
+            if state.file.is_none() {
                 match open_log(&self.path) {
-                    Ok(mut reopened) => {
-                        let written = write_log_line(&mut reopened, &timestamp, record);
-                        self.bytes.store(written as u64, Ordering::Relaxed);
-                        if let Ok(mut slot) = self.file.lock() {
-                            *slot = reopened;
-                        }
+                    Ok(file) => {
+                        state.bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+                        state.file = Some(file);
                     }
                     Err(error) => {
-                        self.bytes.store(0, Ordering::Relaxed);
                         eprintln!("Could not reopen Koyo log after rotation: {error}");
+                        return;
                     }
                 }
-            } else {
-                let written = write_log_line(&mut file, &timestamp, record);
-                self.bytes.fetch_add(written as u64, Ordering::Relaxed);
+            }
+            if let Some(file) = state.file.as_mut() {
+                let written = write_log_line(file, &timestamp, record);
+                state.bytes = state.bytes.saturating_add(written as u64);
             }
         }
     }
 
     fn flush(&self) {
-        if let Ok(mut file) = self.file.lock() {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(file) = state.file.as_mut()
+        {
             let _ = file.flush();
         }
     }
@@ -80,8 +87,10 @@ pub(crate) fn init_logging() -> Result<(), String> {
     let bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     log::set_boxed_logger(Box::new(FileLogger {
         path: path.clone(),
-        file: Mutex::new(file),
-        bytes: AtomicU64::new(bytes),
+        state: Mutex::new(LogState {
+            file: Some(file),
+            bytes,
+        }),
     }))
     .map_err(|error| format!("Could not install the Koyo logger: {error}"))?;
     log::set_max_level(LevelFilter::Info);
@@ -112,9 +121,15 @@ fn open_log(path: &Path) -> Result<File, String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    options
+    let file = options
         .open(path)
-        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 fn rotate_log(path: &Path) {
@@ -131,8 +146,10 @@ fn rotate_log(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_LOG_BYTES, rotate_log};
+    use super::{FileLogger, LogState, MAX_LOG_BYTES, open_log, rotate_log};
+    use log::{Level, Log, Record};
     use std::fs;
+    use std::sync::Mutex;
 
     #[test]
     fn oversized_log_rotates_once() {
@@ -144,6 +161,35 @@ mod tests {
         rotate_log(&path);
         assert!(!path.exists());
         assert!(path.with_extension("log.1").exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn logger_rotates_under_lock_and_writes_new_file() {
+        let directory =
+            std::env::temp_dir().join(format!("koyo-logger-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&directory).expect("create log temp dir");
+        let path = directory.join("koyo.log");
+        fs::write(&path, vec![b'x'; MAX_LOG_BYTES as usize + 1]).expect("seed log");
+        let file = open_log(&path).expect("open seeded log");
+        let bytes = file.metadata().expect("metadata").len();
+        let logger = FileLogger {
+            path: path.clone(),
+            state: Mutex::new(LogState {
+                file: Some(file),
+                bytes,
+            }),
+        };
+        logger.log(
+            &Record::builder()
+                .args(format_args!("after rotation"))
+                .level(Level::Info)
+                .target("koyo::test")
+                .build(),
+        );
+        assert!(path.with_extension("log.1").exists());
+        let fresh = fs::read_to_string(&path).expect("read fresh log");
+        assert!(fresh.contains("after rotation"));
         let _ = fs::remove_dir_all(directory);
     }
 }

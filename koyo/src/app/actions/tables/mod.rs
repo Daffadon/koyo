@@ -10,7 +10,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use koyo_core::SessionManager;
 use koyo_core::database;
-use koyo_core::models::{ColumnCatalogEntry, GridChange, SchemaObjectKind, TableFilter, TableSort};
+use koyo_core::models::{
+    ColumnCatalogEntry, Engine, GridChange, SchemaObjectKind, TableFilter, TableSort,
+};
 use uuid::Uuid;
 
 use super::notifications::ToastCategory;
@@ -85,9 +87,11 @@ pub(super) fn stage_row_delete(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn export_table_csv(
     manager: Arc<SessionManager>,
     session_id: Uuid,
+    engine: Engine,
     schema: String,
     table: String,
     first_page: u32,
@@ -126,6 +130,7 @@ async fn export_table_csv(
                 &manager,
                 session_id,
                 operation_id,
+                engine,
                 async move {
                     database::load_table_page(
                         &page_manager,
@@ -255,6 +260,7 @@ mod tests {
         let (rows, truncated) = export_table_csv(
             manager,
             connection.session_id,
+            Engine::Sqlite,
             "main".into(),
             "people".into(),
             1,

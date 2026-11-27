@@ -66,7 +66,6 @@ pub(super) fn render(
                 .gap_1()
                 .child(super::widgets::button_tooltip_if(
                     !(app.ai_pending || app.ai_messages().is_empty()),
-                    "top-tooltip-ai-new",
                     Button::new("ai-new-chat")
                         .ghost()
                         .compact()
@@ -79,7 +78,6 @@ pub(super) fn render(
                 ))
                 .child(super::widgets::button_tooltip_if(
                     !app.ai_pending,
-                    "top-tooltip-ai-settings",
                     Button::new("ai-settings")
                         .ghost()
                         .compact()
@@ -91,7 +89,6 @@ pub(super) fn render(
                     "AI provider settings",
                 ))
                 .child(super::widgets::button_tooltip(
-                    "top-tooltip-ai-close",
                     Button::new("ai-close")
                         .ghost()
                         .compact()
@@ -122,7 +119,6 @@ pub(super) fn render(
         .border_b_1()
         .border_color(palette.sidebar_border)
         .child(super::widgets::button_tooltip(
-            "top-tooltip-ai-prev",
             Button::new("ai-thread-prev")
                 .ghost()
                 .compact()
@@ -149,7 +145,6 @@ pub(super) fn render(
             thread_count
         )))
         .child(super::widgets::button_tooltip(
-            "top-tooltip-ai-next",
             Button::new("ai-thread-next")
                 .ghost()
                 .compact()
@@ -161,7 +156,6 @@ pub(super) fn render(
             "Next chat",
         ))
         .child(super::widgets::button_tooltip(
-            "top-tooltip-ai-compact",
             Button::new("ai-compact")
                 .ghost()
                 .compact()
@@ -173,7 +167,6 @@ pub(super) fn render(
             "Compact context",
         ))
         .child(super::widgets::button_tooltip(
-            "top-tooltip-ai-delete",
             Button::new("ai-thread-delete")
                 .ghost()
                 .compact()
@@ -322,8 +315,9 @@ pub(super) fn render(
                 ),
         );
     }
+    let thread_id = app.ai_active_thread;
     for (index, message) in app.ai_messages().iter().enumerate() {
-        transcript = transcript.child(render_message(message, index, palette));
+        transcript = transcript.child(render_message(message, thread_id, index, palette));
     }
     if app.ai_pending {
         transcript = transcript.child(
@@ -466,7 +460,12 @@ fn block_images(_: &SharedUri) -> ImageSource {
     }))
 }
 
-fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyElement {
+fn render_message(
+    message: &AiMessage,
+    thread_id: u64,
+    index: usize,
+    palette: &Palette,
+) -> AnyElement {
     match message.role {
         AiRole::User => h_flex()
             .justify_end()
@@ -499,18 +498,21 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
                     .child("Context summary"),
             )
             .child(
-                TextView::markdown(("ai-message", index), message.content.clone())
-                    .image_source(block_images)
-                    .on_link_click(|url, _, _, cx| {
-                        if url.starts_with("https://") || url.starts_with("http://") {
-                            cx.open_url(url);
-                        } else {
-                            log::info!("blocked non-http(s) AI Markdown link");
-                        }
-                    })
-                    .w_full()
-                    .text_sm()
-                    .selectable(true),
+                TextView::markdown(
+                    SharedString::from(format!("ai-message-{thread_id}-{index}")),
+                    message.content.clone(),
+                )
+                .image_source(block_images)
+                .on_link_click(|url, _, _, cx| {
+                    if url.starts_with("https://") || url.starts_with("http://") {
+                        cx.open_url(url);
+                    } else {
+                        log::info!("blocked non-http(s) AI Markdown link");
+                    }
+                })
+                .w_full()
+                .text_sm()
+                .selectable(true),
             )
             .into_any_element(),
         AiRole::Assistant => h_flex()
@@ -533,18 +535,21 @@ fn render_message(message: &AiMessage, index: usize, palette: &Palette) -> AnyEl
             )
             .child(
                 div().flex_1().min_w(px(0.0)).child(
-                    TextView::markdown(("ai-message", index), message.content.clone())
-                        .image_source(block_images)
-                        .on_link_click(|url, _, _, cx| {
-                            if url.starts_with("https://") || url.starts_with("http://") {
-                                cx.open_url(url);
-                            } else {
-                                log::info!("blocked non-http(s) AI Markdown link");
-                            }
-                        })
-                        .w_full()
-                        .text_sm()
-                        .selectable(true),
+                    TextView::markdown(
+                        SharedString::from(format!("ai-message-{thread_id}-{index}")),
+                        message.content.clone(),
+                    )
+                    .image_source(block_images)
+                    .on_link_click(|url, _, _, cx| {
+                        if url.starts_with("https://") || url.starts_with("http://") {
+                            cx.open_url(url);
+                        } else {
+                            log::info!("blocked non-http(s) AI Markdown link");
+                        }
+                    })
+                    .w_full()
+                    .text_sm()
+                    .selectable(true),
                 ),
             )
             .into_any_element(),

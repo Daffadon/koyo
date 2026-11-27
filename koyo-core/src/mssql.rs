@@ -1,11 +1,13 @@
-use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
+use crate::common::{
+    self, MAX_RESULT_SETS, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT, TableMeta,
+};
 use crate::models::{
-    ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, Engine, FilterOperator,
+    ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterKind, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
     SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
     TableSummary,
 };
-use chrono::{NaiveDate, TimeDelta};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta};
 use std::collections::BTreeMap;
 use tiberius::time::{Date, DateTime, DateTime2, DateTimeOffset, SmallDateTime, Time};
 use tiberius::{Client, ColumnData, Config, EncryptionLevel, Query, QueryItem};
@@ -22,7 +24,6 @@ pub struct MssqlSession {
 pub async fn connect(
     profile: &ConnectionProfile,
     password: &str,
-    engine: Engine,
 ) -> Result<(MssqlSession, String, String, Config), String> {
     let mut config = Config::default();
     config.host(profile.host.trim());
@@ -32,11 +33,7 @@ pub async fn connect(
         profile.username.trim(),
         password,
     ));
-    config.application_name(if engine == Engine::SqlServer {
-        "Koyo SQL Server"
-    } else {
-        "Koyo"
-    });
+    config.application_name("Koyo SQL Server");
     config.encryption(if profile.ssl_mode == SslMode::VerifyFull {
         EncryptionLevel::Required
     } else {
@@ -615,7 +612,7 @@ pub async fn apply_changes(
         }
         match query.execute(&mut session.client).await {
             Ok(result) => {
-                let count = result.rows_affected().iter().copied().sum::<u64>();
+                let count = result.rows_affected().last().copied().unwrap_or(0);
                 if let Err(error) = common::ensure_one_row(count) {
                     let _ = session.client.rollback_transaction().await;
                     return Err(error);
@@ -652,6 +649,10 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
         match item {
             QueryItem::Metadata(metadata) => {
                 let index = metadata.result_index();
+                if index >= MAX_RESULT_SETS {
+                    truncated = true;
+                    continue;
+                }
                 while result_sets.len() <= index {
                     result_sets.push(QueryResultSet {
                         columns: Vec::new(),
@@ -669,6 +670,10 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
             }
             QueryItem::Row(row) => {
                 let index = row.result_index();
+                if index >= MAX_RESULT_SETS {
+                    truncated = true;
+                    continue;
+                }
                 while result_sets.len() <= index {
                     result_sets.push(QueryResultSet {
                         columns: row
@@ -717,7 +722,7 @@ pub async fn run_sql(session: &mut MssqlSession, sql: &str) -> Result<QueryOutpu
     })
 }
 
-pub async fn has_open_transaction(session: &mut MssqlSession) -> Result<bool, String> {
+async fn has_open_transaction(session: &mut MssqlSession) -> Result<bool, String> {
     let value = session
         .client
         .query("SELECT @@TRANCOUNT", &[])
@@ -754,28 +759,18 @@ async fn open_client(config: Config) -> Result<MssqlClient, String> {
         .map_err(|error| format!("SQL Server connection failed: {error}"))
 }
 
-struct MssqlMeta {
-    columns: Vec<ColumnInfo>,
-    primary_indices: Vec<usize>,
-}
-
-impl MssqlMeta {
-    fn editable(&self) -> bool {
-        !self.primary_indices.is_empty()
-    }
-}
-
 async fn load_meta(
     client: &mut MssqlClient,
     schema: &str,
     table: &str,
-) -> Result<MssqlMeta, String> {
+) -> Result<TableMeta, String> {
     let mut query = Query::new(
-        "SELECT c.name, ty.name, c.max_length, c.precision, c.scale,
+        "SELECT c.name, COALESCE(sty.name, ty.name), c.max_length, c.precision, c.scale,
                 c.is_nullable, CASE WHEN pk.column_id IS NULL THEN 0 ELSE 1 END,
                 c.is_computed, c.is_identity
          FROM sys.columns c
          JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+         LEFT JOIN sys.types sty ON sty.user_type_id = ty.system_type_id
          JOIN sys.objects t ON t.object_id = c.object_id AND t.type IN ('U', 'V')
          JOIN sys.schemas s ON s.schema_id = t.schema_id
          LEFT JOIN (
@@ -807,6 +802,7 @@ async fn load_meta(
                 .get::<&str, _>(1)
                 .ok_or_else(|| "SQL Server returned a NULL column type.".to_string())?
                 .to_string();
+            let is_rowversion = matches!(base_type.as_str(), "timestamp" | "rowversion");
             let data_type = display_type(
                 &base_type,
                 row.get::<i16, _>(2).unwrap_or(0),
@@ -820,28 +816,23 @@ async fn load_meta(
                     .to_string(),
                 data_type,
                 filter_type: base_type.clone(),
-                filter_kind: common::filter_kind(&base_type),
+                filter_kind: if is_rowversion {
+                    FilterKind::Other
+                } else {
+                    common::filter_kind(&base_type)
+                },
                 sortable: !matches!(
                     base_type.as_str(),
                     "text" | "ntext" | "image" | "xml" | "geography" | "geometry"
                 ),
                 nullable: row.get::<bool, _>(5).unwrap_or(false),
                 primary_key: row.get::<i32, _>(6).unwrap_or(0) != 0,
-                generated: row.get::<bool, _>(7).unwrap_or(false),
+                generated: row.get::<bool, _>(7).unwrap_or(false) || is_rowversion,
                 identity: row.get::<bool, _>(8).unwrap_or(false),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let primary_indices = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| column.primary_key)
-        .map(|(index, _)| index)
-        .collect();
-    Ok(MssqlMeta {
-        columns,
-        primary_indices,
-    })
+    Ok(TableMeta::new(columns, None))
 }
 
 fn display_type(base_type: &str, max_length: i16, precision: u8, scale: u8) -> String {
@@ -897,15 +888,8 @@ fn build_filter_predicate(
             | FilterOperator::GreaterThanOrEqual => {
                 let value = value
                     .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
-                let operator = match filter.operator {
-                    FilterOperator::Equals => "=",
-                    FilterOperator::NotEquals => "<>",
-                    FilterOperator::LessThan => "<",
-                    FilterOperator::LessThanOrEqual => "<=",
-                    FilterOperator::GreaterThan => ">",
-                    FilterOperator::GreaterThanOrEqual => ">=",
-                    _ => unreachable!(),
-                };
+                let operator =
+                    common::comparison_sql(filter.operator).expect("comparison operator");
                 params.push(Some(value.to_string()));
                 format!("{identifier} {operator} @P{}", params.len())
             }
@@ -922,7 +906,7 @@ fn build_filter_predicate(
 fn build_insert(
     schema: &str,
     table: &str,
-    meta: &MssqlMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
 ) -> Result<(String, Vec<Option<String>>), String> {
     let mut names = Vec::with_capacity(values.len());
@@ -933,8 +917,9 @@ fn build_insert(
         common::ensure_writable(column)?;
         names.push(quote_identifier(&name));
         let placeholder = format!("@P{}", params.len() + 1);
-        placeholders.push(binary_assignment(column, &value, &placeholder)?);
-        params.push(value);
+        let (expr, bound) = binary_assignment(column, value, &placeholder)?;
+        placeholders.push(expr);
+        params.push(bound);
     }
     if names.is_empty() {
         return Ok((
@@ -959,7 +944,7 @@ fn build_insert(
 fn build_update(
     schema: &str,
     table: &str,
-    meta: &MssqlMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
     truncated: &[bool],
@@ -976,14 +961,11 @@ fn build_update(
         let column = common::find_column(&meta.columns, &name)?;
         common::ensure_writable(column)?;
         let placeholder = format!("@P{}", params.len() + 1);
-        assignments.push(format!(
-            "{} = {}",
-            quote_identifier(&name),
-            binary_assignment(column, &value, &placeholder)?
-        ));
-        params.push(value);
+        let (expr, bound) = binary_assignment(column, value, &placeholder)?;
+        assignments.push(format!("{} = {expr}", quote_identifier(&name)));
+        params.push(bound);
     }
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
+    let predicate = original_predicate(meta, &original, truncated, &mut params)?;
     Ok((
         format!(
             "UPDATE {} SET {} WHERE {predicate}",
@@ -997,7 +979,7 @@ fn build_update(
 fn build_delete(
     schema: &str,
     table: &str,
-    meta: &MssqlMeta,
+    meta: &TableMeta,
     original: Vec<Option<String>>,
     truncated: &[bool],
 ) -> Result<(String, Vec<Option<String>>), String> {
@@ -1005,7 +987,7 @@ fn build_delete(
         return Err("The table shape changed. Reload before retrying.".into());
     }
     let mut params = Vec::with_capacity(original.len());
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params);
+    let predicate = original_predicate(meta, &original, truncated, &mut params)?;
     Ok((
         format!(
             "DELETE FROM {} WHERE {predicate}",
@@ -1024,12 +1006,14 @@ fn page_display_expression(column: &ColumnInfo) -> String {
 }
 
 fn original_predicate(
-    columns: &[ColumnInfo],
+    meta: &TableMeta,
     original: &[Option<String>],
     truncated: &[bool],
     params: &mut Vec<Option<String>>,
-) -> String {
-    columns
+) -> Result<String, String> {
+    common::ensure_untruncated_primary_keys(&meta.primary_indices, truncated)?;
+    let predicates = meta
+        .columns
         .iter()
         .zip(original)
         .enumerate()
@@ -1042,39 +1026,32 @@ fn original_predicate(
                 "({expression} = {placeholder} OR ({expression} IS NULL AND {placeholder} IS NULL))"
             )
         })
-        .collect::<Vec<_>>()
-        .join(" AND ")
+        .collect::<Vec<_>>();
+    if predicates.is_empty() {
+        return Err("Row cannot be matched because all comparable columns were truncated.".into());
+    }
+    Ok(predicates.join(" AND "))
 }
 
 fn is_binary(column: &ColumnInfo) -> bool {
     let declared = column.filter_type.to_ascii_lowercase();
-    declared.contains("binary") || declared == "image"
-}
-
-fn ensure_binary_hex(value: &Option<String>) -> Result<(), String> {
-    let Some(hex) = value else {
-        return Ok(());
-    };
-    if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Binary values must be an even number of hexadecimal digits.".into());
-    }
-    Ok(())
+    declared.contains("binary") || matches!(declared.as_str(), "image" | "timestamp" | "rowversion")
 }
 
 fn binary_assignment(
     column: &ColumnInfo,
-    value: &Option<String>,
+    value: Option<String>,
     placeholder: &str,
-) -> Result<String, String> {
+) -> Result<(String, Option<String>), String> {
     if !is_binary(column) {
-        return Ok(placeholder.to_string());
+        return Ok((placeholder.to_string(), value));
     }
-    match value {
-        Some(_) => {
-            ensure_binary_hex(value)?;
-            Ok(format!("CONVERT(varbinary(max), {placeholder}, 2)"))
-        }
-        None => Ok(placeholder.to_string()),
+    match common::ensure_binary_hex(&value)? {
+        Some(hex) => Ok((
+            format!("CONVERT(varbinary(max), {placeholder}, 2)"),
+            Some(hex.to_string()),
+        )),
+        None => Ok((placeholder.to_string(), None)),
     }
 }
 
@@ -1082,6 +1059,8 @@ fn display_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
     if matches!(column.filter_type.as_str(), "float" | "real") {
         format!("CONVERT(nvarchar(max), {identifier}, 3)")
+    } else if column.filter_type.eq_ignore_ascii_case("image") {
+        format!("CONVERT(nvarchar(max), CONVERT(varbinary(max), {identifier}), 2)")
     } else if is_binary(column) {
         format!("CONVERT(nvarchar(max), {identifier}, 2)")
     } else if matches!(
@@ -1105,7 +1084,7 @@ fn column_text(value: &ColumnData<'_>) -> Option<String> {
         ColumnData::Bit(value) => value.map(|value| value.to_string()),
         ColumnData::String(value) => value.as_ref().map(|value| value.to_string()),
         ColumnData::Guid(value) => value.map(|value| value.to_string()),
-        ColumnData::Binary(value) => value.as_ref().map(|value| hex(value)),
+        ColumnData::Binary(value) => value.as_ref().map(|value| common::hex_encode(value)),
         ColumnData::Numeric(value) => value.map(|value| value.to_string()),
         ColumnData::Xml(value) => value.as_ref().map(|value| value.to_string()),
         ColumnData::DateTime(value) => value.map(datetime_text),
@@ -1139,32 +1118,37 @@ fn small_datetime_text(value: SmallDateTime) -> String {
         .expect("valid base date")
         .checked_add_signed(TimeDelta::days(i64::from(value.days())))
         .unwrap_or_else(|| NaiveDate::from_ymd_opt(1900, 1, 1).expect("valid base date"));
-    let seconds = u32::from(value.seconds_fragments()) / 300;
+    let minutes = u32::from(value.seconds_fragments());
     format!(
-        "{} {:02}:{:02}:{:02}",
+        "{} {:02}:{:02}:00",
         date.format("%Y-%m-%d"),
-        seconds / 3600,
-        (seconds % 3600) / 60,
-        seconds % 60
+        minutes / 60,
+        minutes % 60
     )
 }
 
-fn date_text(value: Date) -> String {
+fn date_naive(value: Date) -> NaiveDate {
     NaiveDate::from_ymd_opt(1, 1, 1)
         .expect("valid base date")
         .checked_add_signed(TimeDelta::days(i64::from(value.days())))
         .unwrap_or_else(|| NaiveDate::from_ymd_opt(1, 1, 1).expect("valid base date"))
-        .format("%Y-%m-%d")
-        .to_string()
+}
+
+fn date_text(value: Date) -> String {
+    date_naive(value).format("%Y-%m-%d").to_string()
+}
+
+fn time_nanos(value: Time) -> u128 {
+    let divisor = 10u128.saturating_pow(u32::from(value.scale()));
+    if divisor == 0 {
+        0
+    } else {
+        u128::from(value.increments()) * 1_000_000_000 / divisor
+    }
 }
 
 fn time_text(value: Time) -> String {
-    let divisor = 10u64.saturating_pow(u32::from(value.scale()));
-    let total_nanos = if divisor == 0 {
-        0
-    } else {
-        value.increments().saturating_mul(1_000_000_000) / divisor
-    };
+    let total_nanos = time_nanos(value);
     let total_seconds = total_nanos / 1_000_000_000;
     let nanos = total_nanos % 1_000_000_000;
     format!(
@@ -1181,24 +1165,31 @@ fn datetime2_text(value: DateTime2) -> String {
 }
 
 fn datetime_offset_text(value: DateTimeOffset) -> String {
+    let dt2 = value.datetime2();
+    let total_nanos = time_nanos(dt2.time()).min(86_399_999_999_999) as i64;
+    let utc = NaiveDateTime::new(
+        date_naive(dt2.date()),
+        NaiveTime::from_hms_opt(0, 0, 0).expect("valid midnight")
+            + TimeDelta::nanoseconds(total_nanos),
+    );
     let offset = value.offset();
+    let local = utc
+        .checked_add_signed(TimeDelta::minutes(i64::from(offset)))
+        .unwrap_or(utc);
     let sign = if offset < 0 { '-' } else { '+' };
-    let offset = offset.unsigned_abs();
+    let abs = offset.unsigned_abs();
     format!(
-        "{} {}{:02}:{:02}",
-        datetime2_text(value.datetime2()),
+        "{}.{:07} {}{:02}:{:02}",
+        local.format("%Y-%m-%d %H:%M:%S"),
+        local.and_utc().timestamp_subsec_nanos() / 100,
         sign,
-        offset / 60,
-        offset % 60
+        abs / 60,
+        abs % 60
     )
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn quote_relation(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_identifier(schema), quote_identifier(table))
+    common::quote_relation(schema, table, quote_identifier)
 }
 
 fn quote_identifier(identifier: &str) -> String {
@@ -1208,7 +1199,7 @@ fn quote_identifier(identifier: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{GridChange, SchemaObjectKind};
+    use crate::models::{Engine, GridChange, SchemaObjectKind};
     use std::collections::BTreeMap;
 
     #[tokio::test]
@@ -1229,9 +1220,7 @@ mod tests {
             sqlite_path: String::new(),
         };
         let (mut session, _version, _user, _config) =
-            connect(&profile, "Koyo!Passw0rd", Engine::SqlServer)
-                .await
-                .expect("connect");
+            connect(&profile, "Koyo!Passw0rd").await.expect("connect");
         ping(&mut session).await.expect("ping");
 
         let tables = list_tables(&mut session).await.expect("list tables");
@@ -1504,6 +1493,7 @@ mod tests {
 #[cfg(test)]
 mod cancel_tests {
     use super::*;
+    use crate::models::Engine;
     use std::time::Duration;
 
     #[tokio::test]
@@ -1524,9 +1514,7 @@ mod cancel_tests {
             sqlite_path: String::new(),
         };
         let (mut session, _version, _user, config) =
-            connect(&profile, "Koyo!Passw0rd", Engine::SqlServer)
-                .await
-                .expect("connect");
+            connect(&profile, "Koyo!Passw0rd").await.expect("connect");
         let spid = session.spid;
         let started = std::time::Instant::now();
         let task =
@@ -1562,13 +1550,65 @@ mod truncation_predicate_tests {
 
     #[test]
     fn predicates_skip_truncated_columns() {
-        let columns = vec![column("id", true), column("secret", false)];
+        let meta = TableMeta::new(vec![column("id", true), column("secret", false)], None);
         let original = vec![Some("1".into()), Some("partial [truncated]".into())];
         let mut params = Vec::new();
-        let predicate = original_predicate(&columns, &original, &[false, true], &mut params);
+        let predicate =
+            original_predicate(&meta, &original, &[false, true], &mut params).expect("predicate");
 
         assert!(!predicate.contains("[secret]"));
         assert!(predicate.contains("[id]"));
         assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn rejects_truncated_primary_keys() {
+        let meta = TableMeta::new(vec![column("id", true), column("secret", false)], None);
+        let original = vec![Some("huge [truncated]".into()), Some("ok".into())];
+        let mut params = Vec::new();
+        assert!(original_predicate(&meta, &original, &[true, false], &mut params).is_err());
+    }
+
+    #[test]
+    fn formats_smalldatetime_time_and_datetimeoffset_accurately() {
+        let small = SmallDateTime::new(45655, 14 * 60 + 35);
+        assert_eq!(small_datetime_text(small), "2024-12-31 14:35:00");
+
+        let end_of_day = Time::new(86_399 * 10_000_000 + 9_999_999, 7);
+        assert_eq!(time_text(end_of_day), "23:59:59.9999999");
+
+        // 2025-01-01 23:30:00 UTC with +02:00 => 2025-01-02 01:30:00 +02:00
+        let days = NaiveDate::from_ymd_opt(2025, 1, 1)
+            .unwrap()
+            .signed_duration_since(NaiveDate::from_ymd_opt(1, 1, 1).unwrap())
+            .num_days() as u32;
+        let utc_time = Time::new((23 * 3600 + 30 * 60) * 10_000_000, 7);
+        let pos = DateTimeOffset::new(DateTime2::new(Date::new(days), utc_time), 120);
+        assert_eq!(
+            datetime_offset_text(pos),
+            "2025-01-02 01:30:00.0000000 +02:00"
+        );
+
+        // 2025-01-01 01:00:00 UTC with -05:00 => 2024-12-31 20:00:00 -05:00
+        let early = Time::new(3600 * 10_000_000, 7);
+        let neg = DateTimeOffset::new(DateTime2::new(Date::new(days), early), -300);
+        assert_eq!(
+            datetime_offset_text(neg),
+            "2024-12-31 20:00:00.0000000 -05:00"
+        );
+    }
+
+    #[test]
+    fn image_and_timestamp_display_expressions_convert_cleanly() {
+        let mut img = column("pic", false);
+        img.filter_type = "image".into();
+        assert_eq!(
+            display_expression(&img),
+            "CONVERT(nvarchar(max), CONVERT(varbinary(max), [pic]), 2)"
+        );
+
+        let mut ts = column("rv", false);
+        ts.filter_type = "timestamp".into();
+        assert_eq!(display_expression(&ts), "CONVERT(nvarchar(max), [rv], 2)");
     }
 }

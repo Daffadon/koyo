@@ -123,13 +123,6 @@ impl KoyoApp {
             ai_threads: self.ai_threads_snapshot(),
             ai_active_thread: self.ai_active_thread,
             next_ai_thread_id: self.next_ai_thread_id,
-            split: self.split.map(|axis| {
-                match axis {
-                    SplitAxis::Vertical => "vertical",
-                    SplitAxis::Horizontal => "horizontal",
-                }
-                .to_string()
-            }),
             split_ratio: self.split_ratio,
             history: self.history.clone(),
             history_collapsed: self.history_collapsed,

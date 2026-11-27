@@ -1,8 +1,27 @@
 use std::collections::BTreeSet;
+use std::future::Future;
 
 use koyo_core::models::{ConnectionInfo, ConnectionProfile};
 
 use super::*;
+
+async fn timed_catalog_list<T>(
+    future: impl Future<Output = Result<Vec<T>, String>>,
+    timeout_message: &str,
+    errors: &mut Vec<String>,
+) -> Vec<T> {
+    match tokio::time::timeout(TABLE_IO_TIMEOUT, future).await {
+        Ok(Ok(items)) => items,
+        Ok(Err(error)) => {
+            errors.push(error);
+            Vec::new()
+        }
+        Err(_) => {
+            errors.push(timeout_message.to_string());
+            Vec::new()
+        }
+    }
+}
 
 impl KoyoApp {
     pub(crate) fn open_table(
@@ -19,7 +38,7 @@ impl KoyoApp {
                 (
                     tab.profile.clone(),
                     tab.connection.clone(),
-                    tab_catalog(tab),
+                    CatalogSnapshot::from_tab(tab),
                     tab.expanded.clone(),
                 )
             });
@@ -53,7 +72,7 @@ impl KoyoApp {
             (
                 tab.profile.clone(),
                 tab.connection.clone(),
-                tab_catalog(tab),
+                CatalogSnapshot::from_tab(tab),
                 tab.expanded.clone(),
             )
         };
@@ -91,6 +110,7 @@ impl KoyoApp {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_table_source(
         &mut self,
         profile: ConnectionProfile,
@@ -200,50 +220,60 @@ impl KoyoApp {
                 } else {
                     String::new()
                 };
-                let info =
-                    super::super::connections::connect_with_timeout(
-                        &manager,
-                        &profile_for_task,
-                        &password,
-                    )
-                    .await?;
+                let info = super::super::connections::connect_with_timeout(
+                    &manager,
+                    &profile_for_task,
+                    &password,
+                )
+                .await?;
                 let mut catalog_errors = Vec::new();
-                let tables = database::list_tables(&manager, info.session_id)
-                    .await
-                    .unwrap_or_else(|error| {
-                        catalog_errors.push(error);
-                        Vec::new()
-                    });
-                let objects = database::list_schema_objects(&manager, info.session_id)
-                    .await
-                    .unwrap_or_else(|error| {
-                        catalog_errors.push(error);
-                        Vec::new()
-                    });
-                let metadata = database::list_database_metadata(&manager, info.session_id)
-                    .await
-                    .unwrap_or_else(|error| {
-                        catalog_errors.push(error);
-                        Vec::new()
-                    });
-                let columns: Vec<ColumnCatalogEntry> =
-                    database::list_column_catalog(&manager, info.session_id)
-                        .await
-                        .unwrap_or_else(|error| {
-                            catalog_errors.push(error);
-                            Vec::new()
-                        });
-                let page = database::load_table_page(
+                let tables = timed_catalog_list(
+                    database::list_tables(&manager, info.session_id),
+                    "Loading tables timed out.",
+                    &mut catalog_errors,
+                )
+                .await;
+                let objects = timed_catalog_list(
+                    database::list_schema_objects(&manager, info.session_id),
+                    "Loading schema objects timed out.",
+                    &mut catalog_errors,
+                )
+                .await;
+                let metadata = timed_catalog_list(
+                    database::list_database_metadata(&manager, info.session_id),
+                    "Loading database metadata timed out.",
+                    &mut catalog_errors,
+                )
+                .await;
+                let columns: Vec<ColumnCatalogEntry> = timed_catalog_list(
+                    database::list_column_catalog(&manager, info.session_id),
+                    "Loading column metadata timed out.",
+                    &mut catalog_errors,
+                )
+                .await;
+                let page_manager = manager.clone();
+                let page = super::super::connections::run_with_cancel(
+                    TABLE_IO_TIMEOUT,
+                    "Table load timed out. Cancel was requested.",
                     &manager,
                     info.session_id,
                     operation_id,
-                    schema_for_task,
-                    table_for_task,
-                    0,
-                    page_limit,
-                    Vec::new(),
-                    None,
-                    true,
+                    profile_for_task.engine,
+                    async move {
+                        database::load_table_page(
+                            &page_manager,
+                            info.session_id,
+                            operation_id,
+                            schema_for_task,
+                            table_for_task,
+                            0,
+                            page_limit,
+                            Vec::new(),
+                            None,
+                            true,
+                        )
+                        .await
+                    },
                 )
                 .await;
                 let catalog_error = (!catalog_errors.is_empty()).then(|| catalog_errors.join("; "));
@@ -285,13 +315,13 @@ impl KoyoApp {
                             this.tabs[index].notice = error;
                         }
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
-                            if table_tab.operation_id != Some(operation_id) {
-                                return;
-                            }
                             table_tab.operation_id = None;
                             table_tab.loading = false;
                             match page {
-                                Ok(page) => table_tab.page = Some(page),
+                                Ok(page) => {
+                                    table_tab.total_rows_cache = page.total_rows;
+                                    table_tab.page = Some(page);
+                                }
                                 Err(error) => this.tabs[index].notice = error,
                             }
                         }
@@ -314,12 +344,33 @@ impl KoyoApp {
                         );
                     }
                     Err(error) => {
+                        let operation_matches = this.tabs[index]
+                            .body
+                            .table()
+                            .is_some_and(|table| table.operation_id == Some(operation_id));
+                        if !operation_matches {
+                            return;
+                        }
                         this.tabs[index].connecting = false;
                         this.tabs[index].notice = error.clone();
                         if let TabBody::Table(table_tab) = &mut this.tabs[index].body {
                             table_tab.loading = false;
-                            if table_tab.operation_id == Some(operation_id) {
-                                table_tab.operation_id = None;
+                            table_tab.operation_id = None;
+                        }
+                        for waiting in &mut this.tabs {
+                            if waiting.id != tab_id
+                                && waiting.connection.is_none()
+                                && !waiting.connecting
+                                && waiting
+                                    .profile
+                                    .as_ref()
+                                    .is_some_and(|candidate| candidate.id == profile.id)
+                            {
+                                waiting.notice = error.clone();
+                                if let TabBody::Query(query) = &mut waiting.body {
+                                    query.pending_run = false;
+                                    query.definition_kind = None;
+                                }
                             }
                         }
                         this.push_toast(
@@ -354,26 +405,16 @@ impl KoyoApp {
                 (
                     tab.profile.clone(),
                     tab.connection.clone(),
-                    tab.tables.clone(),
-                    tab.schema_objects.clone(),
-                    tab.metadata_groups.clone(),
-                    tab.columns.clone(),
+                    CatalogSnapshot::from_tab(tab),
                     tab.expanded.clone(),
                 )
             });
-        let Some((Some(profile), shared, tables, objects, metadata, columns, expanded)) = source
-        else {
+        let Some((Some(profile), shared, catalog, expanded)) = source else {
             self.status = "Open a connection before inspecting functions or triggers.".into();
             cx.notify();
             return;
         };
         let target_pane = self.focus;
-        let catalog = CatalogSnapshot {
-            tables,
-            schema_objects: objects,
-            metadata_groups: metadata,
-            columns,
-        };
         let (shared, catalog) = match shared {
             Some(connection) => (Some(connection), catalog),
             None => match self.connection_for_profile(&profile) {
@@ -415,6 +456,7 @@ impl KoyoApp {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn focus_existing_table(
         &mut self,
         pane: Pane,
@@ -461,28 +503,11 @@ impl KoyoApp {
         self.status = format!("Focused {schema}.{table}.");
         if needs_connect {
             if let Some(connection) = connection {
-                self.tabs[index].connection = Some(connection.clone());
-                self.tabs[index].connecting = false;
-                self.tabs[index].profile = Some(connection.profile.clone());
-                self.tabs[index].notice.clear();
-                self.tabs[index].tables = catalog.tables.clone();
-                self.tabs[index].schema_objects = catalog.schema_objects.clone();
-                self.tabs[index].metadata_groups = catalog.metadata_groups.clone();
-                self.tabs[index].columns = catalog.columns.clone();
-                if let TabBody::Table(table_tab) = &mut self.tabs[index].body {
-                    table_tab.page = None;
-                    table_tab.total_rows_cache = None;
-                    table_tab.staged.clear();
-                    table_tab.selected_keys.clear();
-                    table_tab.loading = false;
-                    table_tab.operation_id = None;
-                    table_tab.foreign_keys.clear();
-                    table_tab.foreign_keys_loading = false;
-                    table_tab.indexes.clear();
-                    table_tab.diagram_metadata_loaded = false;
+                let profile_name = connection.profile.name.clone();
+                if self.attach_connection_to_tab(tab_id, connection, catalog, cx) {
+                    self.status = format!("Connected to {profile_name}.");
+                    self.ensure_table_page(tab_id, cx);
                 }
-                self.status = format!("Connected to {}.", connection.profile.name);
-                self.load_page(tab_id, 0, Vec::new(), None, cx);
             } else {
                 self.connect_profile(profile_id, Some(tab_id), false, window, cx);
             }
@@ -490,15 +515,6 @@ impl KoyoApp {
             cx.notify();
         }
         true
-    }
-}
-
-fn tab_catalog(tab: &Tab) -> CatalogSnapshot {
-    CatalogSnapshot {
-        tables: tab.tables.clone(),
-        schema_objects: tab.schema_objects.clone(),
-        metadata_groups: tab.metadata_groups.clone(),
-        columns: tab.columns.clone(),
     }
 }
 

@@ -80,7 +80,7 @@ fn option_row<T: Copy + PartialEq + 'static>(
 /// Small palette sample for a theme row: the background fills the card, the
 /// sidebar marks the rail, and the strip previews the action gradient.
 fn theme_preview(choice: ThemeChoice, palette: &Palette) -> AnyElement {
-    let [background, sidebar, _] = choice.preview_colors();
+    let [background, sidebar] = choice.preview_colors();
     let [from, to] = choice.preview_gradient();
     v_flex()
         .w(px(44.0))

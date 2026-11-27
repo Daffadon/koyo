@@ -43,6 +43,7 @@ pub(crate) async fn run_with_cancel<T>(
     manager: &koyo_core::SessionManager,
     session_id: Uuid,
     operation_id: Uuid,
+    engine: Engine,
     future: impl Future<Output = Result<T, String>> + Send + 'static,
 ) -> Result<T, String>
 where
@@ -53,9 +54,24 @@ where
         Ok(Ok(result)) => result,
         Ok(Err(error)) => Err(format!("Database task failed unexpectedly: {error}")),
         Err(_) => {
-            let _ = database::cancel_query(manager, session_id, operation_id).await;
-            let _ = tokio::time::timeout(Duration::from_secs(5), &mut task).await;
+            let cancelled = database::cancel_query(manager, session_id, operation_id)
+                .await
+                .unwrap_or(false);
+            let finished = tokio::time::timeout(Duration::from_secs(5), &mut task).await;
             task.abort();
+            if !timeout_message.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
+                if let Ok(Ok(Err(error))) = finished
+                    && database::is_connection_lost(&error)
+                {
+                    return Err(error);
+                }
+                if cancelled && engine == Engine::SqlServer {
+                    return Err(
+                        "Operation timed out and SQL Server closed the session (connection closed). Reconnect to continue."
+                            .into(),
+                    );
+                }
+            }
             Err(timeout_message.into())
         }
     }
@@ -326,17 +342,39 @@ impl KoyoApp {
         if self.tabs[index].connection.is_none()
             && let Some((connection, catalog)) = self.connection_for_profile(&profile)
         {
+            let previous_profile = self.tabs[index].profile.clone();
             let run_pending = matches!(
                 &self.tabs[index].body,
                 TabBody::Query(query) if query.pending_run
             );
+            let empty_catalog = catalog.tables.is_empty();
             self.attach_connection_to_tab(tab_id, connection.clone(), catalog, cx);
-            self.ensure_table_page(tab_id, cx);
+            if let Some(index) = self.tab_index(tab_id) {
+                if matches!(self.tabs[index].body, TabBody::Query(_)) {
+                    self.tabs[index].title = query_tab_title(Some(&connection.profile));
+                }
+                if previous_profile.is_none() {
+                    self.tabs[index].pending_starter =
+                        Some(starter_sql(connection.profile.engine).into());
+                }
+                if let TabBody::Query(query) = &mut self.tabs[index].body {
+                    query.pending_run = false;
+                }
+            }
+            let catalog_loading = self.tabs.iter().any(|tab| {
+                tab.catalog_loading
+                    && tab
+                        .connection
+                        .as_ref()
+                        .is_some_and(|current| current.session_id == connection.session_id)
+            });
+            if empty_catalog && !catalog_loading {
+                self.load_tables(tab_id, cx);
+            } else {
+                self.ensure_table_page(tab_id, cx);
+            }
             if adopt_sidebar {
                 self.sidebar_tab = Some(tab_id);
-            }
-            if let TabBody::Query(query) = &mut self.tabs[index].body {
-                query.pending_run = false;
             }
             let attached = self.attach_profile_session(profile.id, tab_id, cx);
             let message = if attached == 0 {
@@ -368,9 +406,11 @@ impl KoyoApp {
         }
 
         if self.profile_is_connecting(&profile) {
+            self.tabs[index].profile = Some(profile.clone());
             self.tabs[index].connecting = false;
             if let TabBody::Query(query) = &mut self.tabs[index].body {
                 query.pending_run = false;
+                query.definition_kind = None;
             }
             self.tabs[index].notice =
                 "Waiting for the connection to finish. Run the query again when connected.".into();
@@ -387,6 +427,9 @@ impl KoyoApp {
 
         let previous_profile = self.tabs[index].profile.clone();
         let attempt_id = Uuid::new_v4();
+        // Record the target profile before spawning so concurrent connects to
+        // the same profile from blank tabs deduplicate through profile_is_connecting.
+        self.tabs[index].profile = Some(profile.clone());
         self.tabs[index].connecting = true;
         self.tabs[index].connection_attempt = Some(attempt_id);
         self.tabs[index].notice = if self.tabs[index].connection.is_some() {
@@ -458,8 +501,7 @@ impl KoyoApp {
                                 );
                             }
                         }
-                        let preserve_staged = this.tabs[index]
-                            .profile
+                        let preserve_staged = previous_profile
                             .as_ref()
                             .is_some_and(|profile| same_connection_target(profile, &info.profile));
                         let had_staged = this.tabs[index]
@@ -493,6 +535,7 @@ impl KoyoApp {
                         match &mut this.tabs[index].body {
                             TabBody::Query(query) => {
                                 query.completion.borrow_mut().clear();
+                                query.cached_json_result.borrow_mut().take();
                                 query.output = None;
                                 query.error.clear();
                                 query.duration_ms = None;
@@ -516,6 +559,7 @@ impl KoyoApp {
                                 }
                                 table.selected_keys.clear();
                                 table.loading = false;
+                                table.cancelling = false;
                                 table.operation_id = None;
                                 table.foreign_keys.clear();
                                 table.foreign_keys_loading = false;
@@ -593,12 +637,25 @@ impl KoyoApp {
                             this.tabs[waiting_index].notice = error.clone();
                             if let TabBody::Query(query) = &mut this.tabs[waiting_index].body {
                                 query.pending_run = false;
+                                query.definition_kind = None;
                             }
                         }
                         if let Some(index) = this.tab_index(tab_id) {
                             this.tabs[index].connecting = false;
                             this.tabs[index].connection_attempt = None;
                             this.tabs[index].notice = error.clone();
+                            if this.tabs[index].connection.is_none()
+                                && this.tabs[index]
+                                    .profile
+                                    .as_ref()
+                                    .is_some_and(|current| current.id == profile_id)
+                            {
+                                this.tabs[index].profile = previous_profile;
+                            }
+                            if let TabBody::Query(query) = &mut this.tabs[index].body {
+                                query.pending_run = false;
+                                query.definition_kind = None;
+                            }
                         }
                         if this
                             .dialog
@@ -668,7 +725,7 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_connection_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_connection_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = self.dialog.take() else {
             return;
         };
@@ -687,10 +744,12 @@ impl KoyoApp {
                 self.tabs[index].notice = "Connection cancelled.".into();
                 if let TabBody::Query(query) = &mut self.tabs[index].body {
                     query.pending_run = false;
+                    query.definition_kind = None;
                 }
             }
             self.status = "Connection cancelled.".into();
         }
+        self.root_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -828,7 +887,8 @@ impl KoyoApp {
                         && (previous.host != input.host
                             || previous.port != input.port
                             || previous.database != input.database
-                            || previous.username != input.username))
+                            || previous.username != input.username
+                            || previous.ssl_mode != input.ssl_mode))
                     || (input.engine.is_sqlite() && previous.sqlite_path != input.sqlite_path)
             });
         if engine.needs_password() && password.is_empty() && target_changed {
@@ -854,6 +914,9 @@ impl KoyoApp {
                         self.profiles.retain(|profile| profile.id != saved.id);
                         self.profiles.push(saved.clone());
                     }
+                }
+                if target_changed {
+                    self.disconnect_profile_for_target_change(saved.id, cx);
                 }
                 if let Some(dialog) = self.dialog.as_mut() {
                     dialog.editing = Some(saved.id);

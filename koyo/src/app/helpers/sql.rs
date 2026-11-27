@@ -2,6 +2,7 @@ use gpui_kit::*;
 use koyo_core::models::{ConnectionProfile, Engine, SchemaObjectKind};
 use sqlformat::{Dialect as SqlDialect, FormatOptions, QueryParams};
 
+use super::quote_sql_identifier;
 use crate::app::QueryTab;
 
 pub(crate) fn query_tab_title(profile: Option<&ConnectionProfile>) -> SharedString {
@@ -53,14 +54,6 @@ fn sql_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn ansi_ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn mysql_ident(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
-}
-
 /// SQL that opens a function or trigger definition in a query tab. Views and
 /// tables stay on the data grid path.
 pub(crate) fn object_definition_sql(
@@ -80,19 +73,19 @@ pub(crate) fn object_definition_sql(
         ),
         (Engine::Mysql | Engine::Mariadb, SchemaObjectKind::Function) => format!(
             "SHOW CREATE FUNCTION {}.{};",
-            mysql_ident(schema),
-            mysql_ident(name)
+            quote_sql_identifier(engine, schema),
+            quote_sql_identifier(engine, name)
         ),
         (Engine::Mysql | Engine::Mariadb, SchemaObjectKind::Trigger) => format!(
             "SHOW CREATE TRIGGER {}.{};",
-            mysql_ident(schema),
-            mysql_ident(name)
+            quote_sql_identifier(engine, schema),
+            quote_sql_identifier(engine, name)
         ),
         (Engine::SqlServer, SchemaObjectKind::Function | SchemaObjectKind::Trigger) => {
             let object = format!(
-                "[{}].[{}]",
-                schema.replace(']', "]]"),
-                name.replace(']', "]]")
+                "{}.{}",
+                quote_sql_identifier(engine, schema),
+                quote_sql_identifier(engine, name)
             );
             format!(
                 "SELECT OBJECT_DEFINITION(OBJECT_ID(N{})) AS definition;",
@@ -100,7 +93,7 @@ pub(crate) fn object_definition_sql(
             )
         }
         (Engine::Oracle, SchemaObjectKind::Function | SchemaObjectKind::Trigger) => format!(
-            "SELECT text AS definition\nFROM all_source\nWHERE owner = UPPER({schema_literal})\n  AND name = UPPER({name_literal})\n  AND type = '{}'\nORDER BY line;",
+            "SELECT text AS definition\nFROM all_source\nWHERE owner = {schema_literal}\n  AND name = {name_literal}\n  AND type = '{}'\nORDER BY line;",
             if kind == SchemaObjectKind::Function {
                 "FUNCTION"
             } else {
@@ -109,7 +102,7 @@ pub(crate) fn object_definition_sql(
         ),
         (Engine::Sqlite, SchemaObjectKind::Trigger) => format!(
             "SELECT sql AS definition\nFROM {}.sqlite_master\nWHERE type = 'trigger'\n  AND name = {name_literal};",
-            ansi_ident(schema)
+            quote_sql_identifier(engine, schema)
         ),
         (Engine::Sqlite, SchemaObjectKind::Function) => format!(
             "-- SQLite functions are built in or provided by extensions.\nSELECT name\nFROM pragma_function_list\nWHERE name = {name_literal};"

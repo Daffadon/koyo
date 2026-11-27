@@ -58,6 +58,8 @@ impl KoyoApp {
                 table.operation_id = None;
                 table.foreign_keys_loading = false;
                 table.exporting = false;
+                table.export_abort = None;
+                table.export_generation = table.export_generation.wrapping_add(1);
             }
         }
         if let Some(dialog) = self.dialog.as_mut() {
@@ -117,13 +119,7 @@ impl KoyoApp {
     }
 
     pub(super) fn tab_catalog(&self, index: usize) -> CatalogSnapshot {
-        let tab = &self.tabs[index];
-        CatalogSnapshot {
-            tables: tab.tables.clone(),
-            schema_objects: tab.schema_objects.clone(),
-            metadata_groups: tab.metadata_groups.clone(),
-            columns: tab.columns.clone(),
-        }
+        CatalogSnapshot::from_tab(&self.tabs[index])
     }
 
     /// One live session per profile is reused across panes. A reconnect from
@@ -216,12 +212,26 @@ impl KoyoApp {
             })
             .any(|tab| match &tab.body {
                 TabBody::Query(query) => query.running,
-                TabBody::Table(table) => !table.staged.is_empty(),
+                TabBody::Table(table) => !table.staged.is_empty() || table.exporting,
             })
             || self
                 .profile_session_ids(profile_id)
                 .into_iter()
                 .any(|session_id| self.session_transaction_open(session_id))
+    }
+
+    pub(crate) fn disconnect_profile_for_target_change(
+        &mut self,
+        profile_id: Uuid,
+        cx: &mut Context<Self>,
+    ) {
+        self.disconnect_profile(
+            profile_id,
+            "Connection target changed. Reconnecting...",
+            DisconnectReason::Manual,
+            false,
+            cx,
+        );
     }
 
     fn disconnect_profile(
@@ -233,10 +243,14 @@ impl KoyoApp {
         cx: &mut Context<Self>,
     ) {
         let ids = self.profile_tab_ids(profile_id);
-        if ids.is_empty() {
+        let sessions = self.profile_session_ids(profile_id);
+        let had_parked = self
+            .parked_connections
+            .iter()
+            .any(|parked| parked.profile.id == profile_id);
+        if ids.is_empty() && !had_parked && sessions.is_empty() {
             return;
         }
-        let sessions = self.profile_session_ids(profile_id);
         self.parked_connections
             .retain(|parked| parked.profile.id != profile_id);
         if self
@@ -258,8 +272,8 @@ impl KoyoApp {
             .as_ref()
             .and_then(|dialog| dialog.target_tab)
             .is_some_and(|tab_id| ids.contains(&tab_id));
-        for tab_id in ids {
-            let Some(index) = self.tab_index(tab_id) else {
+        for tab_id in &ids {
+            let Some(index) = self.tab_index(*tab_id) else {
                 continue;
             };
             let had_staged = self.tabs[index]
@@ -283,11 +297,15 @@ impl KoyoApp {
                     query.pending_run = false;
                 }
                 TabBody::Table(table) => {
+                    if let Some(abort) = table.export_abort.take() {
+                        abort.abort();
+                    }
                     table.loading = false;
                     table.cancelling = false;
                     table.operation_id = None;
                     table.foreign_keys_loading = false;
                     table.exporting = false;
+                    table.export_generation = table.export_generation.wrapping_add(1);
                     if !keep_staged {
                         table.staged.clear();
                     }
@@ -304,24 +322,26 @@ impl KoyoApp {
             dialog.busy = false;
             dialog.error = notice.to_string();
         }
-        self.status = notice.to_string();
-        let toast = match reason {
-            DisconnectReason::Manual => {
-                Notification::info(notice.to_string()).title("Disconnected")
-            }
-            DisconnectReason::Lost => Notification::error(notice.to_string())
-                .title("Connection lost")
-                .autohide(false),
-            DisconnectReason::SessionClosed => Notification::warning(notice.to_string())
-                .title("Session closed")
-                .autohide(false),
-        };
-        self.push_toast(
-            ToastCategory::Connections,
-            profile_id.to_string(),
-            toast,
-            cx,
-        );
+        if !ids.is_empty() {
+            self.status = notice.to_string();
+            let toast = match reason {
+                DisconnectReason::Manual => {
+                    Notification::info(notice.to_string()).title("Disconnected")
+                }
+                DisconnectReason::Lost => Notification::error(notice.to_string())
+                    .title("Connection lost")
+                    .autohide(false),
+                DisconnectReason::SessionClosed => Notification::warning(notice.to_string())
+                    .title("Session closed")
+                    .autohide(false),
+            };
+            self.push_toast(
+                ToastCategory::Connections,
+                profile_id.to_string(),
+                toast,
+                cx,
+            );
+        }
         cx.notify();
     }
 
@@ -388,11 +408,13 @@ impl KoyoApp {
                 );
                 query.error.clear();
                 query.output = None;
+                query.cached_json_result.borrow_mut().take();
                 query.duration_ms = None;
                 query.running = false;
                 query.cancelling = false;
                 query.operation_id = None;
                 query.pending_run = false;
+                query.definition_kind = None;
                 query.active_result = 0;
             }
             TabBody::Table(table) => {
@@ -403,6 +425,7 @@ impl KoyoApp {
                 }
                 table.selected_keys.clear();
                 table.loading = false;
+                table.cancelling = false;
                 table.operation_id = None;
                 table.foreign_keys.clear();
                 table.foreign_keys_loading = false;
@@ -455,7 +478,7 @@ impl KoyoApp {
         }
     }
 
-    fn session_is_busy(&self, session_id: Uuid) -> bool {
+    pub(crate) fn session_is_busy(&self, session_id: Uuid) -> bool {
         self.tabs.iter().any(|tab| {
             tab.connection
                 .as_ref()
@@ -490,6 +513,7 @@ impl KoyoApp {
         for tab in &self.tabs {
             if let Some(connection) = &tab.connection
                 && !self.session_is_busy(connection.session_id)
+                && !self.session_transaction_open(connection.session_id)
                 && !sessions.contains(&connection.session_id)
             {
                 sessions.push(connection.session_id);
@@ -527,7 +551,10 @@ impl KoyoApp {
                 }
                 log::warn!("session {session_id} failed two refocus pings");
                 let _ = this.update(cx, |this, cx| {
-                    if !this.session_is_tracked(session_id) || this.session_is_busy(session_id) {
+                    if !this.session_is_tracked(session_id)
+                        || this.session_is_busy(session_id)
+                        || this.session_transaction_open(session_id)
+                    {
                         return;
                     }
                     this.mark_connection_lost(
@@ -656,7 +683,7 @@ impl KoyoApp {
                 cx,
                 "Disconnect?",
                 format!(
-                    "A query is running or edits are staged in one of {tab_count} tabs on this profile. Disconnecting all of them discards those edits."
+                    "A query or export is running, a transaction is open, or edits are staged in one of {tab_count} tabs on this profile. Disconnecting all of them discards those edits."
                 ),
                 move |this, cx| {
                     this.disconnect_profile(

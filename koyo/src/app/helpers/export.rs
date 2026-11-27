@@ -22,7 +22,12 @@ pub(crate) fn results_as_csv(result: &QueryResultSet) -> String {
 
 /// Default file name for a table export. Keep path separators out of it.
 pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
-    let name = format!("{schema}.{table}")
+    let raw = if schema.is_empty() {
+        table.to_string()
+    } else {
+        format!("{schema}.{table}")
+    };
+    let name = raw
         .chars()
         .map(|character| {
             if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
@@ -32,6 +37,8 @@ pub(crate) fn table_csv_file_name(schema: &str, table: &str) -> String {
             }
         })
         .collect::<String>();
+    let name = name.trim_start_matches('.');
+    let name = if name.is_empty() { "table" } else { name };
     format!("{name}.csv")
 }
 
@@ -77,23 +84,13 @@ pub(crate) fn table_ddl(
     } else {
         format!("{}.{}", quote(schema), quote(table))
     };
-    let mut lines = vec![
-        "-- Generated from current metadata.".to_string(),
-        "-- Defaults, checks, and generated expressions are not included.".to_string(),
-        format!("CREATE TABLE {relation} ("),
-    ];
-    for (index, column) in columns.iter().enumerate() {
+    let mut items = Vec::with_capacity(columns.len() + 1);
+    for column in columns {
         let mut line = format!("    {} {}", quote(&column.name), column.data_type);
         if !column.nullable || column.primary_key {
             line.push_str(" NOT NULL");
         }
-        if index + 1 < columns.len()
-            || !foreign_keys.is_empty()
-            || columns.iter().any(|c| c.primary_key)
-        {
-            line.push(',');
-        }
-        lines.push(line);
+        items.push(line);
     }
     let primary = columns
         .iter()
@@ -101,13 +98,12 @@ pub(crate) fn table_ddl(
         .map(|column| quote(&column.name))
         .collect::<Vec<_>>();
     if !primary.is_empty() {
-        lines.push(format!("    PRIMARY KEY ({})", primary.join(", ")));
+        items.push(format!("    PRIMARY KEY ({})", primary.join(", ")));
     }
-    let outgoing = foreign_keys
+    for fk in foreign_keys
         .iter()
         .filter(|fk| fk.schema == schema && fk.table == table)
-        .collect::<Vec<_>>();
-    for (index, fk) in outgoing.iter().enumerate() {
+    {
         let constraint = if fk.constraint_name.is_empty() {
             String::new()
         } else {
@@ -122,12 +118,19 @@ pub(crate) fn table_ddl(
                 quote(&fk.referenced_table)
             )
         };
-        let comma = if index + 1 < outgoing.len() { "," } else { "" };
-        lines.push(format!(
-            "    {constraint}FOREIGN KEY ({}) REFERENCES {referenced} ({}){comma}",
+        items.push(format!(
+            "    {constraint}FOREIGN KEY ({}) REFERENCES {referenced} ({})",
             quote(&fk.column),
             quote(&fk.referenced_column)
         ));
+    }
+    let mut lines = vec![
+        "-- Generated from current metadata.".to_string(),
+        "-- Defaults, checks, and generated expressions are not included.".to_string(),
+        format!("CREATE TABLE {relation} ("),
+    ];
+    if !items.is_empty() {
+        lines.push(items.join(",\n"));
     }
     lines.push(");".to_string());
     lines.join("\n")
@@ -228,24 +231,32 @@ pub(crate) fn resolve_export_pages(
 }
 
 pub(crate) fn results_as_json(result: &QueryResultSet) -> String {
+    let mut used = std::collections::HashSet::with_capacity(result.columns.len());
+    let keys = result
+        .columns
+        .iter()
+        .map(|column| {
+            let mut key = column.clone();
+            let mut suffix = 2;
+            while !used.insert(key.clone()) {
+                key = format!("{column}_{suffix}");
+                suffix += 1;
+            }
+            key
+        })
+        .collect::<Vec<_>>();
     let rows = result
         .rows
         .iter()
         .map(|row| {
-            let mut object = serde_json::Map::with_capacity(result.columns.len());
-            for (index, column) in result.columns.iter().enumerate() {
+            let mut object = serde_json::Map::with_capacity(keys.len());
+            for (index, key) in keys.iter().enumerate() {
                 let value = row
                     .get(index)
                     .and_then(Option::as_ref)
                     .map(|value| serde_json::Value::String(value.clone()))
                     .unwrap_or(serde_json::Value::Null);
-                let mut key = column.clone();
-                let mut suffix = 2;
-                while object.contains_key(&key) {
-                    key = format!("{column}_{suffix}");
-                    suffix += 1;
-                }
-                object.insert(key, value);
+                object.insert(key.clone(), value);
             }
             serde_json::Value::Object(object)
         })
@@ -264,9 +275,9 @@ fn push_csv_row<'a>(output: &mut String, fields: impl Iterator<Item = &'a str>) 
 }
 
 fn push_csv_field(output: &mut String, field: &str) {
-    let formula_like = field.chars().next().is_some_and(|first| {
-        matches!(first, '=' | '+' | '-' | '@' | '\t' | '\r') && field.parse::<f64>().is_err()
-    });
+    let trimmed = field.trim_start();
+    let formula_like = field.starts_with(['\t', '\r', '\n'])
+        || (trimmed.starts_with(['=', '+', '-', '@']) && field.trim().parse::<f64>().is_err());
     let needs_quotes = field.contains(|character| matches!(character, ',' | '"' | '\n' | '\r'));
     if !needs_quotes && !formula_like {
         output.push_str(field);

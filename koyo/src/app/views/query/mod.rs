@@ -245,7 +245,15 @@ pub(super) fn render(
                     .into_any_element()
             } else if let Some(result) = output.result_sets.get(active_result) {
                 if result_view == ResultView::Json {
-                    json::result_json(result, tab_id, active_result, palette, &mono, cx)
+                    json::result_json(
+                        result,
+                        &query.cached_json_result,
+                        tab_id,
+                        active_result,
+                        palette,
+                        &mono,
+                        cx,
+                    )
                 } else {
                     grid::result_grid(
                         result,
@@ -347,7 +355,6 @@ pub(super) fn render(
                     output.is_some_and(|output| !output.result_sets.is_empty()),
                     |this| {
                         this.child(button_tooltip(
-                            ("tooltip-download-csv", tab_id),
                             Button::new(("download-result-csv", tab_id))
                                 .ghost()
                                 .compact()
@@ -359,7 +366,6 @@ pub(super) fn render(
                             "Download active result as CSV",
                         ))
                         .child(button_tooltip(
-                            ("tooltip-copy-csv", tab_id),
                             Button::new(("copy-result-csv", tab_id))
                                 .ghost()
                                 .compact()
@@ -608,7 +614,12 @@ pub(super) fn render(
                                     .capture_key_down(cx.listener(
                                         move |this, event: &KeyDownEvent, window, cx| {
                                             let modifiers = event.keystroke.modifiers;
-                                            if event.keystroke.key == "tab" {
+                                            if event.keystroke.key == "tab"
+                                                && !modifiers.control
+                                                && !modifiers.platform
+                                                && !modifiers.alt
+                                                && !modifiers.shift
+                                            {
                                                 cx.stop_propagation();
                                                 this.accept_completion_or_indent(window, cx);
                                             } else if event.keystroke.key == "backspace"

@@ -19,13 +19,17 @@ const STATE_KEY_ACCOUNT: &str = "state:key";
 const STATE_MAGIC: &[u8] = b"KOYO-STATE-1\n";
 const STATE_NONCE_LEN: usize = 24;
 
+// Shared across ProfileStore and SettingsStore so first-launch key creation
+// cannot race and overwrite the keyring with two different keys.
+static KEYRING_STATE_KEY: Mutex<Option<Zeroizing<[u8; 32]>>> = Mutex::new(None);
+
 pub fn default_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
-    if let Some(appdata) = std::env::var_os("APPDATA") {
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
         return PathBuf::from(appdata).join(APP_IDENTIFIER);
     }
     #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
+    if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
         return PathBuf::from(home)
             .join("Library")
             .join("Application Support")
@@ -33,10 +37,10 @@ pub fn default_config_dir() -> PathBuf {
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Some(config) = std::env::var_os("XDG_CONFIG_HOME") {
+        if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             return PathBuf::from(config).join(APP_IDENTIFIER);
         }
-        if let Some(home) = std::env::var_os("HOME") {
+        if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
             return PathBuf::from(home).join(".config").join(APP_IDENTIFIER);
         }
     }
@@ -99,7 +103,7 @@ pub fn write_private_file(path: &Path, contents: &[u8]) -> Result<(), String> {
 #[derive(Clone)]
 pub struct EncryptedStateStore {
     path: PathBuf,
-    cached_key: Arc<Mutex<Option<Zeroizing<[u8; 32]>>>>,
+    override_key: Option<Zeroizing<[u8; 32]>>,
 }
 
 impl std::fmt::Debug for EncryptedStateStore {
@@ -108,7 +112,8 @@ impl std::fmt::Debug for EncryptedStateStore {
             .field("path", &self.path)
             .field(
                 "has_cached_key",
-                &self.cached_key.lock().is_ok_and(|key| key.is_some()),
+                &(self.override_key.is_some()
+                    || KEYRING_STATE_KEY.lock().is_ok_and(|key| key.is_some())),
             )
             .finish()
     }
@@ -118,7 +123,7 @@ impl EncryptedStateStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
-            cached_key: Arc::new(Mutex::new(None)),
+            override_key: None,
         }
     }
 
@@ -126,7 +131,7 @@ impl EncryptedStateStore {
     pub fn with_key(path: impl Into<PathBuf>, key: [u8; 32]) -> Self {
         Self {
             path: path.into(),
-            cached_key: Arc::new(Mutex::new(Some(Zeroizing::new(key)))),
+            override_key: Some(Zeroizing::new(key)),
         }
     }
 
@@ -167,32 +172,23 @@ impl EncryptedStateStore {
             .map_err(|error| format!("Could not open encrypted state key: {error}"))
     }
 
-    fn cached_key(&self) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
-        let guard = self
-            .cached_key
-            .lock()
-            .map_err(|_| "Encrypted state key cache is corrupted.".to_string())?;
-        Ok(guard.as_ref().map(|key| Zeroizing::new(**key)))
-    }
-
-    fn cache_key(&self, key: [u8; 32]) -> Result<Zeroizing<[u8; 32]>, String> {
-        let mut guard = self
-            .cached_key
-            .lock()
-            .map_err(|_| "Encrypted state key cache is corrupted.".to_string())?;
-        *guard = Some(Zeroizing::new(key));
-        Ok(Zeroizing::new(key))
-    }
-
     fn existing_state_key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
-        if let Some(key) = self.cached_key()? {
-            return Ok(key);
+        if let Some(key) = &self.override_key {
+            return Ok(key.clone());
+        }
+        let mut guard = KEYRING_STATE_KEY
+            .lock()
+            .map_err(|_| "Encrypted state key cache is corrupted.".to_string())?;
+        if let Some(key) = guard.as_ref() {
+            return Ok(key.clone());
         }
         let entry = self.state_entry()?;
         match entry.get_password() {
             Ok(encoded) => {
+                let encoded = Zeroizing::new(encoded);
                 let key = decode_state_key(&encoded)?;
-                self.cache_key(key)
+                *guard = Some(key.clone());
+                Ok(key)
             }
             Err(KeyringError::NoEntry) => Err(
                 "Encrypted application state exists, but its key is missing from the OS credential store."
@@ -205,25 +201,35 @@ impl EncryptedStateStore {
     }
 
     fn create_or_load_state_key(&self) -> Result<Zeroizing<[u8; 32]>, String> {
-        if let Some(key) = self.cached_key()? {
-            return Ok(key);
+        if let Some(key) = &self.override_key {
+            return Ok(key.clone());
+        }
+        let mut guard = KEYRING_STATE_KEY
+            .lock()
+            .map_err(|_| "Encrypted state key cache is corrupted.".to_string())?;
+        if let Some(key) = guard.as_ref() {
+            return Ok(key.clone());
         }
         let entry = self.state_entry()?;
         match entry.get_password() {
             Ok(encoded) => {
+                let encoded = Zeroizing::new(encoded);
                 let key = decode_state_key(&encoded)?;
-                self.cache_key(key)
+                *guard = Some(key.clone());
+                Ok(key)
             }
             Err(KeyringError::NoEntry) => {
                 let generated = XChaCha20Poly1305::generate_key(&mut OsRng);
                 let mut key = Zeroizing::new([0u8; 32]);
                 key.copy_from_slice(&generated);
-                entry
-                    .set_password(&encode_state_key(&key))
-                    .map_err(|error| {
-                        format!("Could not store encrypted state key in the OS credential store: {error}")
-                    })?;
-                self.cache_key(*key)
+                let encoded = encode_state_key(&key);
+                entry.set_password(&encoded).map_err(|error| {
+                    format!(
+                        "Could not store encrypted state key in the OS credential store: {error}"
+                    )
+                })?;
+                *guard = Some(key.clone());
+                Ok(key)
             }
             Err(error) => Err(format!(
                 "Could not read encrypted state key from the OS credential store: {error}"
@@ -274,16 +280,21 @@ fn decrypt_state(key: &[u8; 32], contents: &[u8]) -> Result<Vec<u8>, String> {
         })
 }
 
-fn encode_state_key(key: &[u8; 32]) -> String {
-    key.iter().map(|byte| format!("{byte:02x}")).collect()
+fn encode_state_key(key: &[u8; 32]) -> Zeroizing<String> {
+    use std::fmt::Write;
+    let mut encoded = Zeroizing::new(String::with_capacity(64));
+    for byte in key {
+        let _ = write!(&mut *encoded, "{byte:02x}");
+    }
+    encoded
 }
 
-fn decode_state_key(encoded: &str) -> Result<[u8; 32], String> {
+fn decode_state_key(encoded: &str) -> Result<Zeroizing<[u8; 32]>, String> {
     if encoded.len() != 64 || !encoded.is_ascii() {
         return Err("Encrypted application state key is invalid.".into());
     }
     let bytes = encoded.as_bytes();
-    let mut key = [0u8; 32];
+    let mut key = Zeroizing::new([0u8; 32]);
     for (index, byte) in key.iter_mut().enumerate() {
         let high = hex_nibble(bytes[index * 2])
             .ok_or_else(|| "Encrypted application state key is invalid.".to_string())?;
@@ -479,7 +490,8 @@ impl ProfileStore {
                     && (previous.host != saved.host
                         || previous.port != saved.port
                         || previous.database != saved.database
-                        || previous.username != saved.username))
+                        || previous.username != saved.username
+                        || previous.ssl_mode != saved.ssl_mode))
                 || (saved.engine.is_sqlite() && previous.sqlite_path != saved.sqlite_path)
         });
 
@@ -506,44 +518,33 @@ impl ProfileStore {
         if target_changed {
             if let Some(password) = password_to_save.as_deref() {
                 let entry = credential_entry(id)?;
-                let previous_secret = match entry.get_password() {
-                    Ok(value) => Some(value),
-                    Err(KeyringError::NoEntry) => None,
-                    Err(error) => {
-                        return Err(format!(
-                            "Could not read the previous saved password: {error}"
-                        ));
-                    }
-                };
+                let previous_secret = read_optional_secret(&entry)?;
                 entry.set_password(password).map_err(|error| {
                     format!(
                         "Could not save password in the operating-system credential store: {error}"
                     )
                 })?;
                 if let Err(error) = self.write_profiles(&profiles) {
-                    match previous_secret.as_deref() {
-                        Some(previous) => {
-                            let _ = entry.set_password(previous);
-                        }
-                        None => {
-                            let _ = entry.delete_credential();
-                        }
+                    restore_optional_secret(&entry, previous_secret.as_deref().map(String::as_str));
+                    return Err(error);
+                }
+            } else if must_clear_credential {
+                let entry = credential_entry(id)?;
+                let previous_secret = read_optional_secret(&entry)?;
+                match entry.delete_credential() {
+                    Ok(()) | Err(KeyringError::NoEntry) => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not remove the saved password for the changed connection target: {error}"
+                        ));
                     }
+                }
+                if let Err(error) = self.write_profiles(&profiles) {
+                    restore_optional_secret(&entry, previous_secret.as_deref().map(String::as_str));
                     return Err(error);
                 }
             } else {
-                let entry = must_clear_credential
-                    .then(|| credential_entry(id))
-                    .transpose()?;
                 self.write_profiles(&profiles)?;
-                if let Some(entry) = entry
-                    && let Err(error) = entry.delete_credential()
-                {
-                    let _ = self.write_profiles(&old_profiles);
-                    return Err(format!(
-                        "Could not remove the saved password for the changed connection target: {error}"
-                    ));
-                }
             }
         } else {
             self.write_profiles(&profiles)?;
@@ -593,14 +594,34 @@ impl ProfileStore {
     }
 
     pub fn load_password(&self, id: Uuid) -> Result<String, String> {
-        credential_entry(id)?
-            .get_password()
-            .map_err(|error| match error {
-                KeyringError::NoEntry => String::new(),
-                error => format!(
-                    "Could not read password from the operating-system credential store: {error}"
-                ),
-            })
+        match credential_entry(id)?.get_password() {
+            Ok(password) => Ok(password),
+            Err(KeyringError::NoEntry) => Ok(String::new()),
+            Err(error) => Err(format!(
+                "Could not read password from the operating-system credential store: {error}"
+            )),
+        }
+    }
+}
+
+fn read_optional_secret(entry: &Entry) -> Result<Option<Zeroizing<String>>, String> {
+    match entry.get_password() {
+        Ok(value) => Ok(Some(Zeroizing::new(value))),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(format!(
+            "Could not read the previous saved password: {error}"
+        )),
+    }
+}
+
+fn restore_optional_secret(entry: &Entry, previous: Option<&str>) {
+    match previous {
+        Some(secret) => {
+            let _ = entry.set_password(secret);
+        }
+        None => {
+            let _ = entry.delete_credential();
+        }
     }
 }
 
@@ -628,7 +649,11 @@ mod tests {
     }
 
     fn temp_dir(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("koyo-profiles-{label}-{}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "koyo-profiles-{label}-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ))
     }
 
     #[test]
@@ -655,6 +680,110 @@ mod tests {
                 .any(|window| window == b"app_user"),
             "plaintext profile data must not be written to profiles.enc"
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn state_encryption_rejects_wrong_key_tampering_and_truncation() {
+        let key = [7u8; 32];
+        let wrong_key = [8u8; 32];
+        let ciphertext = encrypt_state(&key, b"hello world").expect("encrypt");
+        assert_eq!(
+            decrypt_state(&key, &ciphertext).expect("decrypt"),
+            b"hello world"
+        );
+        assert!(decrypt_state(&wrong_key, &ciphertext).is_err());
+
+        let mut tampered = ciphertext.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        assert!(decrypt_state(&key, &tampered).is_err());
+
+        assert!(decrypt_state(&key, &ciphertext[..STATE_MAGIC.len()]).is_err());
+        assert!(decrypt_state(&key, b"WRONG-MAGIC").is_err());
+    }
+
+    #[test]
+    fn state_key_hex_round_trips_and_rejects_bad_input() {
+        let key = [0xab; 32];
+        let encoded = encode_state_key(&key);
+        assert_eq!(encoded.len(), 64);
+        assert_eq!(*decode_state_key(&encoded).expect("decode"), key);
+        assert!(decode_state_key("short").is_err());
+        assert!(decode_state_key(&"z".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn write_private_file_replaces_atomically_with_private_permissions() {
+        let directory = temp_dir("private");
+        let path = directory.join("state.enc");
+        write_private_file(&path, b"first").expect("first write");
+        write_private_file(&path, b"second").expect("second write");
+        assert_eq!(fs::read(&path).expect("read"), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn save_profile_validates_inputs_and_handles_sqlite_crud() {
+        let directory = temp_dir("sqlite-crud");
+        let store = ProfileStore::with_key(&directory, [3u8; 32]);
+        let bad_name = store.save_profile(
+            ProfileInput {
+                id: None,
+                name: "   ".into(),
+                engine: Engine::Sqlite,
+                host: String::new(),
+                port: 0,
+                database: String::new(),
+                username: String::new(),
+                ssl_mode: SslMode::Disable,
+                sqlite_path: "/tmp/a.db".into(),
+            },
+            None,
+        );
+        assert!(bad_name.is_err());
+
+        let saved = store
+            .save_profile(
+                ProfileInput {
+                    id: None,
+                    name: "Local SQLite".into(),
+                    engine: Engine::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: String::new(),
+                    username: String::new(),
+                    ssl_mode: SslMode::Disable,
+                    sqlite_path: "/tmp/a.db".into(),
+                },
+                None,
+            )
+            .expect("save sqlite");
+        let updated = store
+            .save_profile(
+                ProfileInput {
+                    id: Some(saved.id),
+                    name: "Local SQLite 2".into(),
+                    engine: Engine::Sqlite,
+                    host: String::new(),
+                    port: 0,
+                    database: String::new(),
+                    username: String::new(),
+                    ssl_mode: SslMode::Disable,
+                    sqlite_path: "/tmp/b.db".into(),
+                },
+                None,
+            )
+            .expect("update sqlite target");
+        assert_eq!(updated.sqlite_path, "/tmp/b.db");
+        store.delete_profile(saved.id).expect("delete sqlite");
+        assert!(store.load_profiles().expect("load").is_empty());
         let _ = fs::remove_dir_all(directory);
     }
 }

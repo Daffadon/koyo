@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use gpui_kit::InteractiveElement;
 use gpui_kit::component::Sizable as _;
@@ -88,6 +88,11 @@ impl KoyoApp {
         let profile = tab.profile.clone();
         let connection = tab.connection.clone();
         let tables = &tab.tables;
+        let editable_tables: HashSet<(&str, &str)> = tables
+            .iter()
+            .filter(|table| table.editable)
+            .map(|table| (table.schema.as_str(), table.name.as_str()))
+            .collect();
         let objects = &tab.schema_objects;
         let expanded = &tab.expanded;
         let selected_table = match &tab.body {
@@ -114,7 +119,7 @@ impl KoyoApp {
         };
         let can_switch = match &tab.body {
             TabBody::Query(query) => !query.running,
-            TabBody::Table(table) => table.staged.is_empty(),
+            TabBody::Table(table) => !table.exporting && (!live || table.staged.is_empty()),
         };
         let switch_tooltip = match (live, &profile) {
             (true, _) => "Switch connection",
@@ -293,9 +298,7 @@ impl KoyoApp {
                             .is_some_and(|(selected_schema, selected_name)| {
                                 selected_schema == &schema_name && selected_name == &name
                             });
-                    let editable = tables.iter().any(|table| {
-                        table.schema == schema_name && table.name == name && table.editable
-                    });
+                    let editable = editable_tables.contains(&(schema_name.as_str(), name.as_str()));
                     let opens_table = matches!(
                         kind,
                         koyo_core::models::SchemaObjectKind::Table
@@ -695,7 +698,7 @@ impl KoyoApp {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(super::widgets::logo_mark(&palette, 28.0))
+                            .child(super::widgets::logo_mark(28.0))
                             .child(
                                 div()
                                     .text_sm()
@@ -708,7 +711,6 @@ impl KoyoApp {
                             .items_center()
                             .gap_1()
                             .child(super::widgets::button_tooltip(
-                                "top-tooltip-manage",
                                 Button::new("manage-connections")
                                     .ghost()
                                     .compact()
@@ -719,7 +721,6 @@ impl KoyoApp {
                                 "Manage connections",
                             ))
                             .child(super::widgets::button_tooltip(
-                                "top-tooltip-settings",
                                 Button::new("settings")
                                     .ghost()
                                     .compact()
@@ -731,7 +732,6 @@ impl KoyoApp {
                                 "Settings",
                             ))
                             .child(super::widgets::button_tooltip(
-                                "top-tooltip-collapse-sidebar",
                                 Button::new("collapse-sidebar")
                                     .ghost()
                                     .compact()
@@ -888,7 +888,6 @@ impl KoyoApp {
                                 .items_center()
                                 .gap_1()
                                 .child(super::widgets::button_tooltip(
-                                    ("tooltip-expand-all", tab_id),
                                     Button::new("expand-all-tables")
                                         .ghost()
                                         .compact()
@@ -899,7 +898,6 @@ impl KoyoApp {
                                     "Expand all",
                                 ))
                                 .child(super::widgets::button_tooltip(
-                                    ("tooltip-collapse-all", tab_id),
                                     Button::new("collapse-all-tables")
                                         .ghost()
                                         .compact()
@@ -911,7 +909,6 @@ impl KoyoApp {
                                 ))
                                 .when(live, |this| {
                                     this.child(super::widgets::button_tooltip(
-                                        ("tooltip-refresh-tables", tab_id),
                                         Button::new("refresh-tables")
                                             .ghost()
                                             .compact()

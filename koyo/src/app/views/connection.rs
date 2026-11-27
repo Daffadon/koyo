@@ -214,7 +214,6 @@ pub(super) fn render_dialog(
                                         .child(engine_label(profile.engine)),
                                 )
                                 .child(button_tooltip(
-                                    ("tooltip-profile-edit", index),
                                     Button::new(("profile-edit", index))
                                         .ghost()
                                         .compact()
@@ -226,7 +225,6 @@ pub(super) fn render_dialog(
                                     "Edit connection",
                                 ))
                                 .child(button_tooltip(
-                                    ("tooltip-profile-delete", index),
                                     Button::new(("profile-delete", index))
                                         .ghost()
                                         .compact()
@@ -452,8 +450,8 @@ pub(super) fn render_dialog(
                         Button::new("dialog-cancel")
                             .secondary()
                             .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.close_connection_dialog(cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.close_connection_dialog(window, cx);
                             })),
                     )
                     .child(
@@ -479,9 +477,9 @@ pub(super) fn render_dialog(
         .flex()
         .items_center()
         .justify_center()
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
-                this.close_connection_dialog(cx);
+                this.close_connection_dialog(window, cx);
             }
         }))
         .child(
@@ -490,8 +488,8 @@ pub(super) fn render_dialog(
                 .absolute()
                 .inset_0()
                 .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.close_connection_dialog(cx);
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_connection_dialog(window, cx);
                 })),
         )
         .child(
@@ -538,8 +536,8 @@ pub(super) fn render_dialog(
                                 .icon(IconName::Close)
                                 .accessibility_label("Close connection dialog")
                                 .tooltip("Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_connection_dialog(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_connection_dialog(window, cx);
                                 })),
                         ),
                 )

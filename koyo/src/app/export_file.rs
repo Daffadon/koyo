@@ -15,11 +15,7 @@ pub(crate) fn create_private_temp(path: &Path) -> Result<(File, PathBuf), String
     {
         return Err("The selected export folder does not exist.".into());
     }
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("export");
-    let temporary_name = format!(".{file_name}.{}.tmp", Uuid::new_v4());
+    let temporary_name = format!(".koyo-export-{}.tmp", Uuid::new_v4());
     let temporary_path = path.with_file_name(temporary_name);
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);

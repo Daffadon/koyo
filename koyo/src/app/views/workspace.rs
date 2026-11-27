@@ -71,7 +71,12 @@ impl KoyoApp {
                     ))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.persist_state(cx)),
+                        cx.listener(|this, _, _, cx| {
+                            if this.split_resizing {
+                                this.split_resizing = false;
+                                this.persist_state(cx);
+                            }
+                        }),
                     )
                     .child(
                         div()
@@ -126,7 +131,12 @@ impl KoyoApp {
                     ))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| this.persist_state(cx)),
+                        cx.listener(|this, _, _, cx| {
+                            if this.split_resizing {
+                                this.split_resizing = false;
+                                this.persist_state(cx);
+                            }
+                        }),
                     )
                     .child(
                         div()
@@ -307,7 +317,6 @@ impl KoyoApp {
                     .when(focused, |this| this.bg(palette.panel))
                     .when(show_sidebar_toggle && !sidebar_open, |this| {
                         this.child(widgets::button_tooltip(
-                            "top-tooltip-sidebar",
                             Button::new("expand-sidebar")
                                 .ghost()
                                 .compact()
@@ -328,7 +337,6 @@ impl KoyoApp {
                                 .selected_index(selected)
                                 .children(tabs)
                                 .suffix(widgets::top_bar_tooltip(
-                                    ("top-tooltip-new", index),
                                     Button::new(("pane-new-tab", index))
                                         .ghost()
                                         .compact()
@@ -351,7 +359,6 @@ impl KoyoApp {
                             Pane::Secondary => IconName::ArrowLeft,
                         };
                         this.child(widgets::top_bar_tooltip(
-                            ("top-tooltip-move", index),
                             Button::new(format!("move-tab-{pane:?}"))
                                 .flex_shrink_0()
                                 .ghost()
@@ -370,7 +377,6 @@ impl KoyoApp {
                                 .items_center()
                                 .gap_1()
                                 .child(widgets::top_bar_tooltip(
-                                    "top-tooltip-ai",
                                     Button::new("toggle-ai")
                                         .when(ai_open, |this| this.secondary())
                                         .when(!ai_open, |this| this.ghost())
@@ -382,7 +388,6 @@ impl KoyoApp {
                                     if ai_open { "Hide AI" } else { "Show AI" },
                                 ))
                                 .child(widgets::top_bar_tooltip(
-                                    "top-tooltip-split-vertical",
                                     Button::new("split-vertical")
                                         .when(split == Some(SplitAxis::Vertical), |this| {
                                             this.secondary()
@@ -402,7 +407,6 @@ impl KoyoApp {
                                     },
                                 ))
                                 .child(widgets::top_bar_tooltip(
-                                    "top-tooltip-split-horizontal",
                                     Button::new("split-horizontal")
                                         .when(split == Some(SplitAxis::Horizontal), |this| {
                                             this.secondary()
@@ -519,7 +523,6 @@ impl KoyoApp {
                         )
                         .label(title)
                         .suffix(widgets::button_tooltip(
-                            ("tooltip-tab-close", tab_id),
                             Button::new(("tab-close", tab_id))
                                 .ghost()
                                 .compact()

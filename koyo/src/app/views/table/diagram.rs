@@ -197,8 +197,10 @@ fn open_related_from_menu(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relation_ref(
     tab_id: u64,
+    role: &str,
     schema: &str,
     table: &str,
     column: &str,
@@ -222,7 +224,9 @@ fn relation_ref(
         table.to_string()
     };
     h_flex()
-        .id(SharedString::from(format!("relationship-{index}-{full}")))
+        .id(SharedString::from(format!(
+            "relationship-{tab_id}-{role}-{index}-{full}"
+        )))
         .max_w(px(320.0))
         .min_w(px(0.0))
         .items_center()
@@ -305,6 +309,7 @@ fn relation_ref(
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relationship_row(
     tab_id: u64,
     fk: &ForeignKeyInfo,
@@ -346,6 +351,7 @@ fn relationship_row(
         })
         .child(relation_ref(
             tab_id,
+            "from",
             from_schema,
             from_table,
             from_column,
@@ -363,6 +369,7 @@ fn relationship_row(
         )
         .child(relation_ref(
             tab_id,
+            "to",
             to_schema,
             to_table,
             to_column,
@@ -379,7 +386,7 @@ fn relationship_row(
             this.child(
                 div()
                     .id(SharedString::from(format!(
-                        "relationship-constraint-{index}"
+                        "relationship-constraint-{tab_id}-{index}"
                     )))
                     .max_w(px(180.0))
                     .flex_shrink_0()
@@ -471,7 +478,12 @@ fn relationships_panel(
     panel.into_any_element()
 }
 
-fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> AnyElement {
+fn indexes_panel(
+    tab_id: u64,
+    table: &TableTab,
+    palette: &Palette,
+    mono: &SharedString,
+) -> AnyElement {
     let mut panel = v_flex()
         .flex_1()
         .min_w(px(340.0))
@@ -541,7 +553,7 @@ fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> An
                             .gap_0p5()
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("index-name-{index}")))
+                                    .id(SharedString::from(format!("index-name-{tab_id}-{index}")))
                                     .min_w(px(0.0))
                                     .text_xs()
                                     .font_family(mono.clone())
@@ -555,7 +567,9 @@ fn indexes_panel(table: &TableTab, palette: &Palette, mono: &SharedString) -> An
                             )
                             .child(
                                 div()
-                                    .id(SharedString::from(format!("index-columns-{index}")))
+                                    .id(SharedString::from(format!(
+                                        "index-columns-{tab_id}-{index}"
+                                    )))
                                     .min_w(px(0.0))
                                     .text_xs()
                                     .font_family(mono.clone())
@@ -715,7 +729,7 @@ pub(super) fn render_diagram(
                         .min_w(px(340.0))
                         .gap_4()
                         .child(relationships_panel(tab_id, table, palette, mono, cx))
-                        .child(indexes_panel(table, palette, mono)),
+                        .child(indexes_panel(tab_id, table, palette, mono)),
                 ),
         )
         .child(ddl_panel(tab_id, engine, table, page, palette, mono, cx))

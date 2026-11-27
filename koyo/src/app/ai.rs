@@ -421,9 +421,17 @@ fn split_utf8(text: &str, max_bytes: usize) -> Vec<&str> {
     parts
 }
 
-async fn complete(config: &AiConfig, messages: &[AiMessage]) -> Result<String, String> {
+async fn complete_with_mode(
+    config: &AiConfig,
+    messages: &[AiMessage],
+    raw_system_prompt: bool,
+) -> Result<String, String> {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
-    let stream = stream(config, messages, sender);
+    let stream = async {
+        if let Err(error) = stream_inner(config, messages, &sender, raw_system_prompt).await {
+            let _ = sender.send(AiStreamEvent::Error(error)).await;
+        }
+    };
     tokio::pin!(stream);
     let mut text = String::new();
     let mut error = None;
@@ -455,6 +463,11 @@ async fn complete(config: &AiConfig, messages: &[AiMessage]) -> Result<String, S
     Ok(text)
 }
 
+#[cfg(test)]
+async fn complete(config: &AiConfig, messages: &[AiMessage]) -> Result<String, String> {
+    complete_with_mode(config, messages, false).await
+}
+
 pub(crate) async fn compact(config: &AiConfig, messages: &[AiMessage]) -> Result<String, String> {
     let chunks = compact_chunks(messages, AI_COMPACT_CHUNK_BYTES);
     if chunks.is_empty() {
@@ -466,31 +479,43 @@ pub(crate) async fn compact(config: &AiConfig, messages: &[AiMessage]) -> Result
         chunk_config.system_prompt = COMPACT_AI_PROMPT.into();
         chunk_config.temperature = Some(0.1);
         chunk_config.max_tokens = 1024;
-        summaries.push(complete(&chunk_config, &chunk).await?);
+        summaries.push(complete_with_mode(&chunk_config, &chunk, true).await?);
     }
     let mut rounds = 0;
     while summaries.len() > 1 {
-        let mut groups = Vec::new();
+        let prev_len = summaries.len();
+        let mut groups: Vec<(String, usize)> = Vec::new();
         let mut group = String::new();
+        let mut count = 0usize;
         for summary in summaries {
             if !group.is_empty() && group.len() + summary.len() + 2 > AI_COMPACT_CHUNK_BYTES {
-                groups.push(std::mem::take(&mut group));
+                groups.push((std::mem::take(&mut group), count));
+                count = 0;
             }
             if !group.is_empty() {
                 group.push_str("\n\n");
             }
             group.push_str(&summary);
+            count += 1;
         }
         if !group.is_empty() {
-            groups.push(group);
+            groups.push((group, count));
+        }
+        if groups.len() >= prev_len {
+            summaries = groups.into_iter().map(|(text, _)| text).collect();
+            break;
         }
         let mut merged = Vec::with_capacity(groups.len());
-        for group in groups {
+        for (group, group_count) in groups {
+            if group_count == 1 {
+                merged.push(group);
+                continue;
+            }
             let mut merge_config = config.clone();
             merge_config.system_prompt = MERGE_AI_PROMPT.into();
             merge_config.temperature = Some(0.1);
             merge_config.max_tokens = 1024;
-            merged.push(complete(&merge_config, &[AiMessage::user(group)]).await?);
+            merged.push(complete_with_mode(&merge_config, &[AiMessage::user(group)], true).await?);
         }
         summaries = merged;
         rounds += 1;
@@ -534,6 +559,23 @@ fn effective_system_prompt(custom: &str) -> String {
     }
 }
 
+fn is_loopback_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        return ip.is_loopback();
+    }
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
+        .parse::<std::net::Ipv6Addr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 impl AiConfig {
     pub(crate) fn parse(json: &str) -> Result<Self, String> {
         let config: Self = serde_json::from_str(json)
@@ -548,11 +590,8 @@ impl AiConfig {
         if scheme != "https" && scheme != "http" {
             return Err("AI base_url must start with https:// or http://.".into());
         }
-        if scheme == "http" {
-            let loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-            if !loopback {
-                return Err("AI base_url must use https:// unless it points at localhost.".into());
-            }
+        if scheme == "http" && !is_loopback_host(url.host_str()) {
+            return Err("AI base_url must use https:// unless it points at localhost.".into());
         }
         if config.model.trim().is_empty() {
             return Err("AI configuration needs a non-empty model.".into());
@@ -561,7 +600,21 @@ impl AiConfig {
     }
 
     fn endpoint(&self) -> String {
-        let base = self.base_url.trim().trim_end_matches('/');
+        let trimmed = self.base_url.trim();
+        if let Ok(mut url) = reqwest::Url::parse(trimmed) {
+            let path = url.path().trim_end_matches('/');
+            if path.ends_with("/chat/completions") {
+                if url.path().ends_with('/') {
+                    let normalized = path.to_string();
+                    url.set_path(&normalized);
+                }
+            } else {
+                let new_path = format!("{path}/chat/completions");
+                url.set_path(&new_path);
+            }
+            return url.into();
+        }
+        let base = trimmed.trim_end_matches('/');
         if base.ends_with("/chat/completions") {
             base.to_string()
         } else {
@@ -624,7 +677,7 @@ struct ApiError {
 
 /// Run a streaming chat completion and forward deltas to `sink`.
 pub(crate) async fn stream(config: &AiConfig, messages: &[AiMessage], sink: Sender<AiStreamEvent>) {
-    if let Err(error) = stream_inner(config, messages, &sink).await {
+    if let Err(error) = stream_inner(config, messages, &sink, false).await {
         let _ = sink.send(AiStreamEvent::Error(error)).await;
     }
 }
@@ -633,6 +686,7 @@ async fn stream_inner(
     config: &AiConfig,
     messages: &[AiMessage],
     sink: &Sender<AiStreamEvent>,
+    raw_system_prompt: bool,
 ) -> Result<(), String> {
     crate::app::ensure_crypto_provider();
     let client = reqwest::Client::builder()
@@ -643,7 +697,11 @@ async fn stream_inner(
         .map_err(|error| format!("Could not create the AI HTTP client: {error}"))?;
 
     let mut api_messages = Vec::with_capacity(messages.len() + 1);
-    let system_prompt = effective_system_prompt(&config.system_prompt);
+    let system_prompt = if raw_system_prompt {
+        config.system_prompt.clone()
+    } else {
+        effective_system_prompt(&config.system_prompt)
+    };
     api_messages.push(ApiMessage {
         role: "system",
         content: &system_prompt,
@@ -683,9 +741,7 @@ async fn stream_inner(
         log::warn!("AI endpoint returned redirect status {status}; redirects are disabled");
     }
     if !status.is_success() {
-        let body = read_limited_text(response, MAX_AI_ERROR_BYTES)
-            .await
-            .unwrap_or_default();
+        let body = read_truncated_text(response, MAX_AI_ERROR_BYTES).await;
         return Err(format!(
             "AI request failed with {status}: {}",
             api_error_message(&body).unwrap_or_else(|| truncate(&body, 500))
@@ -774,6 +830,9 @@ fn take_sse_line(buffer: &mut Vec<u8>) -> Option<Result<String, String>> {
         Ok(line) => line,
         Err(error) => return Some(Err(format!("AI stream was not UTF-8: {error}"))),
     };
+    if line.ends_with('\n') {
+        line.pop();
+    }
     if line.ends_with('\r') {
         line.pop();
     }
@@ -853,6 +912,21 @@ async fn read_limited_text(
         bytes.extend_from_slice(&chunk);
     }
     String::from_utf8(bytes).map_err(|error| format!("AI response was not UTF-8: {error}"))
+}
+
+async fn read_truncated_text(mut response: reqwest::Response, limit: usize) -> String {
+    let mut bytes = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let remaining = limit.saturating_sub(bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if bytes.len() >= limit {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn api_error_message(body: &str) -> Option<String> {
@@ -938,6 +1012,17 @@ mod tests {
         assert_eq!(camel.endpoint(), "https://example.test/v1/chat/completions");
         assert_eq!(camel.max_tokens, 32);
         assert_eq!(camel.system_prompt, "hi");
+
+        let azure = AiConfig::parse(
+            r#"{"base_url":"https://example.test/openai/deployments/gpt4?api-version=2024-06-01","model":"gpt4"}"#,
+        )
+        .expect("query string config");
+        assert_eq!(
+            azure.endpoint(),
+            "https://example.test/openai/deployments/gpt4/chat/completions?api-version=2024-06-01"
+        );
+
+        assert!(AiConfig::parse(r#"{"base_url":"http://[::1]:11434/v1","model":"m"}"#).is_ok());
     }
 
     #[test]
@@ -1301,14 +1386,14 @@ mod tests {
     }
 
     #[test]
-    fn sse_line_decoder_waits_for_complete_utf8() {
+    fn sse_line_decoder_waits_for_complete_utf8_and_strips_crlf() {
         let mut buffer = vec![0xC3];
         assert!(take_sse_line(&mut buffer).is_none());
-        buffer.extend_from_slice(&[0xA9, b'\n']);
+        buffer.extend_from_slice(&[0xA9, b'\r', b'\n']);
         let line = take_sse_line(&mut buffer)
             .expect("complete line")
             .expect("valid UTF-8");
-        assert_eq!(line.trim_end(), "é");
+        assert_eq!(line, "é");
     }
 
     #[test]

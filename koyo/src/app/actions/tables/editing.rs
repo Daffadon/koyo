@@ -91,6 +91,7 @@ impl KoyoApp {
 
         let manager = self.manager.clone();
         let session_id = connection.session_id;
+        let engine = connection.profile.engine;
         self.spawn_task(
             cx,
             tab_id,
@@ -103,6 +104,7 @@ impl KoyoApp {
                         &cancel_manager,
                         session_id,
                         operation_id,
+                        engine,
                         async move {
                             database::apply_grid_changes(
                                 &manager,
@@ -154,6 +156,7 @@ impl KoyoApp {
                         if error.starts_with("COMMIT_OUTCOME_UNKNOWN:") {
                             table.staged.clear();
                             table.selected_keys.clear();
+                            table.total_rows_cache = None;
                             let message = "Commit result could not be confirmed. Page reloaded; verify data before retrying.";
                             this.tabs[index].notice = message.into();
                             this.push_toast(
@@ -370,10 +373,7 @@ impl KoyoApp {
                 .filter(|page| page.editable)
                 .and_then(|page| {
                     let row = page.rows.get(row_index)?;
-                    let key_truncated = page.columns.iter().enumerate().any(|(index, column)| {
-                        column.primary_key && row.truncated.get(index).copied().unwrap_or(false)
-                    });
-                    Some((row.clone(), key_truncated))
+                    Some((row.clone(), key_is_truncated(page, row)))
                 })
         else {
             return;

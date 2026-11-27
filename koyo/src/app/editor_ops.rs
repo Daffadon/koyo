@@ -6,9 +6,9 @@ pub(crate) struct EditorEdit {
 }
 
 fn line_index_at(text: &str, offset: usize) -> usize {
-    text[..offset.min(text.len())]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
+    text.as_bytes()[..offset.min(text.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
         .count()
 }
 
@@ -42,17 +42,21 @@ fn block_span(lines: &[String], first: usize, last: usize) -> Range<usize> {
 }
 
 fn caret_in_line(text: &str, offset: usize) -> usize {
-    let start = text[..offset.min(text.len())]
+    let offset = text.floor_char_boundary(offset.min(text.len()));
+    let start = text[..offset]
         .rfind('\n')
         .map(|index| index + 1)
         .unwrap_or(0);
-    offset.min(text.len()).saturating_sub(start)
+    offset.saturating_sub(start)
 }
 
 fn cursor_after(lines: &[String], first: usize, column: usize) -> usize {
     let start = line_start(lines, first);
-    let width = lines.get(first).map(String::len).unwrap_or(0);
-    start + column.min(width)
+    let clamped = lines
+        .get(first)
+        .map(|line| line.floor_char_boundary(column.min(line.len())))
+        .unwrap_or(0);
+    start + clamped
 }
 
 fn commented(line: &str) -> bool {
@@ -274,5 +278,25 @@ mod tests {
         let edit = move_line_up(text, 6..6);
         assert_eq!(edit.text, "two\none");
         assert_eq!(edit.selection, 2..2);
+    }
+
+    #[test]
+    fn handles_multibyte_utf8_selections_without_panicking() {
+        let text = "SELECT 'café'\nSELECT '日本語'";
+        let first_end = "SELECT 'café'".len();
+        let edit = toggle_comment(text, 0..first_end);
+        assert_eq!(edit.text, "-- SELECT 'café'\nSELECT '日本語'");
+        assert!(edit.text.is_char_boundary(edit.selection.start));
+        assert!(edit.text.is_char_boundary(edit.selection.end));
+
+        let second_start = first_end + 1;
+        let moved = move_line_up(text, second_start..text.len());
+        assert_eq!(moved.text, "SELECT '日本語'\nSELECT 'café'");
+
+        let dup = duplicate_line(text, 0..first_end);
+        assert_eq!(dup.text, "SELECT 'café'\nSELECT 'café'\nSELECT '日本語'");
+
+        let del = delete_line(text, second_start..text.len());
+        assert_eq!(del.text, "SELECT 'café'");
     }
 }

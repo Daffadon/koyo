@@ -46,11 +46,11 @@ impl ThemeChoice {
         }
     }
 
-    pub(crate) fn preview_colors(self) -> [gpui_kit::Hsla; 3] {
+    pub(crate) fn preview_colors(self) -> [gpui_kit::Hsla; 2] {
         let colors = match self {
-            Self::Dark => [0x050505, 0x080808, 0x5FE7FF],
-            Self::Light => [0xF4F2FC, 0xECE9F7, 0x2E55C7],
-            Self::Kimi => [0x05060F, 0x1B2A6B, 0x7FD1F2],
+            Self::Dark => [0x050505, 0x080808],
+            Self::Light => [0xF4F2FC, 0xECE9F7],
+            Self::Kimi => [0x05060F, 0x1B2A6B],
         };
         colors.map(|hex| gpui_kit::rgb(hex).into())
     }

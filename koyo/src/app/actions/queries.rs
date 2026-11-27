@@ -139,7 +139,8 @@ impl KoyoApp {
         if query.running {
             return;
         }
-        if self.tabs[index].connection.is_some() {
+        if let Some(connection) = self.tabs[index].connection.as_ref() {
+            let engine = connection.profile.engine;
             let (selected, full) = {
                 let editor = query.editor.read(cx);
                 (
@@ -152,7 +153,7 @@ impl KoyoApp {
             } else {
                 selected
             };
-            if let Some(risk) = sql_risk(&sql) {
+            if let Some(risk) = sql_risk(&sql, engine) {
                 let (title, description) = match risk {
                     SqlRisk::UnfilteredDelete => (
                         "Run DELETE without WHERE?",
@@ -237,6 +238,7 @@ impl KoyoApp {
         let started = Instant::now();
         let manager = self.manager.clone();
         let session_id = connection.session_id;
+        let engine = connection.profile.engine;
         let query_timeout = Duration::from_secs(self.query_timeout_secs);
         self.spawn_task(
             cx,
@@ -250,6 +252,7 @@ impl KoyoApp {
                         &cancel_manager,
                         session_id,
                         operation_id,
+                        engine,
                         async move {
                             database::run_sql(&manager, session_id, operation_id, sql).await
                         },
@@ -261,7 +264,7 @@ impl KoyoApp {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
-                let engine = this.tabs[index].engine().unwrap_or(Engine::Postgres);
+                let engine = this.tabs[index].engine().unwrap_or(engine);
                 let TabBody::Query(query) = &mut this.tabs[index].body else {
                     return;
                 };
@@ -317,6 +320,7 @@ impl KoyoApp {
                         pending_definition = definition_kind
                             .and_then(|kind| definition_from_output(engine, kind, &output));
                         query.definition_kind = None;
+                        query.cached_json_result.borrow_mut().take();
                         query.output = Some(output);
                         query.active_result = 0;
                         query.error.clear();
@@ -353,12 +357,14 @@ impl KoyoApp {
                 if let Some(error) = lost {
                     this.mark_connection_lost(session_id, &format!("Connection lost: {error}"), cx);
                 } else {
-                    let open = this.session_transaction_open(session_id);
-                    this.set_session_transaction(
-                        session_id,
-                        transaction_state_after(open, &transaction_sql),
-                        cx,
-                    );
+                    if success {
+                        let open = this.session_transaction_open(session_id);
+                        this.set_session_transaction(
+                            session_id,
+                            transaction_state_after(open, &transaction_sql, engine),
+                            cx,
+                        );
+                    }
                     if let Some(toast) = toast {
                         this.push_toast(ToastCategory::Queries, tab_id.to_string(), toast, cx);
                     }
@@ -412,9 +418,12 @@ impl KoyoApp {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
-                match &mut this.tabs[index].body {
-                    TabBody::Query(query) => query.cancelling = false,
-                    TabBody::Table(table) => table.cancelling = false,
+                let same_operation = match &this.tabs[index].body {
+                    TabBody::Query(query) => query.operation_id == Some(operation_id),
+                    TabBody::Table(table) => table.operation_id == Some(operation_id),
+                };
+                if !same_operation {
+                    return;
                 }
                 match result {
                     Ok(sent) => {
@@ -429,7 +438,13 @@ impl KoyoApp {
                             this.tabs[index].notice = "Cancellation requested.".into();
                         }
                     }
-                    Err(error) => this.tabs[index].notice = error,
+                    Err(error) => {
+                        match &mut this.tabs[index].body {
+                            TabBody::Query(query) => query.cancelling = false,
+                            TabBody::Table(table) => table.cancelling = false,
+                        }
+                        this.tabs[index].notice = error;
+                    }
                 }
                 cx.notify();
             },
@@ -663,7 +678,7 @@ impl KoyoApp {
                 at: unix_seconds(),
             },
         );
-        self.history.truncate(self.history_limit);
+        trim_history(&mut self.history, self.history_limit);
         self.persist_state(cx);
     }
 
@@ -689,11 +704,12 @@ impl KoyoApp {
             return;
         };
         query.editor.update(cx, |editor, cx| {
-            editor.set_value(sql.to_string(), window, cx);
+            editor.replace_all(sql.to_string(), window, cx);
         });
         // History SQL is not a starter; a later connection must not replace it.
         query.starter = String::new().into();
         query.pending_run = false;
+        query.definition_kind = None;
         cx.notify();
     }
 
@@ -727,9 +743,10 @@ impl KoyoApp {
         };
         let profile = self.history_profile(&entry);
         let tab_id = if let Some(tab_index) = self.focused_index() {
-            if matches!(self.tabs[tab_index].body, TabBody::Query(_))
-                && !matches!(&self.tabs[tab_index].body, TabBody::Query(query) if query.running)
-            {
+            if matches!(
+                &self.tabs[tab_index].body,
+                TabBody::Query(query) if !query.running && !query_has_unsaved_sql(query, cx)
+            ) {
                 self.tabs[tab_index].id
             } else {
                 let tab = self.make_query_tab(profile, window, cx);
@@ -765,7 +782,9 @@ impl KoyoApp {
             .focused_index()
             .filter(|index| match &self.tabs[*index].body {
                 TabBody::Query(query) => {
-                    !query.running && matches_profile(self.tabs[*index].profile.as_ref())
+                    !query.running
+                        && !query_has_unsaved_sql(query, cx)
+                        && matches_profile(self.tabs[*index].profile.as_ref())
                 }
                 TabBody::Table(_) => false,
             })

@@ -1,12 +1,18 @@
-use crate::common::{self, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT};
+use crate::common::{
+    self, MAX_AFFECTED_ROWS, MAX_RESULT_SETS, QUERY_ROW_LIMIT, QueryBudget, TABLE_PAGE_LIMIT,
+    TableMeta,
+};
 use crate::models::{
     ApplySummary, ColumnCatalogEntry, ColumnInfo, ConnectionProfile, FilterOperator,
     ForeignKeyInfo, GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet,
     SchemaObject, SchemaObjectKind, SslMode, TableFilter, TableIndexInfo, TablePage, TableSort,
     TableSummary,
 };
+use mysql_async::consts::{ColumnFlags, StatusFlags};
 use mysql_async::prelude::Queryable;
-use mysql_async::{Conn, Opts, OptsBuilder, Params, Row as MysqlRow, SslOpts, TxOpts, Value};
+use mysql_async::{
+    Column as MysqlColumn, Conn, Opts, OptsBuilder, Params, Row as MysqlRow, SslOpts, TxOpts, Value,
+};
 use std::collections::BTreeMap;
 
 const SYSTEM_SCHEMAS: &str = "('information_schema', 'mysql', 'performance_schema', 'sys')";
@@ -14,7 +20,6 @@ const SYSTEM_SCHEMAS: &str = "('information_schema', 'mysql', 'performance_schem
 pub struct MysqlSession {
     pub conn: Conn,
     pub connection_id: u32,
-    pub transaction_open: bool,
 }
 
 pub async fn connect(
@@ -51,7 +56,6 @@ pub async fn connect(
         MysqlSession {
             conn,
             connection_id,
-            transaction_open: false,
         },
         server_version,
         current_user,
@@ -98,14 +102,15 @@ pub async fn list_tables(session: &mut MysqlSession) -> Result<Vec<TableSummary>
 }
 
 pub async fn list_columns(session: &mut MysqlSession) -> Result<Vec<ColumnCatalogEntry>, String> {
+    let sql = format!(
+        "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA NOT IN {SYSTEM_SCHEMAS}
+         ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION"
+    );
     let rows: Vec<MysqlRow> = session
         .conn
-        .query(
-            "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME
-             FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE()
-             ORDER BY TABLE_NAME, ORDINAL_POSITION",
-        )
+        .query(sql)
         .await
         .map_err(|error| error.to_string())?;
     rows.into_iter()
@@ -227,7 +232,10 @@ pub async fn list_indexes(
     let mut indexes: Vec<TableIndexInfo> = Vec::new();
     for row in rows {
         let name = row_string(&row, 0)?;
-        let column = row_string(&row, 1)?;
+        let column = row
+            .as_ref(1)
+            .and_then(value_text)
+            .unwrap_or_else(|| "(expression)".into());
         let unique = row_string(&row, 2)? != "1";
         if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
             index.columns.push(column);
@@ -248,25 +256,26 @@ pub async fn list_database_metadata(
 ) -> Result<Vec<MetadataGroup>, String> {
     let mut groups = Vec::new();
 
-    let rows: Vec<MysqlRow> = session
+    if let Ok(rows) = session
         .conn
-        .query("SELECT User, Host FROM mysql.user ORDER BY User, Host LIMIT 200")
+        .query::<MysqlRow, _>("SELECT User, Host FROM mysql.user ORDER BY User, Host LIMIT 200")
         .await
-        .map_err(|error| error.to_string())?;
-    let items = rows
-        .into_iter()
-        .map(|row| {
-            Ok(MetadataItem {
-                name: row_string(&row, 0)?,
-                detail: format!("@{}", row_string(&row, 1)?),
+    {
+        let items = rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(MetadataItem {
+                    name: row_string(&row, 0).ok()?,
+                    detail: format!("@{}", row_string(&row, 1).ok()?),
+                })
             })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    if !items.is_empty() {
-        groups.push(MetadataGroup {
-            name: "Users".into(),
-            items,
-        });
+            .collect::<Vec<_>>();
+        if !items.is_empty() {
+            groups.push(MetadataGroup {
+                name: "Users".into(),
+                items,
+            });
+        }
     }
 
     let rows: Vec<MysqlRow> = session
@@ -302,8 +311,9 @@ pub async fn list_database_metadata(
     let row: MysqlRow = session
         .conn
         .query_first(
-            "SELECT VERSION(), DATABASE(), CURRENT_USER(),
-                    @@character_set_database, @@collation_database",
+            "SELECT VERSION(), COALESCE(DATABASE(), '(none)'), CURRENT_USER(),
+                    COALESCE(@@character_set_database, 'unknown'),
+                    COALESCE(@@collation_database, 'unknown')",
         )
         .await
         .map_err(|error| error.to_string())?
@@ -461,59 +471,46 @@ pub async fn apply_changes(
         .map_err(|error| error.to_string())?;
     let mut applied = 0;
     for change in changes {
-        let result = match change {
-            GridChange::Insert { values } => {
-                let (sql, params) = build_insert(schema, table, &meta, values)?;
-                transaction
-                    .exec_drop(&sql, Params::Positional(params))
-                    .await
-                    .map(|_| transaction.affected_rows())
-                    .map_err(|error| error.to_string())
-            }
+        let built = match change {
+            GridChange::Insert { values } => build_insert(schema, table, &meta, values),
             GridChange::Update {
                 values,
                 original,
                 truncated,
                 ..
-            } => {
-                let (sql, params) =
-                    build_update(schema, table, &meta, values, original, &truncated)?;
-                transaction
-                    .exec_drop(&sql, Params::Positional(params))
-                    .await
-                    .map(|_| transaction.affected_rows())
-                    .map_err(|error| error.to_string())
-            }
+            } => build_update(schema, table, &meta, values, original, &truncated),
             GridChange::Delete {
                 original,
                 truncated,
                 ..
-            } => {
-                let (sql, params) = build_delete(schema, table, &meta, original, &truncated)?;
-                transaction
-                    .exec_drop(&sql, Params::Positional(params))
-                    .await
-                    .map(|_| transaction.affected_rows())
-                    .map_err(|error| error.to_string())
+            } => build_delete(schema, table, &meta, original, &truncated),
+        };
+        let (sql, params) = match built {
+            Ok(built) => built,
+            Err(error) => {
+                let _ = transaction.rollback().await;
+                return Err(error);
             }
         };
+        let result = transaction
+            .exec_drop(&sql, Params::Positional(params))
+            .await
+            .map(|_| transaction.affected_rows())
+            .map_err(|error| error.to_string());
         match result {
             Ok(count) => {
                 if let Err(error) = common::ensure_one_row(count) {
                     let _ = transaction.rollback().await;
-                    session.transaction_open = false;
                     return Err(error);
                 }
                 applied += 1;
             }
             Err(error) => {
                 let _ = transaction.rollback().await;
-                session.transaction_open = false;
                 return Err(error);
             }
         }
     }
-    session.transaction_open = false;
     transaction
         .commit()
         .await
@@ -527,7 +524,6 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
         .query_iter(sql)
         .await
         .map_err(|error| error.to_string())?;
-    update_transaction_flag(sql, &mut session.transaction_open);
     let mut result_sets = Vec::new();
     let mut affected_rows = Vec::new();
     let mut budget = QueryBudget::new();
@@ -537,10 +533,18 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
         if columns.is_empty() {
             let affected = result.affected_rows();
             if affected > 0 {
-                affected_rows.push(affected);
+                if affected_rows.len() < MAX_AFFECTED_ROWS {
+                    affected_rows.push(affected);
+                } else {
+                    truncated = true;
+                }
             }
             result.next().await.map_err(|error| error.to_string())?;
         } else {
+            if result_sets.len() >= MAX_RESULT_SETS || budget.exhausted() {
+                truncated = true;
+                break;
+            }
             let column_names = columns
                 .iter()
                 .map(|column| budget.column(column.name_str().into_owned()))
@@ -552,8 +556,13 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
                     break;
                 }
                 let mut values = Vec::with_capacity(columns.len());
-                for index in 0..columns.len() {
-                    values.push(budget.cell(row.as_ref(index).and_then(value_text)));
+                for (index, column) in columns.iter().enumerate() {
+                    values.push(
+                        budget.cell(
+                            row.as_ref(index)
+                                .and_then(|value| value_text_for_column(value, column)),
+                        ),
+                    );
                 }
                 rows.push(values);
             }
@@ -577,51 +586,28 @@ pub async fn run_sql(session: &mut MysqlSession, sql: &str) -> Result<QueryOutpu
     })
 }
 
-pub async fn has_open_transaction(session: &mut MysqlSession) -> Result<bool, String> {
-    if session.transaction_open {
-        return Ok(true);
-    }
-    if let Ok(Some(value)) = session
+async fn has_open_transaction(session: &mut MysqlSession) -> Result<bool, String> {
+    session
         .conn
-        .query_first::<u8, _>("SELECT @@in_transaction")
+        .query_drop("DO 0")
         .await
-    {
-        return Ok(value != 0);
+        .map_err(|error| format!("Could not read MySQL transaction state: {error}"))?;
+    if session.conn.last_ok_packet().is_some_and(|packet| {
+        packet
+            .status_flags()
+            .contains(StatusFlags::SERVER_STATUS_IN_TRANS)
+    }) {
+        return Ok(true);
     }
     if let Ok(Some(value)) = session
         .conn
         .query_first::<u8, _>("SELECT @@autocommit")
         .await
+        && value == 0
     {
-        if value == 0 {
-            return Ok(true);
-        }
+        return Ok(true);
     }
-    let value = session
-        .conn
-        .query_first::<u64, _>(
-            "SELECT COUNT(*) FROM information_schema.innodb_trx
-             WHERE trx_mysql_thread_id = CONNECTION_ID()",
-        )
-        .await
-        .map_err(|error| format!("Could not read MySQL transaction state: {error}"))?
-        .unwrap_or(0);
-    Ok(value > 0)
-}
-
-fn update_transaction_flag(sql: &str, open: &mut bool) {
-    let statement = sql
-        .trim_start()
-        .trim_start_matches('(')
-        .trim_start()
-        .to_ascii_lowercase();
-    if statement.starts_with("commit") || statement.starts_with("rollback") {
-        *open = false;
-    } else if statement.starts_with("begin") || statement.starts_with("start transaction") {
-        *open = true;
-    } else if statement.starts_with("set") && statement.contains("autocommit") {
-        *open = statement.contains("autocommit=0") || statement.contains("autocommit = 0");
-    }
+    Ok(false)
 }
 
 pub async fn cancel_query(opts: &Opts, connection_id: u32) -> Result<(), String> {
@@ -634,30 +620,26 @@ pub async fn cancel_query(opts: &Opts, connection_id: u32) -> Result<(), String>
         .map_err(|error| format!("Could not cancel MySQL query: {error}"))
 }
 
-struct MysqlMeta {
-    columns: Vec<ColumnInfo>,
-    primary_indices: Vec<usize>,
-}
-
-impl MysqlMeta {
-    fn editable(&self) -> bool {
-        !self.primary_indices.is_empty()
-    }
-}
-
 async fn load_meta(
     session: &mut MysqlSession,
     schema: &str,
     table: &str,
-) -> Result<MysqlMeta, String> {
+) -> Result<TableMeta, String> {
     let rows: Vec<MysqlRow> = session
         .conn
         .exec(
-            "SELECT COLUMN_NAME, COLUMN_TYPE, DATA_TYPE, IS_NULLABLE, COLUMN_KEY,
-                    EXTRA, COALESCE(GENERATION_EXPRESSION, '')
-             FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-             ORDER BY ORDINAL_POSITION",
+            "SELECT c.COLUMN_NAME, c.COLUMN_TYPE, c.DATA_TYPE, c.IS_NULLABLE,
+                    EXISTS (
+                        SELECT 1 FROM information_schema.STATISTICS s
+                        WHERE s.TABLE_SCHEMA = c.TABLE_SCHEMA
+                          AND s.TABLE_NAME = c.TABLE_NAME
+                          AND s.COLUMN_NAME = c.COLUMN_NAME
+                          AND s.INDEX_NAME = 'PRIMARY'
+                    ),
+                    c.EXTRA, COALESCE(c.GENERATION_EXPRESSION, '')
+             FROM information_schema.COLUMNS c
+             WHERE c.TABLE_SCHEMA = ? AND c.TABLE_NAME = ?
+             ORDER BY c.ORDINAL_POSITION",
             Params::Positional(vec![
                 Value::Bytes(schema.as_bytes().to_vec()),
                 Value::Bytes(table.as_bytes().to_vec()),
@@ -676,7 +658,7 @@ async fn load_meta(
             let extra = row_string(&row, 5)?;
             let generated_expression = row_string(&row, 6)?;
             let nullable = row_string(&row, 3)?.eq_ignore_ascii_case("YES");
-            let primary_key = row_string(&row, 4)?.eq_ignore_ascii_case("PRI");
+            let primary_key = row.get::<u8, _>(4).unwrap_or(0) != 0;
             let extra_upper = extra.to_ascii_uppercase();
             let generated = !generated_expression.is_empty()
                 || extra_upper.contains("VIRTUAL GENERATED")
@@ -695,26 +677,19 @@ async fn load_meta(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let primary_indices = columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| column.primary_key)
-        .map(|(index, _)| index)
-        .collect();
-    Ok(MysqlMeta {
-        columns,
-        primary_indices,
-    })
+    Ok(TableMeta::new(columns, None))
 }
 
 fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
     let limit = common::MAX_CELL_CHARS;
     if is_binary(column) {
+        let byte_limit = limit / 2;
         format!(
-            "CASE WHEN OCTET_LENGTH({identifier}) > {limit} THEN CONCAT(LEFT(HEX({identifier}), {}), ' [truncated]') ELSE HEX({identifier}) END",
-            limit * 2
+            "CASE WHEN OCTET_LENGTH({identifier}) > {byte_limit} THEN CONCAT(HEX(LEFT({identifier}, {byte_limit})), ' [truncated]') ELSE HEX({identifier}) END"
         )
+    } else if column.filter_type.eq_ignore_ascii_case("bit") {
+        format!("CAST({identifier} + 0 AS CHAR)")
     } else {
         let text = format!("CAST({identifier} AS CHAR)");
         format!(
@@ -749,15 +724,8 @@ fn build_filter_predicate(
             | FilterOperator::GreaterThanOrEqual => {
                 let value = value
                     .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
-                let operator = match filter.operator {
-                    FilterOperator::Equals => "=",
-                    FilterOperator::NotEquals => "<>",
-                    FilterOperator::LessThan => "<",
-                    FilterOperator::LessThanOrEqual => "<=",
-                    FilterOperator::GreaterThan => ">",
-                    FilterOperator::GreaterThanOrEqual => ">=",
-                    _ => unreachable!(),
-                };
+                let operator =
+                    common::comparison_sql(filter.operator).expect("comparison operator");
                 params.push(Value::Bytes(value.as_bytes().to_vec()));
                 format!("{identifier} {operator} ?")
             }
@@ -774,7 +742,7 @@ fn build_filter_predicate(
 fn build_insert(
     schema: &str,
     table: &str,
-    meta: &MysqlMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
 ) -> Result<(String, Vec<Value>), String> {
     let mut names = Vec::with_capacity(values.len());
@@ -784,13 +752,15 @@ fn build_insert(
         let column = common::find_column(&meta.columns, &name)?;
         common::ensure_writable(column)?;
         names.push(quote_identifier(&name));
-        if is_binary(column) {
-            ensure_binary_hex(&value)?;
+        let bound = if is_binary(column) {
+            let hex = common::ensure_binary_hex(&value)?.map(str::to_string);
             placeholders.push("UNHEX(?)".to_string());
+            hex
         } else {
             placeholders.push("?".to_string());
-        }
-        params.push(string_value(value));
+            value
+        };
+        params.push(string_value(bound));
     }
     if names.is_empty() {
         return Ok((
@@ -812,7 +782,7 @@ fn build_insert(
 fn build_update(
     schema: &str,
     table: &str,
-    meta: &MysqlMeta,
+    meta: &TableMeta,
     values: BTreeMap<String, Option<String>>,
     original: Vec<Option<String>>,
     truncated: &[bool],
@@ -828,19 +798,18 @@ fn build_update(
     for (name, value) in values {
         let column = common::find_column(&meta.columns, &name)?;
         common::ensure_writable(column)?;
-        assignments.push(format!(
-            "{} = {}",
-            quote_identifier(&name),
-            if is_binary(column) {
-                ensure_binary_hex(&value)?;
-                "UNHEX(?)"
-            } else {
-                "?"
-            }
-        ));
-        params.push(string_value(value));
+        let (placeholder, bound) = if is_binary(column) {
+            (
+                "UNHEX(?)",
+                common::ensure_binary_hex(&value)?.map(str::to_string),
+            )
+        } else {
+            ("?", value)
+        };
+        assignments.push(format!("{} = {placeholder}", quote_identifier(&name)));
+        params.push(string_value(bound));
     }
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params, "<=>");
+    let predicate = original_predicate(meta, &original, truncated, &mut params, "<=>")?;
     Ok((
         format!(
             "UPDATE {} SET {} WHERE {predicate}",
@@ -854,7 +823,7 @@ fn build_update(
 fn build_delete(
     schema: &str,
     table: &str,
-    meta: &MysqlMeta,
+    meta: &TableMeta,
     original: Vec<Option<String>>,
     truncated: &[bool],
 ) -> Result<(String, Vec<Value>), String> {
@@ -862,7 +831,7 @@ fn build_delete(
         return Err("The table shape changed. Reload before retrying.".into());
     }
     let mut params = Vec::with_capacity(original.len());
-    let predicate = original_predicate(&meta.columns, &original, truncated, &mut params, "<=>");
+    let predicate = original_predicate(meta, &original, truncated, &mut params, "<=>")?;
     Ok((
         format!(
             "DELETE FROM {} WHERE {predicate}",
@@ -873,13 +842,15 @@ fn build_delete(
 }
 
 fn original_predicate(
-    columns: &[ColumnInfo],
+    meta: &TableMeta,
     original: &[Option<String>],
     truncated: &[bool],
     params: &mut Vec<Value>,
     null_safe_equals: &str,
-) -> String {
-    columns
+) -> Result<String, String> {
+    common::ensure_untruncated_primary_keys(&meta.primary_indices, truncated)?;
+    let predicates = meta
+        .columns
         .iter()
         .zip(original)
         .enumerate()
@@ -889,13 +860,18 @@ fn original_predicate(
             let identifier = quote_identifier(&column.name);
             let expression = if is_binary(column) {
                 format!("HEX({identifier})")
+            } else if column.filter_type.eq_ignore_ascii_case("bit") {
+                format!("CAST({identifier} + 0 AS CHAR)")
             } else {
                 format!("CAST({identifier} AS CHAR)")
             };
             format!("{expression} {null_safe_equals} ?")
         })
-        .collect::<Vec<_>>()
-        .join(" AND ")
+        .collect::<Vec<_>>();
+    if predicates.is_empty() {
+        return Err("Row cannot be matched because all comparable columns were truncated.".into());
+    }
+    Ok(predicates.join(" AND "))
 }
 
 fn is_binary(column: &ColumnInfo) -> bool {
@@ -903,14 +879,15 @@ fn is_binary(column: &ColumnInfo) -> bool {
     declared.contains("blob") || declared.contains("binary")
 }
 
-fn ensure_binary_hex(value: &Option<String>) -> Result<(), String> {
-    let Some(hex) = value else {
-        return Ok(());
-    };
-    if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Binary values must be an even number of hexadecimal digits.".into());
+fn value_text_for_column(value: &Value, column: &MysqlColumn) -> Option<String> {
+    if let Value::Bytes(bytes) = value
+        && column.flags().contains(ColumnFlags::BINARY_FLAG)
+        && column.character_set() == 63
+        && (column.column_type().is_character_type() || column.column_type().is_geometry_type())
+    {
+        return Some(format!("\\x{}", common::hex_encode(bytes)));
     }
-    Ok(())
+    value_text(value)
 }
 
 fn string_value(value: Option<String>) -> Value {
@@ -952,10 +929,10 @@ fn value_text(value: &Value) -> Option<String> {
             let sign = if *negative { "-" } else { "" };
             let total_hours = *days * 24 + u32::from(*hours);
             if *micros == 0 {
-                Some(format!("{sign}{total_hours:03}:{minutes:02}:{seconds:02}"))
+                Some(format!("{sign}{total_hours:02}:{minutes:02}:{seconds:02}"))
             } else {
                 Some(format!(
-                    "{sign}{total_hours:03}:{minutes:02}:{seconds:02}.{micros:06}"
+                    "{sign}{total_hours:02}:{minutes:02}:{seconds:02}.{micros:06}"
                 ))
             }
         }
@@ -963,7 +940,7 @@ fn value_text(value: &Value) -> Option<String> {
 }
 
 fn quote_relation(schema: &str, table: &str) -> String {
-    format!("{}.{}", quote_identifier(schema), quote_identifier(table))
+    common::quote_relation(schema, table, quote_identifier)
 }
 
 fn quote_identifier(identifier: &str) -> String {
@@ -1315,6 +1292,7 @@ mod cancel_tests {
 mod truncation_predicate_tests {
     use super::*;
     use crate::models::FilterKind;
+    use mysql_async::consts::ColumnType;
 
     fn column(name: &str, primary_key: bool) -> ColumnInfo {
         ColumnInfo {
@@ -1332,13 +1310,55 @@ mod truncation_predicate_tests {
 
     #[test]
     fn predicates_skip_truncated_columns() {
-        let columns = vec![column("id", true), column("secret", false)];
+        let meta = TableMeta::new(vec![column("id", true), column("secret", false)], None);
         let original = vec![Some("1".into()), Some("partial [truncated]".into())];
         let mut params = Vec::new();
-        let predicate = original_predicate(&columns, &original, &[false, true], &mut params, "<=>");
+        let predicate = original_predicate(&meta, &original, &[false, true], &mut params, "<=>")
+            .expect("predicate");
 
         assert!(!predicate.contains("`secret`"));
         assert!(predicate.contains("CAST(`id` AS CHAR) <=> ?"));
         assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn rejects_truncated_primary_keys() {
+        let meta = TableMeta::new(vec![column("id", true), column("secret", false)], None);
+        let original = vec![Some("huge [truncated]".into()), Some("ok".into())];
+        let mut params = Vec::new();
+        assert!(original_predicate(&meta, &original, &[true, false], &mut params, "<=>").is_err());
+    }
+
+    #[test]
+    fn formats_mysql_time_without_extra_leading_zero() {
+        assert_eq!(
+            value_text(&Value::Time(false, 0, 1, 2, 3, 0)).as_deref(),
+            Some("01:02:03")
+        );
+        assert_eq!(
+            value_text(&Value::Time(true, 5, 4, 5, 6, 7)).as_deref(),
+            Some("-124:05:06.000007")
+        );
+    }
+    #[test]
+    fn numeric_bytes_are_not_misclassified_as_binary_strings() {
+        let column = MysqlColumn::new(ColumnType::MYSQL_TYPE_LONGLONG)
+            .with_flags(ColumnFlags::BINARY_FLAG)
+            .with_character_set(63);
+        assert_eq!(
+            value_text_for_column(&Value::Bytes(b"2".to_vec()), &column).as_deref(),
+            Some("2")
+        );
+    }
+
+    #[test]
+    fn binary_strings_are_hex_encoded() {
+        let column = MysqlColumn::new(ColumnType::MYSQL_TYPE_VAR_STRING)
+            .with_flags(ColumnFlags::BINARY_FLAG)
+            .with_character_set(63);
+        assert_eq!(
+            value_text_for_column(&Value::Bytes(vec![0, 0xaa]), &column).as_deref(),
+            Some("\\x00aa")
+        );
     }
 }

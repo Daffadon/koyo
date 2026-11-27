@@ -16,6 +16,7 @@ pub(super) fn render_filter_bar(
     cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let locked = table.loading || !table.staged.is_empty() || !connected;
+    let clear_disabled = !connected || table.loading;
     let (filter_value, filter_cursor) = {
         let input = table.filter_input.read(cx);
         (input.value().to_string(), input.cursor())
@@ -75,11 +76,12 @@ pub(super) fn render_filter_bar(
                     })),
             )
             .child(button_tooltip(
-                ("tooltip-clear-filter", tab_id),
                 Button::new(("clear-filters", tab_id))
                     .ghost()
                     .compact()
                     .icon(IconName::Close)
+                    .disabled(clear_disabled)
+                    .when(clear_disabled, |this| this.text_color(palette.foreground))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.request_clear_filters(tab_id, window, cx);
                     })),

@@ -118,6 +118,19 @@ fn main() {
             .show();
         return;
     }
+    // Acquire the single-instance lock before initializing logging so a second
+    // instance cannot rotate or write to the active instance's log file.
+    let _instance_lock = match acquire_instance_lock() {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("Could not acquire the Koyo instance lock: {error}");
+            rfd::MessageDialog::new()
+                .set_title("Koyo")
+                .set_description(error)
+                .show();
+            return;
+        }
+    };
     if let Err(error) = app::init_logging() {
         eprintln!("Could not initialize Koyo logging: {error}");
         rfd::MessageDialog::new()
@@ -133,17 +146,6 @@ fn main() {
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    let _instance_lock = match acquire_instance_lock() {
-        Ok(lock) => lock,
-        Err(error) => {
-            log::error!("could not acquire the Koyo instance lock: {error}");
-            rfd::MessageDialog::new()
-                .set_title("Koyo")
-                .set_description(error)
-                .show();
-            return;
-        }
-    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -169,52 +171,17 @@ fn main() {
                 .with_grace_period(std::time::Duration::from_millis(600))
                 .install(cx);
             Theme::change(ThemeMode::Dark, None, cx);
+            // Non-Koyo editor overrides; all `koyo::*` bindings are applied
+            // from `SHORTCUTS` by `KoyoApp::apply_shortcut_bindings`.
             cx.bind_keys([
                 // The SQL editor handles Tab in its capture listener so a
                 // completion accept cannot also insert indentation.
                 KeyBinding::new("tab", NoAction {}, Some("Input && mode == editor")),
-                KeyBinding::new("tab", CompleteFilter, Some("TableFilter")),
-                KeyBinding::new("ctrl-/", ToggleComment, Some("Input && mode == editor")),
-                KeyBinding::new("cmd-/", ToggleComment, Some("Input && mode == editor")),
                 KeyBinding::new(
                     "ctrl-space",
                     ShowCompletions,
                     Some("Input && mode == editor"),
                 ),
-                KeyBinding::new("alt-up", MoveLineUp, Some("Input && mode == editor")),
-                KeyBinding::new("alt-down", MoveLineDown, Some("Input && mode == editor")),
-                KeyBinding::new(
-                    "shift-alt-down",
-                    DuplicateLine,
-                    Some("Input && mode == editor"),
-                ),
-                KeyBinding::new("ctrl-shift-k", DeleteLine, Some("Input && mode == editor")),
-                KeyBinding::new("cmd-shift-k", DeleteLine, Some("Input && mode == editor")),
-                KeyBinding::new("ctrl-enter", RunQuery, Some("Input")),
-                KeyBinding::new("cmd-enter", RunQuery, Some("Input")),
-                KeyBinding::new("ctrl-enter", RunQuery, Some("Koyo")),
-                KeyBinding::new("cmd-enter", RunQuery, Some("Koyo")),
-                KeyBinding::new("ctrl-shift-f", FormatQuery, Some("Input")),
-                KeyBinding::new("cmd-shift-f", FormatQuery, Some("Input")),
-                KeyBinding::new("ctrl-shift-f", FormatQuery, Some("Koyo")),
-                KeyBinding::new("cmd-shift-f", FormatQuery, Some("Koyo")),
-                KeyBinding::new("ctrl-p", QuickOpen, Some("Koyo")),
-                KeyBinding::new("cmd-p", QuickOpen, Some("Koyo")),
-                KeyBinding::new("ctrl-t", NewTab, Some("Koyo")),
-                KeyBinding::new("cmd-t", NewTab, Some("Koyo")),
-                KeyBinding::new("ctrl-w", CloseTab, Some("Koyo")),
-                KeyBinding::new("cmd-w", CloseTab, Some("Koyo")),
-                KeyBinding::new("ctrl-tab", NextTab, Some("Koyo")),
-                KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Koyo")),
-                KeyBinding::new("ctrl-shift-pageup", MoveTabLeft, Some("Koyo")),
-                KeyBinding::new("cmd-shift-pageup", MoveTabLeft, Some("Koyo")),
-                KeyBinding::new("ctrl-shift-pagedown", MoveTabRight, Some("Koyo")),
-                KeyBinding::new("cmd-shift-pagedown", MoveTabRight, Some("Koyo")),
-                KeyBinding::new("f5", RefreshTable, Some("Koyo")),
-                KeyBinding::new("ctrl-b", ToggleSidebar, Some("Koyo")),
-                KeyBinding::new("cmd-b", ToggleSidebar, Some("Koyo")),
-                KeyBinding::new("ctrl-alt-b", ToggleAi, Some("Koyo")),
-                KeyBinding::new("cmd-alt-b", ToggleAi, Some("Koyo")),
             ]);
             // Capture handles Ctrl+Backspace so trailing whitespace can be
             // removed without also deleting the word before it.

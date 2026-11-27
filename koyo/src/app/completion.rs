@@ -11,6 +11,8 @@ use lsp_types::{
     Position, Range as LspRange, TextEdit,
 };
 
+const MAX_COMPLETION_ITEMS: usize = 300;
+
 /// Snapshot of the connected database's names, handed to the editor's
 /// completion provider. Refreshed whenever the explorer metadata reloads.
 #[derive(Default)]
@@ -121,6 +123,9 @@ impl CompletionProvider for SqlCompletionProvider {
             .and_then(|qualifier| resolve_table_ref(&refs, qualifier));
         let replacement_start =
             token_start + token.rfind('.').map(|dot| dot + 1).unwrap_or_default();
+        let token_pos = position_for_offset(&text, token_start);
+        let replacement_pos = position_for_offset(&text, replacement_start);
+        let cursor_pos = position_for_offset(&text, offset);
 
         let catalog = self.catalog.borrow();
         let schema_filter = qualifier.as_deref().and_then(|qualifier| {
@@ -142,6 +147,9 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualifier.is_none() {
             for keyword in SQL_KEYWORDS {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if matches(keyword) {
                     push_item(
                         &mut items,
@@ -163,6 +171,9 @@ impl CompletionProvider for SqlCompletionProvider {
         let adding_alias = adding_table_alias(&refs);
         if qualifier.is_none() && !adding_alias {
             for alias in refs.iter().filter_map(|table_ref| table_ref.alias.as_ref()) {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if matches(alias) {
                     let table = refs
                         .iter()
@@ -187,6 +198,9 @@ impl CompletionProvider for SqlCompletionProvider {
             && let Some(last) = refs.last()
         {
             for alias in suggest_aliases(last, &refs) {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if matches(&alias) {
                     push_item(
                         &mut items,
@@ -204,6 +218,9 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualifier.is_none() && !show_context_columns {
             for schema in &catalog.schemas {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if matches(schema) {
                     push_item(
                         &mut items,
@@ -221,6 +238,9 @@ impl CompletionProvider for SqlCompletionProvider {
 
         if qualified_ref.is_none() && !show_context_columns {
             for (schema, table) in &catalog.tables {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if !table_allowed_for_schema(schema_filter.as_deref(), schema) {
                     continue;
                 }
@@ -237,10 +257,7 @@ impl CompletionProvider for SqlCompletionProvider {
                             // the menu's default prefix range duplicates the
                             // schema when the user already typed `schema.`.
                             text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                                range: LspRange::new(
-                                    position_for_offset(&text, token_start),
-                                    position_for_offset(&text, offset),
-                                ),
+                                range: LspRange::new(token_pos, cursor_pos),
                                 new_text: qualified,
                             })),
                             ..Default::default()
@@ -258,6 +275,9 @@ impl CompletionProvider for SqlCompletionProvider {
                 || token.ends_with('.'))
         {
             for (schema, table, column) in &catalog.columns {
+                if items.len() >= MAX_COMPLETION_ITEMS {
+                    break;
+                }
                 if let Some(table_ref) = &column_context {
                     if table_ref
                         .schema
@@ -272,10 +292,7 @@ impl CompletionProvider for SqlCompletionProvider {
                     let detail = format!("{schema}.{table}");
                     let text_edit = qualified_ref.as_ref().map(|_| {
                         CompletionTextEdit::Edit(TextEdit {
-                            range: LspRange::new(
-                                position_for_offset(&text, replacement_start),
-                                position_for_offset(&text, offset),
-                            ),
+                            range: LspRange::new(replacement_pos, cursor_pos),
                             new_text: column.clone(),
                         })
                     });
@@ -294,7 +311,6 @@ impl CompletionProvider for SqlCompletionProvider {
             }
         }
 
-        items.truncate(300);
         Task::ready(Ok(CompletionResponse::Array(items)))
     }
 }
@@ -330,7 +346,48 @@ fn clean_identifier(value: &str) -> String {
 fn tokenize_sql(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    for character in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '-' && chars.peek() == Some(&'-') {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            chars.next();
+            for next in chars.by_ref() {
+                if next == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if character == '/' && chars.peek() == Some(&'*') {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            chars.next();
+            while let Some(next) = chars.next() {
+                if next == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
+            }
+            continue;
+        }
+        if character == '\'' {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            while let Some(next) = chars.next() {
+                if next == '\'' {
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
         if character.is_alphanumeric()
             || matches!(character, '_' | '.' | '$' | '"' | '`' | '[' | ']')
         {
@@ -397,7 +454,7 @@ fn parse_table_refs(text: &str) -> Vec<TableRef> {
                 index += 1;
                 continue;
             }
-            if tokens[index].starts_with('(') || is_clause_keyword(&tokens[index]) {
+            if is_clause_keyword(&tokens[index]) {
                 break;
             }
             let raw = clean_identifier(&tokens[index]);
@@ -456,7 +513,6 @@ fn split_table_name(value: &str) -> (Option<String>, String) {
 
 fn is_alias_token(token: &str) -> bool {
     token != ","
-        && !token.starts_with('(')
         && !is_clause_keyword(token)
         && token.chars().all(|character| {
             character.is_alphanumeric() || matches!(character, '_' | '$' | '"' | '`' | '[' | ']')
@@ -608,6 +664,9 @@ fn push_item(
     seen: &mut BTreeSet<(String, String)>,
     item: CompletionItem,
 ) {
+    if items.len() >= MAX_COMPLETION_ITEMS {
+        return;
+    }
     let key = (item.label.clone(), item.detail.clone().unwrap_or_default());
     if seen.insert(key) {
         items.push(item);
@@ -762,6 +821,21 @@ mod tests {
                     alias: Some("o".into()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_table_refs_ignores_comments_and_strings() {
+        let refs = parse_table_refs(
+            "-- FROM fake_line\nSELECT 'FROM fake_str' /* JOIN fake_block */ FROM real_users u",
+        );
+        assert_eq!(
+            refs,
+            vec![TableRef {
+                schema: None,
+                table: "real_users".into(),
+                alias: Some("u".into()),
+            }]
         );
     }
 

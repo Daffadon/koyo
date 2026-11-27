@@ -136,6 +136,7 @@ impl KoyoApp {
             profile_filter,
             split: None,
             split_ratio: saved.split_ratio.clamp(0.15, 0.85),
+            split_resizing: false,
             focus: Pane::Primary,
             root_focus: cx.focus_handle(),
             window_handle: window.window_handle(),
@@ -191,7 +192,7 @@ impl KoyoApp {
             quick_open: None,
             next_tab_id: 1,
         };
-        app.history.truncate(app.history_limit);
+        trim_history(&mut app.history, app.history_limit);
         app.apply_shortcut_bindings(cx);
         cx.spawn(async move |this, cx| {
             while let Some(error) = save_error_rx.recv().await {
@@ -299,6 +300,7 @@ impl KoyoApp {
             let ratio = ratio.clamp(0.15, 0.85);
             if (self.split_ratio - ratio).abs() > 0.001 {
                 self.split_ratio = ratio;
+                self.split_resizing = true;
                 cx.notify();
             }
         }
@@ -427,7 +429,7 @@ pub(super) fn move_tab_id(tabs: &mut Vec<u64>, tab_id: u64, direction: isize) ->
 }
 
 pub(super) fn previous_horizontal_whitespace_start(value: &str, cursor: usize) -> Option<usize> {
-    let cursor = cursor.min(value.len());
+    let cursor = value.floor_char_boundary(cursor.min(value.len()));
     let before = &value[..cursor];
     let start = before.trim_end_matches([' ', '\t']).len();
     (start < cursor).then_some(start)
@@ -521,5 +523,6 @@ mod tests {
         assert_eq!(previous_horizontal_whitespace_start("\t  x", 3), Some(0));
         assert_eq!(previous_horizontal_whitespace_start("select", 6), None);
         assert_eq!(previous_horizontal_whitespace_start("select\n", 7), None);
+        assert_eq!(previous_horizontal_whitespace_start("aé ", 2), None);
     }
 }

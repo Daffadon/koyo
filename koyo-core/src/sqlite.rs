@@ -3,8 +3,8 @@ use crate::common::{
     ensure_writable, find_column, quote_identifier,
 };
 use crate::models::{
-    ApplySummary, ColumnCatalogEntry, ColumnInfo, FilterKind, FilterOperator, ForeignKeyInfo,
-    GridChange, GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet, SchemaObject,
+    ApplySummary, ColumnCatalogEntry, ColumnInfo, FilterOperator, ForeignKeyInfo, GridChange,
+    GridRow, MetadataGroup, MetadataItem, QueryOutput, QueryResultSet, SchemaObject,
     SchemaObjectKind, TableFilter, TableIndexInfo, TablePage, TableSort, TableSummary,
 };
 use rusqlite::{
@@ -21,27 +21,30 @@ pub struct SqliteSession {
     pub interrupt: Arc<InterruptHandle>,
 }
 
-pub fn connect(path: &str) -> Result<(SqliteSession, String), String> {
-    let path = path.trim();
+pub async fn connect(path: &str) -> Result<(SqliteSession, String), String> {
+    let path = path.trim().to_string();
     if path.is_empty() {
         return Err("SQLite database file is required.".into());
     }
-    let connection = Connection::open(path)
-        .map_err(|error| format!("Could not open SQLite database: {error}"))?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(|error| format!("Could not set SQLite busy timeout: {error}"))?;
-    connection
-        .execute_batch("PRAGMA foreign_keys = ON")
-        .map_err(|error| format!("Could not enable SQLite foreign keys: {error}"))?;
-    let interrupt = Arc::new(connection.get_interrupt_handle());
-    Ok((
-        SqliteSession {
-            connection: Arc::new(Mutex::new(connection)),
-            interrupt,
-        },
-        rusqlite::version().to_string(),
-    ))
+    blocking(move || {
+        let connection = Connection::open(&path)
+            .map_err(|error| format!("Could not open SQLite database: {error}"))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("Could not set SQLite busy timeout: {error}"))?;
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .map_err(|error| format!("Could not enable SQLite foreign keys: {error}"))?;
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        Ok((
+            SqliteSession {
+                connection: Arc::new(Mutex::new(connection)),
+                interrupt,
+            },
+            rusqlite::version().to_string(),
+        ))
+    })
+    .await
 }
 
 pub async fn ping(session: &SqliteSession) -> Result<(), String> {
@@ -82,12 +85,12 @@ pub async fn list_columns(session: &SqliteSession) -> Result<Vec<ColumnCatalogEn
             .map_err(|error| error.to_string())?;
         drop(tables);
         let mut columns = Vec::new();
+        let mut statement = connection
+            .prepare("SELECT name FROM pragma_table_xinfo(?1) WHERE hidden != 1 ORDER BY cid")
+            .map_err(|error| error.to_string())?;
         for table in names {
-            let mut statement = connection
-                .prepare(&format!("PRAGMA table_xinfo({})", quote_identifier(&table)))
-                .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map([], |row| row.get::<_, String>(1))
+                .query_map([&table], |row| row.get::<_, String>(0))
                 .map_err(|error| error.to_string())?;
             for column in rows {
                 columns.push(ColumnCatalogEntry {
@@ -340,7 +343,7 @@ fn list_tables_sync(connection: &Connection) -> Result<Vec<TableSummary>, String
             "SELECT m.name, i.name, i.type, i.\"notnull\", i.pk, i.hidden
              FROM sqlite_schema m
              JOIN pragma_table_xinfo(m.name) i
-             WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+             WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND i.hidden != 1
              ORDER BY m.name, i.cid",
         )
         .map_err(|error| error.to_string())?;
@@ -373,9 +376,10 @@ fn list_foreign_keys_sync(
     connection: &Connection,
     table: &str,
 ) -> Result<Vec<ForeignKeyInfo>, String> {
-    let mut statement = connection
+    let mut keys = Vec::new();
+    let mut outgoing = connection
         .prepare(
-            "SELECT f.id, f.seq, f.\"table\", f.\"from\",
+            "SELECT f.id, f.\"table\", f.\"from\",
                     COALESCE(
                         f.\"to\",
                         (
@@ -389,10 +393,55 @@ fn list_foreign_keys_sync(
              ORDER BY f.id, f.seq",
         )
         .map_err(|error| error.to_string())?;
-    let rows = statement
+    let rows = outgoing
         .query_map([table], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    for (id, referenced_table, column, referenced_column) in rows {
+        keys.push(ForeignKeyInfo {
+            schema: "main".into(),
+            table: table.to_string(),
+            column,
+            referenced_schema: "main".into(),
+            referenced_table,
+            referenced_column,
+            constraint_name: format!("fk_{table}_{id}"),
+        });
+    }
+    let mut inbound = connection
+        .prepare(
+            "SELECT m.name, f.id, f.\"table\", f.\"from\",
+                    COALESCE(
+                        f.\"to\",
+                        (
+                            SELECT i.name
+                            FROM pragma_table_info(f.\"table\") i
+                            WHERE i.pk = f.seq + 1
+                        ),
+                        ''
+                    )
+             FROM sqlite_schema m
+             JOIN pragma_foreign_key_list(m.name) f
+             WHERE m.type = 'table'
+               AND m.name NOT LIKE 'sqlite_%'
+               AND m.name <> ?1
+               AND f.\"table\" = ?1
+             ORDER BY m.name, f.id, f.seq",
+        )
+        .map_err(|error| error.to_string())?;
+    let inbound_rows = inbound
+        .query_map([table], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
@@ -401,20 +450,18 @@ fn list_foreign_keys_sync(
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, referenced_table, column, referenced_column)| ForeignKeyInfo {
-                schema: "main".into(),
-                table: table.to_string(),
-                column,
-                referenced_schema: "main".into(),
-                referenced_table,
-                referenced_column,
-                constraint_name: format!("fk_{table}_{id}"),
-            },
-        )
-        .collect())
+    for (source_table, id, referenced_table, column, referenced_column) in inbound_rows {
+        keys.push(ForeignKeyInfo {
+            schema: "main".into(),
+            constraint_name: format!("fk_{source_table}_{id}"),
+            table: source_table,
+            column,
+            referenced_schema: "main".into(),
+            referenced_table,
+            referenced_column,
+        });
+    }
+    Ok(keys)
 }
 
 fn load_page_sync(
@@ -593,6 +640,10 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
     let mut truncated = false;
 
     if column_count > 0 {
+        let columns = columns
+            .into_iter()
+            .map(|column| budget.column(column))
+            .collect();
         let mut rows = statement.query([]).map_err(|error| error.to_string())?;
         let mut result_rows = Vec::new();
         while let Some(row) = rows.next().map_err(|error| error.to_string())? {
@@ -607,10 +658,7 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
             result_rows.push(values);
         }
         result_sets.push(QueryResultSet {
-            columns: columns
-                .into_iter()
-                .map(|column| budget.column(column))
-                .collect(),
+            columns,
             rows: result_rows,
         });
     } else {
@@ -632,12 +680,16 @@ fn run_sql_sync(connection: &Connection, sql: &str) -> Result<QueryOutput, Strin
 }
 
 fn load_meta(connection: &Connection, table: &str) -> Result<TableMeta, String> {
-    let sql = format!("PRAGMA table_xinfo({})", quote_identifier(table));
     let mut statement = connection
-        .prepare(&sql)
+        .prepare(
+            "SELECT name, type, \"notnull\", pk, hidden
+             FROM pragma_table_xinfo(?1)
+             WHERE hidden != 1
+             ORDER BY cid",
+        )
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([], |row| xinfo_column(row, 1, 2, 3, 5, 6))
+        .query_map([table], |row| xinfo_column(row, 0, 1, 2, 3, 4))
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
@@ -646,7 +698,7 @@ fn load_meta(connection: &Connection, table: &str) -> Result<TableMeta, String> 
     }
     let relation_kind: Option<String> = connection
         .query_row(
-            "SELECT type FROM sqlite_schema WHERE name = ?1",
+            "SELECT type FROM sqlite_schema WHERE name = ?1 AND type IN ('table', 'view')",
             [table],
             |row| row.get(0),
         )
@@ -668,7 +720,9 @@ fn xinfo_column(
 ) -> rusqlite::Result<ColumnInfo> {
     let name: String = row.get(name_index)?;
     let declared: Option<String> = row.get(type_index)?;
-    let declared = declared.unwrap_or_else(|| "ANY".into());
+    let declared = declared
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "ANY".into());
     let not_null: bool = row.get(not_null_index)?;
     let pk: i64 = row.get(pk_index)?;
     let hidden: i64 = row.get(hidden_index)?;
@@ -676,7 +730,7 @@ fn xinfo_column(
         name,
         filter_type: declared.clone(),
         data_type: declared.clone(),
-        filter_kind: filter_kind(&declared),
+        filter_kind: common::filter_kind(&declared),
         sortable: true,
         nullable: !not_null && pk == 0,
         primary_key: pk > 0,
@@ -686,12 +740,9 @@ fn xinfo_column(
 }
 
 fn binary_literal(value: &Option<String>) -> Result<String, String> {
-    let Some(hex) = value else {
+    let Some(hex) = common::ensure_binary_hex(value)? else {
         return Ok("NULL".to_string());
     };
-    if hex.len() % 2 != 0 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err("Binary values must be an even number of hexadecimal digits.".into());
-    }
     Ok(format!("x'{hex}'"))
 }
 
@@ -700,34 +751,13 @@ fn is_binary(column: &ColumnInfo) -> bool {
     declared.contains("BLOB") || declared.contains("BINARY") || declared.contains("BYTEA")
 }
 
-fn filter_kind(declared: &str) -> FilterKind {
-    let declared = declared.to_ascii_uppercase();
-    if declared.contains("BOOL") {
-        FilterKind::Boolean
-    } else if declared.contains("INT")
-        || declared.contains("REAL")
-        || declared.contains("FLOA")
-        || declared.contains("DOUB")
-        || declared.contains("NUM")
-        || declared.contains("DEC")
-    {
-        FilterKind::Number
-    } else if declared.contains("DATE") || declared.contains("TIME") {
-        FilterKind::Temporal
-    } else if declared.contains("CHAR") || declared.contains("CLOB") || declared.contains("TEXT") {
-        FilterKind::Text
-    } else {
-        FilterKind::Other
-    }
-}
-
 fn page_column_expression(column: &ColumnInfo) -> String {
     let identifier = quote_identifier(&column.name);
-    let limit = crate::common::MAX_CELL_CHARS;
+    let limit = common::MAX_CELL_CHARS;
     if is_binary(column) {
+        let byte_limit = limit / 2;
         format!(
-            "CASE WHEN length({identifier}) > {limit} THEN substr(hex({identifier}), 1, {}) || ' [truncated]' ELSE hex({identifier}) END",
-            limit * 2
+            "CASE WHEN length({identifier}) > {byte_limit} THEN hex(substr({identifier}, 1, {byte_limit})) || ' [truncated]' ELSE hex({identifier}) END"
         )
     } else {
         let text = format!("CAST({identifier} AS TEXT)");
@@ -763,15 +793,8 @@ fn build_filter_predicate(
             | FilterOperator::GreaterThanOrEqual => {
                 let value = value
                     .ok_or_else(|| format!("Filter on column {} needs a value.", column.name))?;
-                let operator = match filter.operator {
-                    FilterOperator::Equals => "IS",
-                    FilterOperator::NotEquals => "IS NOT",
-                    FilterOperator::LessThan => "<",
-                    FilterOperator::LessThanOrEqual => "<=",
-                    FilterOperator::GreaterThan => ">",
-                    FilterOperator::GreaterThanOrEqual => ">=",
-                    _ => unreachable!(),
-                };
+                let operator =
+                    common::comparison_sql(filter.operator).expect("comparison operator");
                 params.push(value.to_string());
                 format!("{identifier} {operator} ?")
             }
@@ -819,7 +842,9 @@ fn build_order_by(
     }
     if meta.primary_indices.is_empty() {
         if meta.relation_kind.as_deref() == Some("view") {
-            if let Some(column) = meta.columns.first() {
+            if let Some(column) = meta.columns.iter().find(|column| {
+                column.sortable && sort_column.is_none_or(|sort| sort.name != column.name)
+            }) {
                 terms.push(format!("{} ASC", order_column(&column.name)));
             }
         } else {
@@ -890,7 +915,7 @@ fn build_update(
         };
         assignments.push(format!("{} = {expression}", quote_identifier(&name)));
     }
-    let predicate = original_predicate(meta, original, truncated, &mut params);
+    let predicate = original_predicate(meta, original, truncated, &mut params)?;
     Ok((
         format!(
             "UPDATE {} SET {} WHERE {predicate}",
@@ -911,7 +936,7 @@ fn build_delete(
         return Err("Delete is missing the original row values.".into());
     }
     let mut params = Vec::with_capacity(meta.columns.len());
-    let predicate = original_predicate(meta, original, truncated, &mut params);
+    let predicate = original_predicate(meta, original, truncated, &mut params)?;
     Ok((
         format!("DELETE FROM {} WHERE {predicate}", quote_identifier(table)),
         params,
@@ -923,7 +948,8 @@ fn original_predicate(
     original: Vec<Option<String>>,
     truncated: &[bool],
     params: &mut Vec<Option<String>>,
-) -> String {
+) -> Result<String, String> {
+    common::ensure_untruncated_primary_keys(&meta.primary_indices, truncated)?;
     let mut predicates = Vec::with_capacity(meta.columns.len());
     for index in &meta.primary_indices {
         params.push(original[*index].clone());
@@ -948,7 +974,10 @@ fn original_predicate(
         };
         predicates.push(format!("{expression} IS ?"));
     }
-    predicates.join(" AND ")
+    if predicates.is_empty() {
+        return Err("Row cannot be matched because all comparable columns were truncated.".into());
+    }
+    Ok(predicates.join(" AND "))
 }
 
 fn cell_text(row: &rusqlite::Row<'_>, index: usize) -> Result<Option<String>, String> {
@@ -957,13 +986,7 @@ fn cell_text(row: &rusqlite::Row<'_>, index: usize) -> Result<Option<String>, St
         ValueRef::Integer(value) => Ok(Some(value.to_string())),
         ValueRef::Real(value) => Ok(Some(value.to_string())),
         ValueRef::Text(value) => Ok(Some(String::from_utf8_lossy(value).into_owned())),
-        ValueRef::Blob(value) => Ok(Some(format!(
-            "\\x{}",
-            value
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        ))),
+        ValueRef::Blob(value) => Ok(Some(format!("\\x{}", common::hex_encode(value)))),
     }
 }
 
@@ -1412,7 +1435,9 @@ mod tests {
     #[tokio::test]
     async fn opens_file_database() {
         let path = std::env::temp_dir().join(format!("koyo-{}.db", uuid::Uuid::new_v4()));
-        let (session, version) = connect(path.to_str().expect("utf-8 path")).expect("open file");
+        let (session, version) = connect(path.to_str().expect("utf-8 path"))
+            .await
+            .expect("open file");
         assert!(!version.is_empty());
         {
             let connection = lock(&session.connection).expect("lock sqlite");
@@ -1502,5 +1527,106 @@ mod truncation_predicate_tests {
         assert!(delete.contains("CAST(\"id\" AS TEXT) IS ?"));
         assert_eq!(update_params.len(), 2);
         assert_eq!(delete_params.len(), 1);
+    }
+
+    #[test]
+    fn update_and_delete_reject_truncated_primary_keys() {
+        let meta = TableMeta::new(vec![column("id", true), column("note", false)], None);
+        let original = vec![Some("huge [truncated]".into()), Some("ok".into())];
+        let truncated = [true, false];
+
+        assert!(
+            build_update(
+                "items",
+                &meta,
+                BTreeMap::from([("note".into(), Some("new".into()))]),
+                original.clone(),
+                &truncated,
+            )
+            .is_err()
+        );
+        assert!(build_delete("items", &meta, original, &truncated).is_err());
+    }
+
+    #[tokio::test]
+    async fn not_equals_filter_excludes_null_rows() {
+        let connection = Connection::open_in_memory().expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE items (id INTEGER PRIMARY KEY, note TEXT);
+                 INSERT INTO items VALUES (1, 'one'), (2, NULL), (3, 'two');",
+            )
+            .expect("seed");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+        let page = load_page(
+            &session,
+            "main",
+            "items",
+            0,
+            10,
+            &[TableFilter {
+                column: "note".into(),
+                operator: FilterOperator::NotEquals,
+                value: Some("one".into()),
+            }],
+            None,
+            true,
+        )
+        .await
+        .expect("load");
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].values[1].as_deref(), Some("two"));
+    }
+
+    #[tokio::test]
+    async fn inbound_foreign_keys_and_trigger_named_like_view_work() {
+        let connection = Connection::open_in_memory().expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE parents (id INTEGER PRIMARY KEY);
+                 CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id));
+                 CREATE VIEW parent_view AS SELECT id FROM parents;
+                 CREATE TRIGGER parent_view INSTEAD OF INSERT ON parent_view BEGIN SELECT 1; END;",
+            )
+            .expect("seed");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+        let parent_fks = list_foreign_keys(&session, "main", "parents")
+            .await
+            .expect("inbound fks");
+        assert_eq!(parent_fks.len(), 1);
+        assert_eq!(parent_fks[0].table, "children");
+        assert_eq!(parent_fks[0].referenced_table, "parents");
+
+        let page = load_page(&session, "main", "parent_view", 0, 10, &[], None, true)
+            .await
+            .expect("load view");
+        assert!(!page.editable);
+    }
+
+    #[tokio::test]
+    async fn run_sql_preserves_headers_when_budget_exhausts() {
+        let connection = Connection::open_in_memory().expect("open");
+        let interrupt = Arc::new(connection.get_interrupt_handle());
+        let session = SqliteSession {
+            connection: Arc::new(Mutex::new(connection)),
+            interrupt,
+        };
+        let output = run_sql(
+            &session,
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 400)
+             SELECT printf('%.*c', 60000, 'a') AS big_col FROM r",
+        )
+        .await
+        .expect("run");
+        assert!(output.truncated);
+        assert_eq!(output.result_sets[0].columns, vec!["big_col"]);
     }
 }

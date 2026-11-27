@@ -161,7 +161,25 @@ pub(crate) fn keys_for<'a>(
 }
 
 pub(crate) fn display_keys(keys: &str) -> String {
-    keys.split('-')
+    let mut parts = Vec::new();
+    let mut rest = keys;
+    while !rest.is_empty() {
+        if rest == "-" {
+            parts.push("-");
+            break;
+        }
+        if let Some((head, tail)) = rest.split_once('-') {
+            if !head.is_empty() {
+                parts.push(head);
+            }
+            rest = tail;
+        } else {
+            parts.push(rest);
+            break;
+        }
+    }
+    parts
+        .into_iter()
         .map(|part| match part {
             "secondary" => "Ctrl/Cmd",
             "ctrl" => "Ctrl",
@@ -202,12 +220,12 @@ pub(crate) fn keys_equal(a: &str, b: &str, os: OperatingSystem) -> bool {
 }
 
 const RESERVED_SHORTCUTS: &[(&str, &str)] = &[
-    ("secondary-q", "the application menu"),
-    ("secondary-h", "the window manager"),
-    ("secondary-m", "the window manager"),
-    ("secondary-tab", "the operating system"),
-    ("secondary-shift-tab", "the operating system"),
-    ("secondary-space", "the operating system"),
+    ("cmd-q", "the application menu"),
+    ("cmd-h", "the window manager"),
+    ("cmd-m", "the window manager"),
+    ("cmd-tab", "the operating system"),
+    ("cmd-shift-tab", "the operating system"),
+    ("cmd-space", "the operating system"),
     ("alt-tab", "the operating system"),
     ("alt-shift-tab", "the operating system"),
     ("alt-f4", "the window manager"),
@@ -225,6 +243,15 @@ fn owned_shortcut(keys: &str, os: OperatingSystem) -> Option<&'static str> {
     RESERVED_SHORTCUTS.iter().find_map(|(keys, owner)| {
         (canonical_keys(keys, os).as_deref() == Some(candidate.as_str())).then_some(*owner)
     })
+}
+
+fn is_bare_text_key(keystroke: &Keystroke) -> bool {
+    let mods = keystroke.modifiers;
+    if mods.control || mods.alt || mods.platform || mods.function {
+        return false;
+    }
+    let mut chars = keystroke.key.chars();
+    matches!((chars.next(), chars.next()), (Some(ch), None) if !ch.is_control())
 }
 
 fn binding_owner(name: &str) -> String {
@@ -329,6 +356,18 @@ pub(crate) fn validate_keys(id: &str, keys: &str, cx: &App) -> Result<(), String
     let Some(spec) = SHORTCUTS.iter().find(|spec| spec.id == id) else {
         return Err("Unknown shortcut action.".into());
     };
+    let keystroke =
+        Keystroke::parse_with_os(keys, cx.platform_info().os).map_err(|error| error.to_string())?;
+    if spec
+        .contexts
+        .iter()
+        .any(|context| *context == "Koyo" || context.starts_with("Input"))
+        && is_bare_text_key(&keystroke)
+    {
+        return Err(
+            "Shortcut must include a modifier key (Ctrl, Alt, or Cmd) or a function key.".into(),
+        );
+    }
     for context in spec.contexts {
         let predicate = KeyBindingContextPredicate::parse(context)
             .map_err(|error| format!("Invalid shortcut context: {error}"))?;
@@ -374,8 +413,8 @@ fn bindings_for(shortcuts: &BTreeMap<String, String>, cx: &App) -> Vec<KeyBindin
 #[cfg(test)]
 mod tests {
     use super::{
-        SHORTCUTS, action_for, display_keys, keys_equal, owned_shortcut, sanitize_shortcuts,
-        shortcut_conflict,
+        SHORTCUTS, action_for, display_keys, is_bare_text_key, keys_equal, owned_shortcut,
+        sanitize_shortcuts, shortcut_conflict,
     };
     use crate::{RunQuery, ToggleSidebar};
     use gpui_kit::{Action as _, KeyBindingContextPredicate, Keystroke, OperatingSystem};
@@ -398,8 +437,10 @@ mod tests {
     }
 
     #[test]
-    fn display_uses_secondary_label() {
+    fn display_uses_secondary_label_and_keeps_minus_key() {
         assert_eq!(display_keys("secondary-enter"), "Ctrl/Cmd + Enter");
+        assert_eq!(display_keys("ctrl--"), "Ctrl + -");
+        assert_eq!(display_keys("ctrl-shift--"), "Ctrl + Shift + -");
     }
 
     #[test]
@@ -419,9 +460,11 @@ mod tests {
     #[test]
     fn reserved_shortcuts_are_rejected() {
         assert_eq!(
-            owned_shortcut("secondary-q", OperatingSystem::Linux),
+            owned_shortcut("secondary-q", OperatingSystem::Mac),
             Some("the application menu")
         );
+        assert_eq!(owned_shortcut("ctrl-q", OperatingSystem::Linux), None);
+        assert_eq!(owned_shortcut("ctrl-tab", OperatingSystem::Linux), None);
         assert_eq!(
             owned_shortcut("alt-f4", OperatingSystem::Windows),
             Some("the window manager")
@@ -431,6 +474,17 @@ mod tests {
             Some("the operating system")
         );
         assert_eq!(owned_shortcut("f5", OperatingSystem::Linux), None);
+    }
+
+    #[test]
+    fn bare_text_keys_are_identified() {
+        let parse = |s: &str| Keystroke::parse_with_os(s, OperatingSystem::Linux).unwrap();
+        assert!(is_bare_text_key(&parse("a")));
+        assert!(is_bare_text_key(&parse("shift-a")));
+        assert!(is_bare_text_key(&parse("/")));
+        assert!(!is_bare_text_key(&parse("ctrl-a")));
+        assert!(!is_bare_text_key(&parse("f5")));
+        assert!(!is_bare_text_key(&parse("tab")));
     }
 
     #[test]

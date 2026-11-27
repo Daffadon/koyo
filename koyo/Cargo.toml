@@ -1,6 +1,6 @@
 [package]
 name = "koyo"
-version = "0.3.18"
+version = "0.3.19"
 description = "Native database client built with GPUI"
 edition = "2024"
 
@@ -8,9 +8,8 @@ edition = "2024"
 gpui-kit = { version = "0.11", features = ["syntect"] }
 koyo-core = { path = "../koyo-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-uuid = "1"
+uuid = { version = "1", features = ["v4"] }
 rfd = "0.18"
-libc = "0.2"
 lsp-types = "0.97"
 anyhow = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -23,5 +22,8 @@ rustls = { version = "0.23", features = ["aws_lc_rs", "prefer-post-quantum"] }
 log = "0.4"
 chrono = "0.4"
 
-[build-dependencies]
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

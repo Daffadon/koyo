@@ -60,12 +60,14 @@ mod tests {
                 vec![Some("-12.5".into())],
                 vec![Some("-1+2".into())],
                 vec![Some("@cmd".into())],
+                vec![Some(" =1+1".into())],
+                vec![Some("\n=cmd".into())],
             ],
         };
 
         assert_eq!(
             results_as_csv(&result),
-            "value\n\"'=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n\"'-1+2\"\n\"'@cmd\"\n"
+            "value\n\"'=HYPERLINK(\"\"https://example.test\"\")\"\n-12.5\n\"'-1+2\"\n\"'@cmd\"\n\"' =1+1\"\n\"'\n=cmd\"\n"
         );
     }
 
@@ -149,6 +151,8 @@ mod tests {
     fn table_export_file_name_stays_a_file_name() {
         assert_eq!(table_csv_file_name("main", "people"), "main.people.csv");
         assert_eq!(table_csv_file_name("a/b", "c\\d"), "a_b.c_d.csv");
+        assert_eq!(table_csv_file_name("", "people"), "people.csv");
+        assert_eq!(table_csv_file_name("", ".."), "table.csv");
     }
 
     #[test]
@@ -176,7 +180,7 @@ mod tests {
         );
         assert!(ddl.contains("CREATE TABLE \"public\".\"orders\" ("));
         assert!(ddl.contains("\"id\" integer NOT NULL"));
-        assert!(ddl.contains("PRIMARY KEY (\"id\")"));
+        assert!(ddl.contains("PRIMARY KEY (\"id\"),\n"));
         assert!(ddl.contains(
             "CONSTRAINT \"orders_owner_fk\" FOREIGN KEY (\"owner_id\") REFERENCES \"public\".\"users\" (\"id\")"
         ));
@@ -291,6 +295,15 @@ mod tests {
         let operators = filter_suggestions(&columns, "name co", 7);
         assert_eq!(operators[0].label, "contains");
 
+        let multi = filter_suggestions(&columns, "name is ", 8);
+        assert_eq!(multi.len(), 2);
+        assert_eq!(multi[0].label, "is null");
+        assert_eq!(multi[1].label, "is not null");
+
+        let (completed, cursor) = insert_filter_suggestion("name is n", 9, "is not null ");
+        assert_eq!(completed, "name is not null ");
+        assert_eq!(cursor, completed.len());
+
         let and_names = filter_suggestions(&columns, "age > 1 AND na", 14);
         assert_eq!(and_names[0].label, "name");
 
@@ -328,6 +341,23 @@ mod tests {
     }
 
     #[test]
+    fn filter_input_handles_operator_words_in_values_and_empty_quoted_strings() {
+        let columns = vec![filter_column("note", FilterKind::Text)];
+        let filters = parse_filter_input(&columns, "note = 'value contains is null'")
+            .expect("value with operator keywords");
+        assert_eq!(filters[0].operator, FilterOperator::Equals);
+        assert_eq!(filters[0].value.as_deref(), Some("value contains is null"));
+
+        let empty = parse_filter_input(&columns, "note = ''").expect("empty quoted string");
+        assert_eq!(empty[0].operator, FilterOperator::Equals);
+        assert_eq!(empty[0].value.as_deref(), Some(""));
+
+        let escaped = parse_filter_input(&columns, "note = \"say \"\"hi\"\"\"")
+            .expect("double-quoted string");
+        assert_eq!(escaped[0].value.as_deref(), Some("say \"hi\""));
+    }
+
+    #[test]
     fn filter_input_handles_non_ascii_identifiers_and_values() {
         let columns = vec![filter_column("naïve", FilterKind::Text)];
         let filters = parse_filter_input(&columns, "naïve = café").expect("unicode filter");
@@ -348,6 +378,7 @@ mod tests {
         let columns = vec![filter_column("name", FilterKind::Text)];
         assert!(parse_filter_input(&columns, "missing = 1").is_err());
     }
+
     #[test]
     fn object_definition_sql_quotes_literals_and_identifiers() {
         let postgres = object_definition_sql(
@@ -376,10 +407,14 @@ mod tests {
         );
         assert!(sqlserver.contains("OBJECT_ID(N'[sales]]data].[total]]]')"));
 
-        let oracle =
-            object_definition_sql(Engine::Oracle, SchemaObjectKind::Trigger, "app", "audit");
-        assert!(oracle.contains("owner = UPPER('app')"));
-        assert!(oracle.contains("name = UPPER('audit')"));
+        let oracle = object_definition_sql(
+            Engine::Oracle,
+            SchemaObjectKind::Trigger,
+            "APP",
+            "MixedCase",
+        );
+        assert!(oracle.contains("owner = 'APP'"));
+        assert!(oracle.contains("name = 'MixedCase'"));
         assert!(oracle.contains("type = 'TRIGGER'"));
 
         let sqlite =

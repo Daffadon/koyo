@@ -6,7 +6,7 @@ use gpui_kit::component::{Disableable, Icon, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette, QUICK_OPEN_RESULT_LIMIT};
@@ -14,8 +14,9 @@ use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette, QUICK_OPE
 thread_local! {
     /// Stable focus handles for custom, non-Button controls. Creating a handle
     /// during each render would lose focus as soon as the view repaints.
-    static CONTROL_FOCUS: RefCell<HashMap<(u64, SharedString), FocusHandle>> =
+    static CONTROL_FOCUS: RefCell<HashMap<(u64, SharedString), (FocusHandle, u64)>> =
         RefCell::new(HashMap::new());
+    static CONTROL_FOCUS_EPOCH: Cell<u64> = const { Cell::new(0) };
 }
 
 pub(super) const SETTINGS_FOCUS_SCOPE: u64 = u64::MAX;
@@ -26,21 +27,29 @@ pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
 
 pub(super) fn control_focus(tab_id: u64, key: impl Into<SharedString>, cx: &App) -> FocusHandle {
     let key = key.into();
+    let epoch = CONTROL_FOCUS_EPOCH.with(Cell::get);
     CONTROL_FOCUS.with(|handles| {
-        handles
-            .borrow_mut()
+        let mut handles = handles.borrow_mut();
+        let entry = handles
             .entry((tab_id, key))
-            .or_insert_with(|| cx.focus_handle())
-            .clone()
-            .tab_stop(true)
+            .or_insert_with(|| (cx.focus_handle(), epoch));
+        entry.1 = epoch;
+        entry.0.clone().tab_stop(true)
     })
 }
 
-pub(super) fn prune_control_focus(app: &KoyoApp) {
+pub(super) fn prune_control_focus(app: &KoyoApp, window: &Window) {
+    let previous = CONTROL_FOCUS_EPOCH.with(|epoch| {
+        let current = epoch.get();
+        epoch.set(current.wrapping_add(1));
+        current
+    });
     CONTROL_FOCUS.with(|handles| {
         let mut handles = handles.borrow_mut();
-        handles.retain(|(tab_id, _), _| {
-            *tab_id == SETTINGS_FOCUS_SCOPE || app.tabs.iter().any(|tab| tab.id == *tab_id)
+        handles.retain(|(tab_id, _), (handle, last_seen)| {
+            let tab_alive =
+                *tab_id == SETTINGS_FOCUS_SCOPE || app.tabs.iter().any(|tab| tab.id == *tab_id);
+            tab_alive && (*last_seen == previous || handle.is_focused(window))
         });
         if handles.capacity() > handles.len().saturating_mul(4).max(16) {
             handles.shrink_to_fit();
@@ -73,7 +82,6 @@ pub(super) fn keyboard_row(
 /// Per-button tooltip with a short delay. Anchored to the button itself so
 /// the popup follows the control when the toolbar reflows.
 fn tooltip_button(
-    _id: impl Into<ElementId>,
     button: Button,
     label: impl Into<SharedString>,
     placement: Option<gpui_kit::base::Placement>,
@@ -90,27 +98,19 @@ fn tooltip_button(
     .into_any_element()
 }
 
-pub(super) fn button_tooltip(
-    id: impl Into<ElementId>,
-    button: Button,
-    label: impl Into<SharedString>,
-) -> AnyElement {
-    tooltip_button(id, button, label, None)
+pub(super) fn button_tooltip(button: Button, label: impl Into<SharedString>) -> AnyElement {
+    tooltip_button(button, label, None)
 }
 
 /// Top-bar controls use an above placement so their tooltip does not cover
 /// the Run query button in the row below.
-pub(super) fn top_bar_tooltip(
-    id: impl Into<ElementId>,
-    button: Button,
-    label: impl Into<SharedString>,
-) -> AnyElement {
-    tooltip_button(id, button, label, Some(gpui_kit::base::Placement::Top))
+pub(super) fn top_bar_tooltip(button: Button, label: impl Into<SharedString>) -> AnyElement {
+    tooltip_button(button, label, Some(gpui_kit::base::Placement::Top))
 }
 
 /// Brand monogram used in the title bar and sidebar. Deep indigo and comet
 /// cyan keep the mark constant across the Dark, Light, and Kimi themes.
-pub(super) fn logo_mark(_palette: &Palette, size: f32) -> impl IntoElement {
+pub(super) fn logo_mark(size: f32) -> impl IntoElement {
     let night: gpui_kit::Hsla = gpui_kit::rgb(0x0B1238).into();
     let violet: gpui_kit::Hsla = gpui_kit::rgb(0x2A1A5E).into();
     let cyan: gpui_kit::Hsla = gpui_kit::rgb(0x5FE7FF).into();
@@ -137,14 +137,13 @@ pub(super) fn logo_mark(_palette: &Palette, size: f32) -> impl IntoElement {
 
 pub(super) fn button_tooltip_if(
     enabled: bool,
-    id: impl Into<ElementId>,
     button: Button,
     label: impl Into<SharedString>,
 ) -> AnyElement {
     if enabled {
-        button_tooltip(id, button, label)
+        button_tooltip(button, label)
     } else {
-        button.into_any_element()
+        button.accessibility_label(label).into_any_element()
     }
 }
 
@@ -156,8 +155,7 @@ pub(super) fn render_cell_editor(
     let insert = matches!(edit.target, CellTarget::Insert { .. });
     let can_be_null = edit.nullable;
     let value_mode = !edit.insert_is_default && !edit.is_null;
-    let apply_disabled = (!can_be_null && edit.is_null && !edit.insert_is_default)
-        || (insert && edit.insert_is_default);
+    let apply_disabled = !can_be_null && edit.is_null && !edit.insert_is_default;
 
     div()
         .id("cell-overlay")
@@ -166,9 +164,9 @@ pub(super) fn render_cell_editor(
         .flex()
         .items_center()
         .justify_center()
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
-                this.close_cell_editor(cx);
+                this.close_cell_editor(window, cx);
             }
         }))
         .child(
@@ -177,8 +175,8 @@ pub(super) fn render_cell_editor(
                 .absolute()
                 .inset_0()
                 .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.close_cell_editor(cx);
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.close_cell_editor(window, cx);
                 })),
         )
         .child(
@@ -222,8 +220,8 @@ pub(super) fn render_cell_editor(
                                 .icon(IconName::Close)
                                 .accessibility_label("Close cell editor")
                                 .tooltip("Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_cell_editor(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_cell_editor(window, cx);
                                 })),
                         ),
                 )
@@ -314,8 +312,8 @@ pub(super) fn render_cell_editor(
                             Button::new("cell-cancel")
                                 .secondary()
                                 .label("Cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_cell_editor(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.close_cell_editor(window, cx);
                                 })),
                         )
                         .child(
@@ -323,8 +321,8 @@ pub(super) fn render_cell_editor(
                                 .primary()
                                 .label("Apply")
                                 .disabled(apply_disabled)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.apply_cell_editor(cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.apply_cell_editor(window, cx);
                                 })),
                         ),
                 ),
@@ -482,6 +480,28 @@ pub(super) fn render_quick_open(
 
     div()
         .id("quick-open-overlay")
+        .key_context("QuickOpen")
+        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+            match event.keystroke.key.as_str() {
+                "escape" => {
+                    cx.stop_propagation();
+                    this.close_quick_open(window, cx);
+                }
+                "enter" => {
+                    cx.stop_propagation();
+                    this.accept_quick_open(window, cx);
+                }
+                "down" => {
+                    cx.stop_propagation();
+                    this.move_quick_open(1, cx);
+                }
+                "up" => {
+                    cx.stop_propagation();
+                    this.move_quick_open(-1, cx);
+                }
+                _ => {}
+            }
+        }))
         .absolute()
         .inset_0()
         .flex()
@@ -520,43 +540,18 @@ pub(super) fn render_quick_open(
                         .child(format!("Quick open · {count} table(s)")),
                 )
                 .child(
-                    div()
-                        .key_context("QuickOpen")
-                        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                            match event.keystroke.key.as_str() {
-                                "escape" => {
-                                    cx.stop_propagation();
-                                    this.close_quick_open(window, cx);
-                                }
-                                "enter" => {
-                                    cx.stop_propagation();
-                                    this.accept_quick_open(window, cx);
-                                }
-                                "down" => {
-                                    cx.stop_propagation();
-                                    this.move_quick_open(1, cx);
-                                }
-                                "up" => {
-                                    cx.stop_propagation();
-                                    this.move_quick_open(-1, cx);
-                                }
-                                _ => {}
-                            }
-                        }))
-                        .px_3()
-                        .pb_3()
-                        .child(
-                            Input::new(&open.input)
-                                .aria_label("Quick open table")
-                                .w_full()
-                                .cleanable(true)
-                                .with_size(Size::Small)
-                                .prefix(
-                                    Icon::new(IconName::Search)
-                                        .with_size(Size::Small)
-                                        .text_color(palette.muted),
-                                ),
-                        ),
+                    div().px_3().pb_3().child(
+                        Input::new(&open.input)
+                            .aria_label("Quick open table")
+                            .w_full()
+                            .cleanable(true)
+                            .with_size(Size::Small)
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .with_size(Size::Small)
+                                    .text_color(palette.muted),
+                            ),
+                    ),
                 )
                 .child(
                     v_flex()

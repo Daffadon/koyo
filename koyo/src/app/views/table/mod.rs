@@ -141,9 +141,10 @@ pub(super) fn render(
     };
 
     let editable = page.is_some_and(|page| page.editable) && connected;
-    let columns = page.map(|page| page.columns.clone()).unwrap_or_default();
+    let columns = page.map(|page| page.columns.as_slice()).unwrap_or(&[]);
     let offset = page.map(|page| page.offset).unwrap_or(0);
     let limit = page.map(|page| page.limit).unwrap_or(app.page_limit);
+    let next_offset = offset.checked_add(limit);
     let has_more = page.is_some_and(|page| page.has_more);
     let total_rows = page
         .and_then(|page| page.total_rows)
@@ -321,7 +322,6 @@ pub(super) fn render(
                 })),
         )
         .child(button_tooltip(
-            ("tooltip-download-table", tab_id),
             Button::new(("download-table", tab_id))
                 .ghost()
                 .compact()
@@ -338,7 +338,6 @@ pub(super) fn render(
             "Download table as CSV",
         ))
         .child(button_tooltip(
-            ("tooltip-refresh-table", tab_id),
             Button::new(("refresh-table", tab_id))
                 .ghost()
                 .compact()
@@ -403,7 +402,6 @@ pub(super) fn render(
                                         .child(title),
                                 )
                                 .child(button_tooltip(
-                                    ("tooltip-copy-table-name", tab_id),
                                     Button::new(("copy-table-name", tab_id))
                                         .ghost()
                                         .compact()
@@ -516,6 +514,11 @@ pub(super) fn render(
     };
 
     let footer_mono = cx.theme().mono_font_family.clone();
+    let next_disabled = loading
+        || !connected
+        || !has_more
+        || next_offset.is_none()
+        || u64::from(page_number) >= total_pages;
 
     v_flex()
         .flex_1()
@@ -578,21 +581,12 @@ pub(super) fn render(
                                 .icon(IconName::ChevronRight)
                                 .accessibility_label("Next page")
                                 .tooltip("Next page")
-                                .disabled(
-                                    loading
-                                        || !connected
-                                        || !has_more
-                                        || u64::from(page_number) >= total_pages,
-                                )
-                                .when(
-                                    loading
-                                        || !connected
-                                        || !has_more
-                                        || u64::from(page_number) >= total_pages,
-                                    |this| this.text_color(palette.foreground),
-                                )
+                                .disabled(next_disabled)
+                                .when(next_disabled, |this| this.text_color(palette.foreground))
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.request_page(tab_id, offset + limit, window, cx);
+                                    if let Some(next_offset) = next_offset {
+                                        this.request_page(tab_id, next_offset, window, cx);
+                                    }
                                 })),
                         ),
                 ),

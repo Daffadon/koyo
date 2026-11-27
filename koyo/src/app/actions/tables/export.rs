@@ -50,8 +50,9 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn close_table_export(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_table_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.export = None;
+        self.root_focus.focus(window, cx);
         cx.notify();
     }
 
@@ -80,7 +81,7 @@ impl KoyoApp {
         cx.notify();
     }
 
-    pub(crate) fn download_table_csv(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn download_table_csv(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dialog) = self.export.as_ref() else {
             return;
         };
@@ -177,11 +178,20 @@ impl KoyoApp {
         } else {
             path
         };
-        if let TabBody::Table(table) = &mut self.tabs[index].body {
+        let generation = if let TabBody::Table(table) = &mut self.tabs[index].body {
+            if let Some(abort) = table.export_abort.take() {
+                abort.abort();
+            }
             table.exporting = true;
+            table.export_generation = table.export_generation.wrapping_add(1);
+            let generation = table.export_generation;
             self.tabs[index].notice = format!("Exporting CSV to {}...", path.display());
-        }
+            generation
+        } else {
+            return;
+        };
         self.export = None;
+        self.root_focus.focus(window, cx);
         self.push_toast(
             ToastCategory::Exports,
             tab_id.to_string(),
@@ -192,14 +202,16 @@ impl KoyoApp {
 
         let manager = self.manager.clone();
         let session_id = connection.session_id;
+        let engine = connection.profile.engine;
         let path_for_task = path.clone();
-        self.spawn_task(
+        let abort = self.spawn_task(
             cx,
             tab_id,
             async move {
                 export_table_csv(
                     manager,
                     session_id,
+                    engine,
                     schema,
                     table_name,
                     first_page,
@@ -215,9 +227,22 @@ impl KoyoApp {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
                 };
-                if let TabBody::Table(table) = &mut this.tabs[index].body {
-                    table.exporting = false;
+                if this.tabs[index]
+                    .connection
+                    .as_ref()
+                    .map(|connection| connection.session_id)
+                    != Some(session_id)
+                {
+                    return;
                 }
+                let TabBody::Table(table) = &mut this.tabs[index].body else {
+                    return;
+                };
+                if table.export_generation != generation {
+                    return;
+                }
+                table.exporting = false;
+                table.export_abort = None;
                 match result {
                     Ok((rows, truncated)) => {
                         let suffix = if truncated {
@@ -267,5 +292,11 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+        if let Some(index) = self.tab_index(tab_id)
+            && let TabBody::Table(table) = &mut self.tabs[index].body
+            && table.export_generation == generation
+        {
+            table.export_abort = Some(abort);
+        }
     }
 }

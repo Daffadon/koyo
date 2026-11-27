@@ -7,7 +7,7 @@ use crate::app::{
     KoyoApp, MAX_HISTORY_LIMIT, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MAX_PAGE_LIMIT,
     MAX_QUERY_TIMEOUT_SECS, MIN_HISTORY_LIMIT, MIN_IDLE_POOL_TTL_SECS, MIN_PAGE_LIMIT,
     MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, display_keys, external_shortcut_conflict,
-    keys_equal, keys_for, shortcut_conflict, validate_keys,
+    keys_equal, keys_for, shortcut_conflict, trim_history, validate_keys,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +99,7 @@ impl KoyoApp {
         if keys_equal(&keys, current, os) {
             self.shortcut_capture = None;
             self.shortcut_error.clear();
+            self.apply_shortcut_bindings(cx);
             cx.notify();
             return;
         }
@@ -185,7 +186,7 @@ impl KoyoApp {
 
     pub(crate) fn set_history_limit(&mut self, entries: usize, cx: &mut Context<Self>) {
         self.history_limit = entries.clamp(MIN_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
-        self.history.truncate(self.history_limit);
+        trim_history(&mut self.history, self.history_limit);
         self.persist_state(cx);
         cx.notify();
     }
