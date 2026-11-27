@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use gpui_kit::*;
 
@@ -188,6 +188,65 @@ pub(crate) fn display_keys(keys: &str) -> String {
         .join(" + ")
 }
 
+fn canonical_keys(keys: &str, os: OperatingSystem) -> Option<String> {
+    Keystroke::parse_with_os(keys, os)
+        .ok()
+        .map(|keystroke| keystroke.unparse(os))
+}
+
+/// Return the label of the action already using this key combination. The
+/// comparison resolves `secondary-` for the current OS, so ctrl/cmd aliases
+/// cannot slip past the conflict check.
+pub(crate) fn shortcut_conflict(
+    shortcuts: &BTreeMap<String, String>,
+    action: &str,
+    keys: &str,
+    os: OperatingSystem,
+) -> Option<&'static str> {
+    let candidate = canonical_keys(keys, os)?;
+    SHORTCUTS.iter().find_map(|spec| {
+        if spec.id == action {
+            return None;
+        }
+        let used = canonical_keys(keys_for(shortcuts, spec), os)?;
+        (used == candidate).then_some(spec.label)
+    })
+}
+
+/// Remove old duplicate overrides imported from a previous state file. Valid
+/// customs win over defaults, but no two effective bindings may share a key.
+pub(crate) fn sanitize_shortcuts(
+    shortcuts: &BTreeMap<String, String>,
+    os: OperatingSystem,
+) -> BTreeMap<String, String> {
+    let mut sanitized = shortcuts.clone();
+    sanitized.retain(|id, keys| {
+        SHORTCUTS.iter().any(|spec| spec.id == id) && canonical_keys(keys, os).is_some()
+    });
+    // Defaults are unique. Only a saved custom can introduce a duplicate;
+    // remove the custom side of each conflict and repeat until stable.
+    loop {
+        let mut used = HashMap::new();
+        let mut conflict = None;
+        for spec in SHORTCUTS {
+            let Some(key) = canonical_keys(keys_for(&sanitized, spec), os) else {
+                continue;
+            };
+            if let Some(previous) = used.insert(key, spec.id) {
+                conflict = Some((previous, spec.id));
+                break;
+            }
+        }
+        let Some((first, second)) = conflict else {
+            break;
+        };
+        if sanitized.remove(first).is_none() && sanitized.remove(second).is_none() {
+            break;
+        }
+    }
+    sanitized
+}
+
 pub(crate) fn validate_keys(id: &str, keys: &str, cx: &App) -> Result<(), String> {
     let Some(action) = action_for(id) else {
         return Err("Unknown shortcut action.".into());
@@ -239,9 +298,10 @@ fn bindings_for(shortcuts: &BTreeMap<String, String>, cx: &App) -> Vec<KeyBindin
 
 #[cfg(test)]
 mod tests {
-    use super::{SHORTCUTS, action_for, display_keys};
+    use super::{SHORTCUTS, action_for, display_keys, sanitize_shortcuts, shortcut_conflict};
     use crate::{RunQuery, ToggleSidebar};
     use gpui_kit::{Action as _, KeyBindingContextPredicate, Keystroke, OperatingSystem};
+    use std::collections::BTreeMap;
 
     #[test]
     fn action_namespace_matches_the_rebind_filter() {
@@ -262,6 +322,53 @@ mod tests {
     #[test]
     fn display_uses_secondary_label() {
         assert_eq!(display_keys("secondary-enter"), "Ctrl/Cmd + Enter");
+    }
+
+    #[test]
+    fn default_shortcuts_are_unique() {
+        for os in [OperatingSystem::Linux, OperatingSystem::Mac] {
+            let sanitized = sanitize_shortcuts(&BTreeMap::new(), os);
+            assert!(sanitized.is_empty());
+            let keys = SHORTCUTS
+                .iter()
+                .map(|spec| {
+                    Keystroke::parse_with_os(spec.default_keys, os)
+                        .unwrap()
+                        .unparse(os)
+                })
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(keys.len(), SHORTCUTS.len());
+        }
+    }
+
+    #[test]
+    fn conflicts_are_rejected_and_old_duplicates_are_removed() {
+        assert_eq!(
+            shortcut_conflict(
+                &BTreeMap::new(),
+                "run_query",
+                "secondary-w",
+                OperatingSystem::Linux
+            ),
+            Some("Close tab")
+        );
+        assert_eq!(
+            shortcut_conflict(
+                &BTreeMap::new(),
+                "run_query",
+                "ctrl-alt-r",
+                OperatingSystem::Linux
+            ),
+            None
+        );
+
+        let saved = BTreeMap::from([
+            ("run_query".to_string(), "secondary-w".to_string()),
+            ("new_tab".to_string(), "ctrl-alt-n".to_string()),
+        ]);
+        let sanitized = sanitize_shortcuts(&saved, OperatingSystem::Linux);
+        assert!(!sanitized.contains_key("run_query"));
+        assert_eq!(sanitized["new_tab"], "ctrl-alt-n");
     }
 
     #[test]
@@ -287,6 +394,7 @@ mod tests {
 
 impl super::KoyoApp {
     pub(crate) fn apply_shortcut_bindings(&mut self, cx: &mut Context<Self>) {
+        self.shortcuts = sanitize_shortcuts(&self.shortcuts, cx.platform_info().os);
         let existing = cx
             .key_bindings()
             .borrow()

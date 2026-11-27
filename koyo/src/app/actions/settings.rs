@@ -6,7 +6,8 @@ use super::notifications::ToastCategory;
 use crate::app::{
     KoyoApp, MAX_HISTORY_LIMIT, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MAX_PAGE_LIMIT,
     MAX_QUERY_TIMEOUT_SECS, MIN_HISTORY_LIMIT, MIN_IDLE_POOL_TTL_SECS, MIN_PAGE_LIMIT,
-    MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, validate_keys,
+    MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, display_keys, shortcut_conflict,
+    validate_keys,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +91,13 @@ impl KoyoApp {
     ) {
         if let Err(error) = validate_keys(action, &keys, cx) {
             self.shortcut_error = error;
+            cx.notify();
+            return;
+        }
+        if let Some(label) =
+            shortcut_conflict(&self.shortcuts, action, &keys, cx.platform_info().os)
+        {
+            self.shortcut_error = format!("{} is already used by {label}.", display_keys(&keys));
             cx.notify();
             return;
         }
