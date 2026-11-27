@@ -1556,6 +1556,27 @@ async fn postgres_transaction_assigned(client: &Client) -> Result<bool, String> 
 /// statement failing on a live connection. Kept as string matching because
 /// the engine adapters return user-facing `String` errors.
 pub fn is_connection_lost(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+
+    // PostgreSQL server errors are formatted with their SQLSTATE. Only the
+    // connection/administrative classes are transport failures; a statement
+    // error must never tear down the whole profile just because a value in
+    // its text happens to contain words like "socket error".
+    if let Some(state) = lower.strip_prefix("sqlstate ") {
+        return state.starts_with("08") || state.starts_with("57p01");
+    }
+    // MySQL reports server errors as "ERROR <code> ...". Only known
+    // connection/transport codes are fatal; syntax and constraint errors are
+    // statement failures.
+    if let Some(rest) = lower.strip_prefix("error ")
+        && let Some(code) = rest.split_whitespace().next()
+    {
+        return matches!(
+            code,
+            "1053" | "1077" | "2002" | "2003" | "2006" | "2013" | "2055"
+        );
+    }
+
     const PATTERNS: &[&str] = &[
         "connection closed",
         "connection is closed",
@@ -1580,7 +1601,6 @@ pub fn is_connection_lost(error: &str) -> bool {
         "cancellation failed",
         "cancellation timed out",
     ];
-    let lower = error.to_ascii_lowercase();
     PATTERNS.iter().any(|pattern| lower.contains(pattern))
 }
 
@@ -2433,6 +2453,15 @@ mod connection_loss_tests {
             "SQLSTATE 42P01: relation \"missing\" does not exist"
         ));
         assert!(!is_connection_lost("database is locked"));
+        assert!(!is_connection_lost(
+            "SQLSTATE 22P02: invalid input syntax for type integer: \"socket error\""
+        ));
+        assert!(!is_connection_lost(
+            "ERROR 1064 (42000): You have an error near 'connection closed'"
+        ));
+        assert!(is_connection_lost(
+            "ERROR 2006 (HY000): MySQL server has gone away"
+        ));
         assert!(is_connection_lost(
             "Query exceeded 1,000 rows and did not stop after cancellation."
         ));

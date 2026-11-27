@@ -87,9 +87,9 @@ impl KoyoApp {
         let engine = tab.profile.as_ref().map(|profile| profile.engine);
         let profile = tab.profile.clone();
         let connection = tab.connection.clone();
-        let tables = tab.tables.clone();
-        let objects = tab.schema_objects.clone();
-        let expanded = tab.expanded.clone();
+        let tables = &tab.tables;
+        let objects = &tab.schema_objects;
+        let expanded = &tab.expanded;
         let selected_table = match &tab.body {
             TabBody::Table(table) => Some((table.schema.clone(), table.table.clone())),
             TabBody::Query(_) => None,
@@ -122,8 +122,9 @@ impl KoyoApp {
             (false, None) => "Connect",
         };
 
-        let mut by_schema: BTreeMap<String, Vec<koyo_core::models::SchemaObject>> = BTreeMap::new();
-        for object in &objects {
+        let mut by_schema: BTreeMap<String, Vec<&koyo_core::models::SchemaObject>> =
+            BTreeMap::new();
+        for object in objects {
             if searching
                 && !object.name.to_lowercase().contains(&search)
                 && !object.schema.to_lowercase().contains(&search)
@@ -133,7 +134,7 @@ impl KoyoApp {
             by_schema
                 .entry(object.schema.clone())
                 .or_default()
-                .push(object.clone());
+                .push(object);
         }
 
         let mut schema_nodes = v_flex().gap_1();
@@ -202,6 +203,7 @@ impl KoyoApp {
             ] {
                 let items = schema_objects
                     .iter()
+                    .copied()
                     .filter(|object| object.kind == kind)
                     .collect::<Vec<_>>();
                 if items.is_empty() {

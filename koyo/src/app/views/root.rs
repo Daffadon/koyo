@@ -193,59 +193,113 @@ impl Render for KoyoApp {
                     ),
             )
             .on_action(cx.listener(|this, _: &ToggleComment, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.toggle_sql_comment(window, cx);
             }))
             .on_action(cx.listener(|this, _: &MoveLineUp, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.move_line_up(window, cx);
             }))
             .on_action(cx.listener(|this, _: &MoveLineDown, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.move_line_down(window, cx);
             }))
             .on_action(cx.listener(|this, _: &DuplicateLine, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.duplicate_line(window, cx);
             }))
             .on_action(cx.listener(|this, _: &DeleteLine, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.delete_line(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.new_sql_tab(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.close_active_tab(window, cx);
             }))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.cycle_tab(1, window, cx);
             }))
             .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.cycle_tab(-1, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RunQuery, _, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.run_active_query(cx);
             }))
             .on_action(cx.listener(|this, _: &FormatQuery, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.format_active_query(window, cx);
             }))
             .on_action(cx.listener(|this, _: &MoveTabLeft, _, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.move_active_tab(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &MoveTabRight, _, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.move_active_tab(1, cx);
             }))
             .on_action(cx.listener(|this, _: &RefreshTable, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.refresh_active_table(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CompleteFilter, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 if !this.complete_active_filter(window, cx) {
                     cx.propagate();
                 }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.toggle_sidebar(cx);
             }))
             .on_action(cx.listener(|this, _: &QuickOpen, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.open_quick_open(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleAi, window, cx| {
+                if this.workspace_shortcuts_blocked() {
+                    return;
+                }
                 this.toggle_ai(window, cx);
             }))
             .when_some(dialog, |this, dialog| this.child(dialog))

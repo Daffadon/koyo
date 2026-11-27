@@ -4,13 +4,11 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, Size};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use koyo_core::models::TablePage;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use super::widgets::{button_tooltip, empty_state};
-use crate::app::{KoyoApp, Palette, StagedChange, TabBody, TableMode};
+use crate::app::{KoyoApp, Palette, TabBody, TableMode};
 
 fn loading_state(palette: &Palette) -> AnyElement {
     v_flex()
@@ -113,14 +111,12 @@ pub(super) fn render(
     let connected = tab.connection.is_some();
     let loading = table.loading;
     let cancelling = table.cancelling;
-    let staged: Rc<Vec<StagedChange>> = Rc::new(table.staged.clone());
-    let selected_keys = Rc::new(table.selected_keys.clone());
     let selected_count = table.selected_keys.len();
-    let page: Option<Rc<TablePage>> = table.page.clone().map(Rc::new);
+    let page = table.page.as_ref();
     let sort = table.sort.clone();
     let engine = tab.engine();
     let cancel_supported = engine != Some(koyo_core::models::Engine::Oracle);
-    let has_staged = !staged.is_empty();
+    let has_staged = !table.staged.is_empty();
     let exporting = table.exporting;
     let mode = table.mode;
 
@@ -132,7 +128,7 @@ pub(super) fn render(
         } else {
             "Reconnect to edit or filter this table."
         }
-    } else if page.as_ref().is_some_and(|page| page.editable) {
+    } else if page.is_some_and(|page| page.editable) {
         "Edits are staged until you apply them."
     } else {
         "Read-only table without a primary key."
@@ -144,17 +140,14 @@ pub(super) fn render(
         "Connect"
     };
 
-    let page_ref = page.as_deref();
-    let editable = page_ref.is_some_and(|page| page.editable) && connected;
-    let columns = page_ref
-        .map(|page| page.columns.clone())
-        .unwrap_or_default();
-    let offset = page_ref.map(|page| page.offset).unwrap_or(0);
-    let limit = page_ref
+    let editable = page.is_some_and(|page| page.editable) && connected;
+    let columns = page.map(|page| page.columns.clone()).unwrap_or_default();
+    let offset = page.map(|page| page.offset).unwrap_or(0);
+    let limit = page
         .map(|page| page.limit)
         .unwrap_or(crate::app::PAGE_LIMIT);
-    let has_more = page_ref.is_some_and(|page| page.has_more);
-    let total_rows = page_ref
+    let has_more = page.is_some_and(|page| page.has_more);
+    let total_rows = page
         .and_then(|page| page.total_rows)
         .or(table.total_rows_cache)
         .unwrap_or(0);
@@ -246,7 +239,7 @@ pub(super) fn render(
                 && editable
                 && connected
                 && !loading
-                && page.as_ref().is_some_and(|page| !page.rows.is_empty()),
+                && page.is_some_and(|page| !page.rows.is_empty()),
             |this| {
                 this.child(
                     Button::new(("select-all-rows", tab_id))
@@ -270,7 +263,7 @@ pub(super) fn render(
                     .text_xs()
                     .text_color(palette.warning)
                     .whitespace_nowrap()
-                    .child(format!("{} pending", staged.len())),
+                    .child(format!("{} pending", table.staged.len())),
             )
         });
 
@@ -474,7 +467,7 @@ pub(super) fn render(
             .child(diagram::render_diagram(
                 tab_id,
                 table,
-                page_ref,
+                page,
                 engine.unwrap_or(koyo_core::models::Engine::Postgres),
                 palette,
                 &mono,
@@ -501,12 +494,12 @@ pub(super) fn render(
     // and makes paging look like the table disappeared.
     let grid = if page.is_none() && loading {
         loading_state(palette)
-    } else if let Some(page) = &page {
+    } else if let Some(page) = page {
         grid::render_grid(
             tab_id,
-            Rc::clone(page),
-            Rc::clone(&staged),
-            Rc::clone(&selected_keys),
+            page,
+            &table.staged,
+            &table.selected_keys,
             editable,
             connected,
             loading,
@@ -548,7 +541,7 @@ pub(super) fn render(
                 .text_color(palette.muted)
                 .child(div().font_family(footer_mono.clone()).child(format!(
                     "{total_rows} rows · {} on this page · {} columns",
-                    page_ref.map(|page| page.rows.len()).unwrap_or(0),
+                    page.map(|page| page.rows.len()).unwrap_or(0),
                     columns.len()
                 )))
                 .child(

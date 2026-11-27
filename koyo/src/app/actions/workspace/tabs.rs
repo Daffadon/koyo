@@ -248,7 +248,10 @@ impl KoyoApp {
                 None => self.make_query_tab(None, window, cx),
             };
             let id = self.add_tab(tab, Pane::Secondary);
-            if self.tabs[self.tab_index(id).unwrap()].connection.is_some() {
+            if self
+                .tab_index(id)
+                .is_some_and(|index| self.tabs[index].connection.is_some())
+            {
                 self.load_tables(id, cx);
             }
         } else {
@@ -361,6 +364,7 @@ impl KoyoApp {
             InputState::new(window, cx)
                 .placeholder("Filter: column = value AND column2 contains text")
         });
+        cx.observe(&filter_input, |_, _, cx| cx.notify()).detach();
         Tab {
             id,
             title: format!("{schema}.{table}").into(),

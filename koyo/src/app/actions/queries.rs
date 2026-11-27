@@ -226,9 +226,9 @@ impl KoyoApp {
         query.cancelling = false;
         query.operation_id = Some(operation_id);
         query.error.clear();
-        query.output = None;
+        // Keep the previous result visible while the next statement runs.
+        // Replacing it with an empty state made every Run collapse the grid.
         query.duration_ms = None;
-        query.result_column_widths.clear();
         query.result_resize_pointer_x = None;
         query.result_resize_column = None;
         self.tabs[index].notice.clear();

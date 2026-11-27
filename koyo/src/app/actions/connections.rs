@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::notification::Notification;
@@ -14,6 +15,24 @@ use uuid::Uuid;
 use super::notifications::ToastCategory;
 use super::workspace::same_connection_target;
 use crate::app::*;
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub(crate) async fn connect_with_timeout(
+    manager: &koyo_core::SessionManager,
+    profile: &koyo_core::models::ConnectionProfile,
+    password: &str,
+) -> Result<koyo_core::models::ConnectionInfo, String> {
+    match tokio::time::timeout(
+        CONNECTION_TIMEOUT,
+        database::connect(manager, profile, password),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("Connection timed out after 30 seconds.".into()),
+    }
+}
 
 impl ConnectionDialog {
     pub(crate) fn new(
@@ -234,12 +253,13 @@ impl KoyoApp {
         // Empty/disconnected tabs may be retargeted in place.
         let target_id = target.and_then(|id| self.tab_index(id).map(|index| self.tabs[index].id));
         let retarget_live_tab = target_id.is_some_and(|id| {
-            let index = self.tab_index(id).expect("tab exists");
-            self.tabs[index].connection.is_some()
-                && self.tabs[index]
-                    .profile
-                    .as_ref()
-                    .is_some_and(|current| current.id != profile.id)
+            self.tab_index(id).is_some_and(|index| {
+                self.tabs[index].connection.is_some()
+                    && self.tabs[index]
+                        .profile
+                        .as_ref()
+                        .is_some_and(|current| current.id != profile.id)
+            })
         });
         let adopt_sidebar = from_dialog && (target.is_none() || retarget_live_tab);
         let tab_id = if retarget_live_tab {
@@ -359,7 +379,7 @@ impl KoyoApp {
                 } else {
                     String::new()
                 };
-                database::connect(&manager, &profile_for_task, &password).await
+                connect_with_timeout(&manager, &profile_for_task, &password).await
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -732,7 +752,15 @@ impl KoyoApp {
         let store = self.store.clone();
         match store.save_profile(input, password) {
             Ok(saved) => {
-                self.profiles = store.load_profiles().unwrap_or_default();
+                match store.load_profiles() {
+                    Ok(profiles) => self.profiles = profiles,
+                    Err(error) => {
+                        log::error!("could not reload connection profiles: {error}");
+                        self.status = error;
+                        self.profiles.retain(|profile| profile.id != saved.id);
+                        self.profiles.push(saved.clone());
+                    }
+                }
                 if let Some(dialog) = self.dialog.as_mut() {
                     dialog.editing = Some(saved.id);
                     dialog.error.clear();
@@ -777,7 +805,14 @@ impl KoyoApp {
                 let store = this.store.clone();
                 match store.delete_profile(id) {
                     Ok(()) => {
-                        this.profiles = store.load_profiles().unwrap_or_default();
+                        match store.load_profiles() {
+                            Ok(profiles) => this.profiles = profiles,
+                            Err(error) => {
+                                log::error!("could not reload connection profiles: {error}");
+                                this.status = error;
+                                this.profiles.retain(|profile| profile.id != id);
+                            }
+                        }
                         this.close_tabs_for_profile(id, cx);
                         if let Some(dialog) = this.dialog.as_mut() {
                             if dialog.editing == Some(id) {

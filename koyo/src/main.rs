@@ -120,6 +120,10 @@ fn main() {
     }
     if let Err(error) = app::init_logging() {
         eprintln!("Could not initialize Koyo logging: {error}");
+        rfd::MessageDialog::new()
+            .set_title("Koyo")
+            .set_description(format!("Could not initialize Koyo logging: {error}"))
+            .show();
     }
     app::ensure_crypto_provider();
     app::install_panic_hook();
@@ -140,12 +144,21 @@ fn main() {
             return;
         }
     };
-    let runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .expect("create database runtime"),
-    );
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Arc::new(runtime),
+        Err(error) => {
+            let message = format!("Could not create the database runtime: {error}");
+            log::error!("{message}");
+            rfd::MessageDialog::new()
+                .set_title("Koyo")
+                .set_description(message)
+                .show();
+            return;
+        }
+    };
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
@@ -224,9 +237,15 @@ fn main() {
             let mut titlebar = TitleBar::title_bar_options();
             titlebar.title = Some("Koyo".into());
             options.titlebar = Some(titlebar);
-            gpui_kit::open_window(options, cx, move |window, cx| {
+            if let Err(error) = gpui_kit::open_window(options, cx, move |window, cx| {
                 cx.new(|cx| KoyoApp::new(window, cx, runtime))
-            })
-            .expect("open Koyo window");
+            }) {
+                let message = format!("Could not open the Koyo window: {error}");
+                log::error!("{message}");
+                rfd::MessageDialog::new()
+                    .set_title("Koyo")
+                    .set_description(message)
+                    .show();
+            }
         });
 }

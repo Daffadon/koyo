@@ -164,7 +164,7 @@ pub(crate) fn install_panic_hook() {
                 )
             })
             .unwrap_or_else(|| "unknown location".into());
-        let backtrace = std::backtrace::Backtrace::capture();
+        let backtrace = std::backtrace::Backtrace::force_capture();
         let line = format!("{timestamp} ERROR koyo::panic: {payload} at {location}\n{backtrace}\n");
         let mut options = OpenOptions::new();
         options.create(true).append(true);

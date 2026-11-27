@@ -173,11 +173,13 @@ fn render_result_row(
     let Some(row) = result.rows.get(row_index) else {
         return div().h(px(ROW_HEIGHT)).into_any_element();
     };
-    let row_text = (0..result.columns.len())
-        .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\t");
-    let row_text_for_keyboard = row_text.clone();
+    let row_text = Rc::new(
+        (0..result.columns.len())
+            .map(|index| row.get(index).and_then(Option::as_deref).unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
+    let row_text_for_keyboard = Rc::clone(&row_text);
     h_flex()
         .relative()
         .id(SharedString::from(format!(
@@ -198,7 +200,7 @@ fn render_result_row(
                 .copied()
                 .unwrap_or(RESULT_COLUMN_WIDTH);
             let menu_value = copy_text.clone();
-            let menu_row = row_text.clone();
+            let menu_row = Rc::clone(&row_text);
             let mut cell = keyboard_row(
                 div()
                     .id(SharedString::from(format!(
@@ -244,7 +246,7 @@ fn render_result_row(
                     cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
                 }))
                 .item(PopupMenuItem::new("Copy row").on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(row.clone()));
+                    cx.write_to_clipboard(ClipboardItem::new_string((*row).clone()));
                 }))
             })
         }))
@@ -271,7 +273,7 @@ fn render_result_row(
                 .cursor_pointer()
                 .hover(|style| style.bg(palette.panel_alt))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_to_clipboard(row_text.clone(), "Copied row.", cx);
+                    this.copy_to_clipboard(row_text.to_string(), "Copied row.", cx);
                 }))
                 .child((row_index + 1).to_string()),
             tab_id,
@@ -279,7 +281,7 @@ fn render_result_row(
             &palette,
             cx,
             move |this, _, cx| {
-                this.copy_to_clipboard(row_text_for_keyboard.clone(), "Copied row.", cx);
+                this.copy_to_clipboard(row_text_for_keyboard.to_string(), "Copied row.", cx);
             },
         ))
         .into_any_element()

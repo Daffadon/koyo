@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use koyo_core::storage::{EncryptedStateStore, default_config_dir};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use super::ai::{AiMessage, AiThread, DEFAULT_AI_CONFIG, DEFAULT_AI_WIDTH};
 use super::{DEFAULT_IDLE_POOL_SIZE, DEFAULT_IDLE_POOL_TTL_SECS, DEFAULT_SIDEBAR_WIDTH};
 
 const STATE_FILE: &str = "state.enc";
+const SAVE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 const LEGACY_STATE_FILE: &str = "state.json";
 pub(crate) const HISTORY_LIMIT: usize = 100;
 
@@ -200,8 +202,14 @@ pub(crate) struct StateSaveQueue {
 }
 
 impl StateSaveQueue {
+    fn lock(&self) -> MutexGuard<'_, SaveQueueState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     pub(crate) fn submit(&self, state: PersistedState) {
-        let mut queue = self.state.lock().expect("state save queue lock");
+        let mut queue = self.lock();
         queue.pending = Some(state);
         queue.generation = queue.generation.wrapping_add(1);
         queue.error = None;
@@ -210,33 +218,47 @@ impl StateSaveQueue {
 
     pub(crate) fn flush(&self, state: PersistedState) -> Result<(), String> {
         let generation = {
-            let mut queue = self.state.lock().expect("state save queue lock");
+            let mut queue = self.lock();
             queue.pending = Some(state);
             queue.generation = queue.generation.wrapping_add(1);
             queue.error = None;
             self.wake.notify_one();
             queue.generation
         };
-        let mut queue = self.state.lock().expect("state save queue lock");
+        let deadline = Instant::now() + SAVE_FLUSH_TIMEOUT;
+        let mut queue = self.lock();
         while queue.saved_generation < generation {
-            queue = self.wake.wait(queue).expect("state save queue lock");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("Saving application state timed out.".into());
+            }
+            let (next, timeout) = self
+                .wake
+                .wait_timeout(queue, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            queue = next;
+            if timeout.timed_out() && queue.saved_generation < generation {
+                return Err("Saving application state timed out.".into());
+            }
         }
         queue.error.take().map_or(Ok(()), Err)
     }
 
     fn next(&self) -> (PersistedState, u64) {
-        let mut queue = self.state.lock().expect("state save queue lock");
-        while queue.pending.is_none() {
-            queue = self.wake.wait(queue).expect("state save queue lock");
+        let mut queue = self.lock();
+        loop {
+            if let Some(state) = queue.pending.take() {
+                return (state, queue.generation);
+            }
+            queue = self
+                .wake
+                .wait(queue)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
-        (
-            queue.pending.take().expect("pending state"),
-            queue.generation,
-        )
     }
 
     fn finish(&self, generation: u64, error: Option<String>) {
-        let mut queue = self.state.lock().expect("state save queue lock");
+        let mut queue = self.lock();
         if error.is_some() {
             queue.error = error;
         }
@@ -249,13 +271,16 @@ pub(crate) fn spawn_state_save_worker(
     queue: Arc<StateSaveQueue>,
     settings: SettingsStore,
     errors: tokio::sync::mpsc::UnboundedSender<String>,
-) {
+) -> Result<(), String> {
     std::thread::Builder::new()
         .name("koyo-state-save".into())
         .spawn(move || {
             loop {
                 let (state, generation) = queue.next();
-                let result = settings.save(&state);
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    settings.save(&state)
+                }))
+                .unwrap_or_else(|_| Err("The state save worker panicked.".to_string()));
                 if let Err(error) = &result {
                     log::error!("state save worker failed: {error}");
                     let _ = errors.send(error.clone());
@@ -263,7 +288,8 @@ pub(crate) fn spawn_state_save_worker(
                 queue.finish(generation, result.err());
             }
         })
-        .expect("start state save thread");
+        .map(|_| ())
+        .map_err(|error| format!("Could not start the state save worker: {error}"))
 }
 
 impl SettingsStore {
@@ -570,7 +596,8 @@ mod tests {
         let store = SettingsStore::with_key(&directory, [17u8; 32]);
         let queue = Arc::new(StateSaveQueue::default());
         let (errors, _) = tokio::sync::mpsc::unbounded_channel();
-        spawn_state_save_worker(queue.clone(), store.clone(), errors);
+        spawn_state_save_worker(queue.clone(), store.clone(), errors)
+            .expect("start state save worker");
 
         let mut state = PersistedState::default();
         state.theme = "light".into();

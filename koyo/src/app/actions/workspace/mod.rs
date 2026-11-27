@@ -47,7 +47,7 @@ impl KoyoApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, runtime: Arc<Runtime>) -> Self {
         let store = ProfileStore::from_default_dir();
         let settings = SettingsStore::from_default_dir();
-        let (saved, state_warning, persistence_error) = match settings.load() {
+        let (saved, state_warning, mut persistence_error) = match settings.load() {
             Ok(loaded) => (loaded.state, loaded.warning, None),
             Err(error) => {
                 log::error!("could not load Koyo state: {error}");
@@ -85,7 +85,13 @@ impl KoyoApp {
         let (ai_threads, ai_active_thread, next_ai_thread_id) = restore_ai_threads(&saved);
         let save_queue = Arc::new(StateSaveQueue::default());
         let (save_error_tx, mut save_error_rx) = tokio::sync::mpsc::unbounded_channel();
-        spawn_state_save_worker(save_queue.clone(), settings.clone(), save_error_tx);
+        if let Err(error) =
+            spawn_state_save_worker(save_queue.clone(), settings.clone(), save_error_tx)
+        {
+            log::error!("{error}");
+            status = error.clone();
+            persistence_error = Some(error);
+        }
         let ai_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Ask about your database...")
@@ -214,6 +220,16 @@ impl KoyoApp {
         })
         .detach();
         app
+    }
+
+    pub(crate) fn workspace_shortcuts_blocked(&self) -> bool {
+        self.dialog.is_some()
+            || self.settings_open
+            || self.cell_edit.is_some()
+            || self.confirm.is_some()
+            || self.export.is_some()
+            || self.quick_open.is_some()
+            || self.ai_settings_open
     }
 
     pub(crate) fn ensure_workspace_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {

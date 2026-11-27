@@ -268,6 +268,7 @@ pub(crate) struct QuickOpen {
     pub(crate) input: Entity<InputState>,
     pub(crate) selected: usize,
     pub(crate) scroll: ScrollHandle,
+    pub(crate) _subscription: gpui_kit::Subscription,
     pub(crate) return_focus: Option<FocusHandle>,
 }
 

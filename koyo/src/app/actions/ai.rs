@@ -1,10 +1,16 @@
 use std::time::{Duration, Instant};
 
-use gpui_kit::Window;
 use gpui_kit::prelude::*;
+use gpui_kit::{ScrollHandle, Window};
 use tokio::sync::mpsc;
 
 use crate::app::*;
+
+fn ai_scroll_near_bottom(scroll: &ScrollHandle) -> bool {
+    let offset = f32::from(scroll.offset().y);
+    let max = f32::from(scroll.max_offset().y);
+    offset <= -max + 32.0
+}
 
 pub(crate) fn restore_ai_threads(saved: &PersistedState) -> (Vec<AiThread>, u64, u64) {
     let mut threads = if !saved.ai_threads.is_empty() {
@@ -31,6 +37,17 @@ pub(crate) fn restore_ai_threads(saved: &PersistedState) -> (Vec<AiThread>, u64,
     } else {
         Vec::new()
     };
+    if threads.len() > AI_THREAD_LIMIT
+        && let Some(index) = threads
+            .iter()
+            .position(|thread| thread.id == saved.ai_active_thread)
+    {
+        threads.swap(0, index);
+    }
+    threads.truncate(AI_THREAD_LIMIT);
+    for thread in &mut threads {
+        trim_thread_messages(&mut thread.messages);
+    }
     if threads.is_empty() {
         threads.push(AiThread::new(1));
     }
@@ -301,6 +318,7 @@ impl KoyoApp {
         self.ai_compacting = false;
         if !compacting && let Some(thread) = self.active_ai_thread_mut() {
             discard_empty_assistant(&mut thread.messages);
+            trim_thread_messages(&mut thread.messages);
         }
         self.ai_error.clear();
         self.status = "AI response stopped.".into();
@@ -451,21 +469,29 @@ impl KoyoApp {
     }
 
     fn append_ai_delta(&mut self, text: String, cx: &mut Context<Self>) {
+        let follow = ai_scroll_near_bottom(&self.ai_scroll);
         if let Some(thread) = self.active_ai_thread_mut() {
             append_ai_delta(&mut thread.messages, &text);
         }
-        self.ai_scroll.scroll_to_bottom();
+        if follow {
+            self.ai_scroll.scroll_to_bottom();
+        }
         cx.notify();
     }
 
     fn finish_ai_stream(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        let follow = ai_scroll_near_bottom(&self.ai_scroll);
         self.ai_task = None;
         self.ai_pending = false;
         self.ai_compacting = false;
         if let Some(thread) = self.active_ai_thread_mut() {
-            self.ai_error = finish_reply(&mut thread.messages, error);
+            let reply = finish_reply(&mut thread.messages, error);
+            trim_thread_messages(&mut thread.messages);
+            self.ai_error = reply;
         }
-        self.ai_scroll.scroll_to_bottom();
+        if follow {
+            self.ai_scroll.scroll_to_bottom();
+        }
         self.persist_state(cx);
         cx.notify();
     }

@@ -143,9 +143,9 @@ impl KoyoApp {
             }
             let tab_id = self.add_tab(tab, target_pane);
             self.attach_profile_session(profile.id, tab_id, cx);
-            let needs_catalog = self.tabs[self.tab_index(tab_id).expect("tab exists")]
-                .tables
-                .is_empty()
+            let needs_catalog = self
+                .tab_index(tab_id)
+                .is_some_and(|index| self.tabs[index].tables.is_empty())
                 && !self.tabs.iter().any(|tab| {
                     tab.catalog_loading
                         && tab
@@ -198,7 +198,13 @@ impl KoyoApp {
                 } else {
                     String::new()
                 };
-                let info = database::connect(&manager, &profile_for_task, &password).await?;
+                let info =
+                    super::super::connections::connect_with_timeout(
+                        &manager,
+                        &profile_for_task,
+                        &password,
+                    )
+                    .await?;
                 let mut catalog_errors = Vec::new();
                 let tables = database::list_tables(&manager, info.session_id)
                     .await
@@ -446,7 +452,9 @@ impl KoyoApp {
             return false;
         };
         self.switch_tab(pane, order, window, cx);
-        let index = self.tab_index(tab_id).expect("tab exists");
+        let Some(index) = self.tab_index(tab_id) else {
+            return false;
+        };
         let needs_connect = self.tabs[index].connection.is_none() && !self.tabs[index].connecting;
         self.status = format!("Focused {schema}.{table}.");
         if needs_connect {

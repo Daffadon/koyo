@@ -23,6 +23,8 @@ pub(crate) const MAX_AI_WIDTH: f32 = 720.0;
 pub(crate) const AI_TRANSCRIPT_LIMIT: usize = 100;
 pub(crate) const AI_TRANSCRIPT_BYTES: usize = 256 * 1024;
 pub(crate) const AI_THREAD_LIMIT: usize = 20;
+const AI_THREAD_MESSAGES: usize = 200;
+const AI_THREAD_BYTES: usize = 512 * 1024;
 const MAX_AI_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_AI_ERROR_BYTES: usize = 16 * 1024;
 const MAX_AI_STREAM_BUFFER_BYTES: usize = 1024 * 1024;
@@ -302,6 +304,28 @@ pub(crate) fn transcript_snapshot(messages: &[AiMessage]) -> Vec<AiMessage> {
     }
     snapshot.reverse();
     snapshot
+}
+
+/// Keep the live thread bounded. The request snapshot has its own, tighter
+/// cap; without this, a long-lived thread would keep every old reply in memory
+/// and in `state.enc`.
+pub(crate) fn trim_thread_messages(messages: &mut Vec<AiMessage>) {
+    let mut start = messages.len();
+    let mut bytes = 0usize;
+    for (index, message) in messages.iter().enumerate().rev() {
+        let next_bytes = bytes.saturating_add(message.content.len());
+        let too_many = messages.len() - index > AI_THREAD_MESSAGES;
+        let too_large = next_bytes > AI_THREAD_BYTES && index + 1 < messages.len();
+        if too_many || too_large {
+            start = index + 1;
+            break;
+        }
+        bytes = next_bytes;
+        start = index;
+    }
+    if start > 0 {
+        messages.drain(..start);
+    }
 }
 
 pub(crate) fn append_ai_delta(messages: &mut Vec<AiMessage>, text: &str) {
@@ -859,6 +883,24 @@ fn default_max_tokens() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_trim_keeps_newest_messages_within_caps() {
+        let mut messages = (0..AI_THREAD_MESSAGES + 20)
+            .map(|index| AiMessage::user(format!("message {index}")))
+            .collect::<Vec<_>>();
+        trim_thread_messages(&mut messages);
+        assert_eq!(messages.len(), AI_THREAD_MESSAGES);
+        assert_eq!(messages.first().unwrap().content, "message 20");
+
+        let mut oversized = vec![
+            AiMessage::user("old"),
+            AiMessage::assistant("x".repeat(AI_THREAD_BYTES + 1)),
+        ];
+        trim_thread_messages(&mut oversized);
+        assert_eq!(oversized.len(), 1);
+        assert_eq!(oversized[0].role, AiRole::Assistant);
+    }
 
     #[test]
     fn config_accepts_snake_and_camel_case() {

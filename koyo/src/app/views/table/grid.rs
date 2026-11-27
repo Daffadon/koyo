@@ -18,9 +18,9 @@ use crate::app::*;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_grid(
     tab_id: u64,
-    page: Rc<TablePage>,
-    staged: Rc<Vec<StagedChange>>,
-    selected_keys: Rc<BTreeSet<Vec<Option<String>>>>,
+    page: &TablePage,
+    staged: &[StagedChange],
+    selected_keys: &BTreeSet<Vec<Option<String>>>,
     editable: bool,
     connected: bool,
     loading: bool,
@@ -244,9 +244,9 @@ pub(super) fn render_grid(
         |row_index, frozen_left| {
             render_virtual_row(
                 tab_id,
-                &page,
-                &staged,
-                &selected_keys,
+                page,
+                staged,
+                selected_keys,
                 row_index,
                 editable,
                 connected,
@@ -397,7 +397,7 @@ fn render_data_row(
         let cell = keyboard_row(
             div()
                 .id(SharedString::from(format!(
-                    "cell-{row_index}-{column_index}"
+                    "cell-{tab_id}-{row_index}-{column_index}"
                 )))
                 .w(px(column_widths
                     .get(column_index)

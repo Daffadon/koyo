@@ -23,12 +23,8 @@ impl KoyoApp {
             .filter(|table| table_matches(table, &query))
             .cloned()
             .collect::<Vec<_>>();
-        matches.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.schema.to_lowercase().cmp(&b.schema.to_lowercase()))
-        });
+        matches
+            .sort_by_cached_key(|table| (table.name.to_lowercase(), table.schema.to_lowercase()));
         matches
     }
 
@@ -39,7 +35,7 @@ impl KoyoApp {
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables..."));
         let return_focus = window.focused(cx);
-        cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+        let subscription = cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change)
                 && let Some(open) = this.quick_open.as_mut()
             {
@@ -47,13 +43,13 @@ impl KoyoApp {
                 open.scroll.scroll_to_item(0);
                 cx.notify();
             }
-        })
-        .detach();
+        });
         input.read(cx).focus_handle(cx).focus(window, cx);
         self.quick_open = Some(QuickOpen {
             input,
             selected: 0,
             scroll: ScrollHandle::new(),
+            _subscription: subscription,
             return_focus,
         });
         cx.notify();
