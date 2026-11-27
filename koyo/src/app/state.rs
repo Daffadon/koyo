@@ -24,6 +24,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 pub(crate) const PAGE_LIMIT: u32 = 100;
+pub(crate) const QUICK_OPEN_RESULT_LIMIT: usize = 100;
 pub(crate) const DEFAULT_COLUMN_WIDTH: f32 = 170.0;
 pub(crate) const RESULT_COLUMN_WIDTH: f32 = 180.0;
 pub(crate) const MIN_COLUMN_WIDTH: f32 = 72.0;
@@ -266,6 +267,7 @@ pub(crate) struct TableExportDialog {
 pub(crate) struct QuickOpen {
     pub(crate) input: Entity<InputState>,
     pub(crate) selected: usize,
+    pub(crate) scroll: ScrollHandle,
     pub(crate) return_focus: Option<FocusHandle>,
 }
 

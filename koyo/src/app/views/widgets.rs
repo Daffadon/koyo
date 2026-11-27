@@ -9,7 +9,7 @@ use gpui_kit::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette};
+use crate::app::{CellEdit, CellTarget, ConfirmState, KoyoApp, Palette, QUICK_OPEN_RESULT_LIMIT};
 
 thread_local! {
     /// Stable focus handles for custom, non-Button controls. Creating a handle
@@ -416,67 +416,68 @@ pub(super) fn render_quick_open(
     };
     let query = open.input.read(cx).value().to_string();
     let matches = app.quick_open_matches(&query);
-    let selected = open.selected.min(matches.len().saturating_sub(1));
+    let selected = open
+        .selected
+        .min(matches.len().saturating_sub(1))
+        .min(QUICK_OPEN_RESULT_LIMIT.saturating_sub(1));
     let count = matches.len();
 
     let results = if matches.is_empty() {
-        div()
-            .px_3()
-            .py_6()
-            .text_sm()
-            .text_color(palette.muted)
-            .child(if query.trim().is_empty() {
-                "No tables loaded for this connection."
-            } else {
-                "No tables match this search."
-            })
-            .into_any_element()
+        vec![
+            div()
+                .px_3()
+                .py_6()
+                .text_sm()
+                .text_color(palette.muted)
+                .child(if query.trim().is_empty() {
+                    "No tables loaded for this connection."
+                } else {
+                    "No tables match this search."
+                })
+                .into_any_element(),
+        ]
     } else {
-        v_flex()
-            .gap_1()
-            .children(
-                matches
-                    .into_iter()
-                    .take(100)
-                    .enumerate()
-                    .map(|(index, table)| {
-                        let schema = table.schema.clone();
-                        let name = table.name.clone();
+        matches
+            .into_iter()
+            .take(QUICK_OPEN_RESULT_LIMIT)
+            .enumerate()
+            .map(|(index, table)| {
+                let schema = table.schema.clone();
+                let name = table.name.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "quick-open-{schema}-{name}-{index}"
+                    )))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(index == selected, |this| this.bg(palette.selection))
+                    .when(index != selected, |this| {
+                        this.hover(|style| style.bg(palette.panel_alt))
+                    })
+                    .child(Icon::new(IconName::LayoutDashboard).with_size(Size::Small))
+                    .child(
                         div()
-                            .id(SharedString::from(format!(
-                                "quick-open-{schema}-{name}-{index}"
-                            )))
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .when(index == selected, |this| this.bg(palette.selection))
-                            .when(index != selected, |this| {
-                                this.hover(|style| style.bg(palette.panel_alt))
-                            })
-                            .child(Icon::new(IconName::LayoutDashboard).with_size(Size::Small))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .text_sm()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_ellipsis()
-                                    .child(format!("{schema}.{name}")),
-                            )
-                            .child(div().text_xs().text_color(palette.muted).child("table"))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_quick_open(window, cx);
-                                this.open_table(schema.clone(), name.clone(), window, cx);
-                            }))
-                            .into_any_element()
-                    }),
-            )
-            .into_any_element()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .text_sm()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .child(format!("{schema}.{name}")),
+                    )
+                    .child(div().text_xs().text_color(palette.muted).child("table"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_quick_open(window, cx);
+                        this.open_table(schema.clone(), name.clone(), window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect()
     };
 
     div()
@@ -558,13 +559,15 @@ pub(super) fn render_quick_open(
                         ),
                 )
                 .child(
-                    div()
+                    v_flex()
                         .id("quick-open-results")
                         .max_h(px(330.0))
                         .overflow_y_scroll()
+                        .track_scroll(&open.scroll)
+                        .gap_1()
                         .px_2()
                         .pb_2()
-                        .child(results),
+                        .children(results),
                 ),
         )
         .into_any_element()

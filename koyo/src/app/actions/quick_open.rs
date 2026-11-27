@@ -1,6 +1,6 @@
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Focusable, Window};
+use gpui_kit::{Focusable, ScrollHandle, Window};
 use koyo_core::models::TableSummary;
 
 use crate::app::*;
@@ -39,12 +39,12 @@ impl KoyoApp {
         }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables..."));
         let return_focus = window.focused(cx);
-        let observed = input.clone();
-        cx.observe(&input, move |this, _, cx| {
-            if let Some(open) = this.quick_open.as_mut()
-                && open.input == observed
+        cx.subscribe(&input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(open) = this.quick_open.as_mut()
             {
                 open.selected = 0;
+                open.scroll.scroll_to_item(0);
                 cx.notify();
             }
         })
@@ -53,6 +53,7 @@ impl KoyoApp {
         self.quick_open = Some(QuickOpen {
             input,
             selected: 0,
+            scroll: ScrollHandle::new(),
             return_focus,
         });
         cx.notify();
@@ -75,7 +76,10 @@ impl KoyoApp {
             return;
         };
         let query = open.input.read(cx).value().to_string();
-        let count = self.quick_open_matches(&query).len();
+        let count = self
+            .quick_open_matches(&query)
+            .len()
+            .min(QUICK_OPEN_RESULT_LIMIT);
         if count == 0 {
             return;
         }
@@ -87,6 +91,7 @@ impl KoyoApp {
         } else {
             open.selected = (open.selected + 1).min(count - 1);
         }
+        open.scroll.scroll_to_item(open.selected);
         cx.notify();
     }
 
