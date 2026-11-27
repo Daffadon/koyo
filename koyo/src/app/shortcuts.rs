@@ -208,12 +208,20 @@ const RESERVED_SHORTCUTS: &[(&str, &str)] = &[
     ("secondary-tab", "the operating system"),
     ("secondary-shift-tab", "the operating system"),
     ("secondary-space", "the operating system"),
+    ("alt-tab", "the operating system"),
+    ("alt-shift-tab", "the operating system"),
     ("alt-f4", "the window manager"),
     ("ctrl-alt-delete", "the operating system"),
+    ("ctrl-backspace", "the text editor"),
+    ("secondary-backspace", "the text editor"),
 ];
 
 fn owned_shortcut(keys: &str, os: OperatingSystem) -> Option<&'static str> {
-    let candidate = canonical_keys(keys, os)?;
+    let keystroke = Keystroke::parse_with_os(keys, os).ok()?;
+    if os != OperatingSystem::Mac && keystroke.modifiers.platform {
+        return Some("the operating system");
+    }
+    let candidate = keystroke.unparse(os);
     RESERVED_SHORTCUTS.iter().find_map(|(keys, owner)| {
         (canonical_keys(keys, os).as_deref() == Some(candidate.as_str())).then_some(*owner)
     })
@@ -417,6 +425,10 @@ mod tests {
         assert_eq!(
             owned_shortcut("alt-f4", OperatingSystem::Windows),
             Some("the window manager")
+        );
+        assert_eq!(
+            owned_shortcut("super-l", OperatingSystem::Linux),
+            Some("the operating system")
         );
         assert_eq!(owned_shortcut("f5", OperatingSystem::Linux), None);
     }
