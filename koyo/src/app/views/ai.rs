@@ -207,7 +207,7 @@ pub(super) fn render(
                         .text_color(palette.muted)
                         .whitespace_normal()
                         .child(
-                            "Use base_url, api_key, model, system_prompt, temperature, max_tokens, and optional headers. Values are stored in encrypted state.enc.",
+                            "Use base_url, api_key, model, system_prompt, temperature, max_tokens, and optional headers. system_prompt is appended after Koyo's built-in policy; it cannot replace it. Values are stored in encrypted state.enc.",
                         ),
                 ),
         )
