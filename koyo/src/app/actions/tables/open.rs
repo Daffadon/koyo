@@ -155,10 +155,11 @@ impl KoyoApp {
                 });
             if needs_catalog {
                 self.load_tables(tab_id, cx);
+            } else {
+                self.load_page(tab_id, 0, Vec::new(), None, cx);
             }
             self.persist_state(cx);
             cx.notify();
-            self.load_page(tab_id, 0, Vec::new(), None, cx);
             return;
         }
         if self.profile_is_connecting(&profile) {

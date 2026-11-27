@@ -15,6 +15,17 @@ impl KoyoApp {
         let Some(connection) = self.tabs[index].connection.clone() else {
             return;
         };
+        if self.tabs.iter().any(|tab| {
+            tab.catalog_loading
+                && tab
+                    .connection
+                    .as_ref()
+                    .is_some_and(|current| current.session_id == connection.session_id)
+        }) {
+            // Schema discovery holds the shared session. Its callback starts
+            // the focused table page when it finishes.
+            return;
+        }
         let TabBody::Table(table) = &mut self.tabs[index].body else {
             return;
         };
@@ -105,6 +116,42 @@ impl KoyoApp {
                 cx.notify();
             },
         );
+    }
+
+    /// Load a connected table only when it becomes visible. Reconnecting a
+    /// profile can restore many table tabs; firing every page request at the
+    /// same session makes all but one fail with "session is busy".
+    pub(crate) fn ensure_table_page(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        let Some(session_id) = self.tabs[index]
+            .connection
+            .as_ref()
+            .map(|connection| connection.session_id)
+        else {
+            return;
+        };
+        let TabBody::Table(table) = &self.tabs[index].body else {
+            return;
+        };
+        if table.page.is_some() || table.loading {
+            return;
+        }
+        // Catalog loading owns the session for several queries. Waiting for
+        // its callback avoids a guaranteed "session is busy" failure.
+        if self.tabs.iter().any(|tab| {
+            tab.catalog_loading
+                && tab
+                    .connection
+                    .as_ref()
+                    .is_some_and(|connection| connection.session_id == session_id)
+        }) {
+            return;
+        }
+        let filters = table.filters.clone();
+        let sort = table.sort.clone();
+        self.load_page(tab_id, 0, filters, sort, cx);
     }
 
     pub(crate) fn set_table_mode(&mut self, tab_id: u64, mode: TableMode, cx: &mut Context<Self>) {

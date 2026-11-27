@@ -348,6 +348,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: false,
+            connection_attempt: None,
             catalog_loading: false,
             pending_starter: None,
             body: TabBody::Query(QueryTab {
@@ -399,6 +400,7 @@ impl KoyoApp {
             expanded: BTreeSet::new(),
             notice: String::new(),
             connecting: true,
+            connection_attempt: None,
             catalog_loading: false,
             pending_starter: None,
             body: TabBody::Table(TableTab {
@@ -837,7 +839,11 @@ impl KoyoApp {
             return false;
         };
         let tab = &self.tabs[index];
-        if tab.connection.is_some() || tab.connecting {
+        if tab.connection.is_some() {
+            self.ensure_table_page(tab_id, cx);
+            return false;
+        }
+        if tab.connecting {
             return false;
         }
         let Some(profile) = tab.profile.clone() else {
@@ -858,8 +864,12 @@ impl KoyoApp {
                         .is_some_and(|current| current.session_id == session_id)
             });
             if !loading {
+                // The catalog callback starts the focused table page after
+                // releasing the session.
                 self.load_tables(tab_id, cx);
             }
+        } else if attached {
+            self.ensure_table_page(tab_id, cx);
         }
         attached
     }

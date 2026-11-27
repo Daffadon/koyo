@@ -435,18 +435,31 @@ impl KoyoApp {
             )
             .when(!notice.is_empty(), |this| {
                 this.child(
-                    div()
+                    h_flex()
                         .mx_2()
                         .mt_1()
-                        .px_3()
-                        .py_1()
+                        .gap_2()
+                        .items_center()
                         .rounded_md()
                         .border_1()
                         .border_color(palette.border)
                         .bg(palette.panel)
+                        .px_3()
+                        .py_1()
                         .text_xs()
                         .text_color(palette.muted)
-                        .child(notice),
+                        .child(div().flex_1().min_w(px(0.0)).child(notice))
+                        .child(
+                            Button::new(("notice-dismiss", tab_id))
+                                .ghost()
+                                .compact()
+                                .icon(IconName::Close)
+                                .accessibility_label("Dismiss notice")
+                                .tooltip("Dismiss")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.dismiss_notice(tab_id, cx);
+                                })),
+                        ),
                 )
             })
             .child(

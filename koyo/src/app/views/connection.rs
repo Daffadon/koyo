@@ -433,7 +433,6 @@ pub(super) fn render_dialog(
                         Button::new("dialog-cancel")
                             .secondary()
                             .label("Cancel")
-                            .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.close_connection_dialog(cx);
                             })),
@@ -462,9 +461,7 @@ pub(super) fn render_dialog(
         .items_center()
         .justify_center()
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-            if event.keystroke.key == "escape"
-                && !this.dialog.as_ref().is_some_and(|dialog| dialog.busy)
-            {
+            if event.keystroke.key == "escape" {
                 this.close_connection_dialog(cx);
             }
         }))
@@ -475,9 +472,7 @@ pub(super) fn render_dialog(
                 .inset_0()
                 .bg(gpui_kit::hsla(0.0, 0.0, 0.0, 0.35))
                 .on_click(cx.listener(|this, _, _, cx| {
-                    if !this.dialog.as_ref().is_some_and(|dialog| dialog.busy) {
-                        this.close_connection_dialog(cx);
-                    }
+                    this.close_connection_dialog(cx);
                 })),
         )
         .child(
@@ -524,7 +519,6 @@ pub(super) fn render_dialog(
                                 .icon(IconName::Close)
                                 .accessibility_label("Close connection dialog")
                                 .tooltip("Close")
-                                .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_connection_dialog(cx);
                                 })),

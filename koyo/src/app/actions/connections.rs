@@ -93,6 +93,7 @@ impl ConnectionDialog {
             sqlite_path,
             ssl_disable: engine.is_sqlite(),
             busy: false,
+            attempt_tab: None,
             error: String::new(),
         };
         apply_defaults(&mut dialog, engine, window, cx);
@@ -200,6 +201,14 @@ impl KoyoApp {
                             }
                         }
                     }
+                }
+                // Table pages use try_lock and fail fast while the catalog
+                // task owns the session. Start only the focused table after
+                // this task releases it; every other tab loads on activation.
+                if let Some(active) = this.pane_active_id(this.focus) {
+                    this.ensure_table_page(active, cx);
+                } else {
+                    this.ensure_table_page(tab_id, cx);
                 }
                 cx.notify();
             },
@@ -321,6 +330,7 @@ impl KoyoApp {
                 TabBody::Query(query) if query.pending_run
             );
             self.attach_connection_to_tab(tab_id, connection.clone(), catalog, cx);
+            self.ensure_table_page(tab_id, cx);
             if adopt_sidebar {
                 self.sidebar_tab = Some(tab_id);
             }
@@ -375,7 +385,9 @@ impl KoyoApp {
         }
 
         let previous_profile = self.tabs[index].profile.clone();
+        let attempt_id = Uuid::new_v4();
         self.tabs[index].connecting = true;
+        self.tabs[index].connection_attempt = Some(attempt_id);
         self.tabs[index].notice = if self.tabs[index].connection.is_some() {
             "Switching connection...".to_string()
         } else {
@@ -383,6 +395,7 @@ impl KoyoApp {
         };
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.busy = true;
+            dialog.attempt_tab = Some(tab_id);
             dialog.error.clear();
         }
         self.push_toast(
@@ -415,6 +428,14 @@ impl KoyoApp {
                     }
                     return;
                 };
+                // A cancelled attempt may finish after the user has started a
+                // new one. Never let its result or error touch the new state.
+                if this.tabs[index].connection_attempt != Some(attempt_id) {
+                    if let Ok(info) = &result {
+                        this.disconnect_session(info.session_id);
+                    }
+                    return;
+                }
                 match result {
                     Ok(info) => {
                         log::info!(
@@ -446,6 +467,7 @@ impl KoyoApp {
                             .is_some_and(|table| !table.staged.is_empty());
                         this.tabs[index].profile = Some(info.profile.clone());
                         this.tabs[index].connecting = false;
+                        this.tabs[index].connection_attempt = None;
                         this.tabs[index].notice.clear();
                         if matches!(this.tabs[index].body, TabBody::Query(_)) {
                             this.tabs[index].title = query_tab_title(Some(&info.profile));
@@ -483,10 +505,6 @@ impl KoyoApp {
                                 }
                             }
                             TabBody::Table(table) => {
-                                let offset =
-                                    table.page.as_ref().map(|page| page.offset).unwrap_or(0);
-                                let filters = table.filters.clone();
-                                let sort = table.sort.clone();
                                 // Row identity and staged values belong to the
                                 // previous session. Never let Apply use them
                                 // against the newly connected server.
@@ -502,7 +520,8 @@ impl KoyoApp {
                                 table.foreign_keys_loading = false;
                                 table.indexes.clear();
                                 table.diagram_metadata_loaded = false;
-                                this.load_page(tab_id, offset, filters, sort, cx);
+                                // The catalog task owns the session right now;
+                                // its callback starts this page.
                             }
                         }
                         if had_staged {
@@ -537,7 +556,12 @@ impl KoyoApp {
                         if run_pending {
                             this.run_query(tab_id, cx);
                         }
-                        if from_dialog {
+                        if from_dialog
+                            && this
+                                .dialog
+                                .as_ref()
+                                .is_some_and(|dialog| dialog.attempt_tab == Some(tab_id))
+                        {
                             this.dialog = None;
                         }
                     }
@@ -553,33 +577,37 @@ impl KoyoApp {
                                         .as_ref()
                                         .is_some_and(|profile| profile.id == profile_id)
                             })
+                            .filter(|tab| {
+                                tab.connection_attempt
+                                    .is_none_or(|attempt| attempt == attempt_id)
+                            })
                             .map(|tab| tab.id)
                             .collect::<Vec<_>>();
-                        let dialog_target = this
-                            .dialog
-                            .as_ref()
-                            .and_then(|dialog| dialog.target_tab);
-                        let targets_dialog =
-                            dialog_target.is_some_and(|id| waiting.contains(&id));
                         for waiting_id in waiting {
                             let Some(waiting_index) = this.tab_index(waiting_id) else {
                                 continue;
                             };
                             this.tabs[waiting_index].connecting = false;
+                            this.tabs[waiting_index].connection_attempt = None;
                             this.tabs[waiting_index].notice = error.clone();
                             if let TabBody::Query(query) = &mut this.tabs[waiting_index].body {
                                 query.pending_run = false;
                             }
                         }
-                        if targets_dialog
+                        if let Some(index) = this.tab_index(tab_id) {
+                            this.tabs[index].connecting = false;
+                            this.tabs[index].connection_attempt = None;
+                            this.tabs[index].notice = error.clone();
+                        }
+                        if this
+                            .dialog
+                            .as_ref()
+                            .is_some_and(|dialog| dialog.attempt_tab == Some(tab_id))
                             && let Some(dialog) = this.dialog.as_mut()
                         {
                             dialog.busy = false;
-                            dialog.error = format!("Could not connect: {error}");
-                        }
-                        if let Some(index) = this.tab_index(tab_id) {
-                            this.tabs[index].connecting = false;
-                            this.tabs[index].notice = error.clone();
+                            dialog.attempt_tab = None;
+                            dialog.error = error.clone();
                         }
                         this.status = error.clone();
                         if !from_dialog {
@@ -593,12 +621,6 @@ impl KoyoApp {
                                 .autohide(false),
                                 cx,
                             );
-                        }
-                        if from_dialog {
-                            if let Some(dialog) = this.dialog.as_mut() {
-                                dialog.busy = false;
-                                dialog.error = error;
-                            }
                         }
                     }
                 }
@@ -628,8 +650,38 @@ impl KoyoApp {
         cx.notify();
     }
 
+    pub(crate) fn dismiss_notice(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.tab_index(tab_id) else {
+            return;
+        };
+        if self.tabs[index].notice.is_empty() {
+            return;
+        }
+        self.tabs[index].notice.clear();
+        cx.notify();
+    }
+
     pub(crate) fn close_connection_dialog(&mut self, cx: &mut Context<Self>) {
-        self.dialog = None;
+        let Some(dialog) = self.dialog.take() else {
+            return;
+        };
+        if dialog.busy {
+            // Closing the dialog is also the only reliable way for the user to
+            // abandon a handshake that is stuck in the driver. The task is
+            // bounded by the connection timeout; its late result is ignored by
+            // the attempt check in connect_profile.
+            if let Some(tab_id) = dialog.attempt_tab.or(dialog.target_tab)
+                && let Some(index) = self.tab_index(tab_id)
+            {
+                self.tabs[index].connecting = false;
+                self.tabs[index].connection_attempt = None;
+                self.tabs[index].notice = "Connection cancelled.".into();
+                if let TabBody::Query(query) = &mut self.tabs[index].body {
+                    query.pending_run = false;
+                }
+            }
+            self.status = "Connection cancelled.".into();
+        }
         cx.notify();
     }
 

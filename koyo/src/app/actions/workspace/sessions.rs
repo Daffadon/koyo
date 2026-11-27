@@ -35,6 +35,7 @@ impl KoyoApp {
             return;
         };
         self.tabs[index].connecting = false;
+        self.tabs[index].connection_attempt = None;
         self.tabs[index].notice = error.clone();
         match &mut self.tabs[index].body {
             TabBody::Query(query) => {
@@ -260,6 +261,7 @@ impl KoyoApp {
                 .is_some_and(|table| !table.staged.is_empty());
             self.tabs[index].connection = None;
             self.tabs[index].connecting = false;
+            self.tabs[index].connection_attempt = None;
             self.tabs[index].catalog_loading = false;
             self.tabs[index].notice = if had_staged && !keep_staged {
                 format!("{notice} Staged edits in this tab were discarded.")
@@ -330,7 +332,7 @@ impl KoyoApp {
         tab_id: u64,
         connection: ConnectionInfo,
         catalog: CatalogSnapshot,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> bool {
         let Some(index) = self.tab_index(tab_id) else {
             return false;
@@ -349,13 +351,13 @@ impl KoyoApp {
         let profile = connection.profile.clone();
         self.tabs[index].connection = Some(connection);
         self.tabs[index].connecting = false;
+        self.tabs[index].connection_attempt = None;
         self.tabs[index].profile = Some(profile);
         self.tabs[index].notice.clear();
         self.tabs[index].tables = catalog.tables.clone();
         self.tabs[index].schema_objects = catalog.schema_objects.clone();
         self.tabs[index].metadata_groups = catalog.metadata_groups.clone();
         self.tabs[index].columns = catalog.columns.clone();
-        let mut table_view = None;
         match &mut self.tabs[index].body {
             TabBody::Query(query) => {
                 query.completion.borrow_mut().replace(
@@ -373,11 +375,6 @@ impl KoyoApp {
                 query.active_result = 0;
             }
             TabBody::Table(table) => {
-                table_view = Some((
-                    table.page.as_ref().map(|page| page.offset).unwrap_or(0),
-                    table.filters.clone(),
-                    table.sort.clone(),
-                ));
                 table.page = None;
                 table.total_rows_cache = None;
                 if !preserve_staged {
@@ -413,11 +410,8 @@ impl KoyoApp {
         {
             self.export = None;
         }
-        if self.dialog.as_ref().and_then(|dialog| dialog.target_tab) == Some(tab_id) {
+        if self.dialog.as_ref().and_then(|dialog| dialog.attempt_tab) == Some(tab_id) {
             self.dialog = None;
-        }
-        if let Some((offset, filters, sort)) = table_view {
-            self.load_page(tab_id, offset, filters, sort, cx);
         }
         true
     }

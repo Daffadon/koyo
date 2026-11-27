@@ -190,6 +190,9 @@ pub(crate) struct Tab {
     pub(crate) expanded: BTreeSet<String>,
     pub(crate) notice: String,
     pub(crate) connecting: bool,
+    /// Identifies the in-flight connection attempt so a cancelled attempt
+    /// cannot overwrite a newer one when its task eventually returns.
+    pub(crate) connection_attempt: Option<Uuid>,
     pub(crate) catalog_loading: bool,
     pub(crate) pending_starter: Option<SharedString>,
     pub(crate) body: TabBody,
@@ -214,6 +217,9 @@ pub(crate) struct ConnectionDialog {
     pub(crate) sqlite_path: Entity<InputState>,
     pub(crate) ssl_disable: bool,
     pub(crate) busy: bool,
+    /// Tab owned by the in-flight dialog connection, including tabs created
+    /// by the dialog when no target tab existed.
+    pub(crate) attempt_tab: Option<u64>,
     pub(crate) error: String,
 }
 
