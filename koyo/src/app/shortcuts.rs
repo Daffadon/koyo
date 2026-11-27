@@ -194,6 +194,67 @@ fn canonical_keys(keys: &str, os: OperatingSystem) -> Option<String> {
         .map(|keystroke| keystroke.unparse(os))
 }
 
+pub(crate) fn keys_equal(a: &str, b: &str, os: OperatingSystem) -> bool {
+    let Some(a) = canonical_keys(a, os) else {
+        return false;
+    };
+    canonical_keys(b, os).as_deref() == Some(a.as_str())
+}
+
+const RESERVED_SHORTCUTS: &[(&str, &str)] = &[
+    ("secondary-q", "the application menu"),
+    ("secondary-h", "the window manager"),
+    ("secondary-m", "the window manager"),
+    ("secondary-tab", "the operating system"),
+    ("secondary-shift-tab", "the operating system"),
+    ("secondary-space", "the operating system"),
+    ("alt-f4", "the window manager"),
+    ("ctrl-alt-delete", "the operating system"),
+];
+
+fn owned_shortcut(keys: &str, os: OperatingSystem) -> Option<&'static str> {
+    let candidate = canonical_keys(keys, os)?;
+    RESERVED_SHORTCUTS.iter().find_map(|(keys, owner)| {
+        (canonical_keys(keys, os).as_deref() == Some(candidate.as_str())).then_some(*owner)
+    })
+}
+
+fn binding_owner(name: &str) -> String {
+    let short_name = name.rsplit("::").next().unwrap_or(name);
+    if short_name == "NoAction" {
+        "the editor".to_string()
+    } else {
+        short_name.to_string()
+    }
+}
+
+/// Check keys owned by the window system and by non-Koyo editor bindings.
+/// Koyo bindings are excluded because they are covered by the action map.
+pub(crate) fn external_shortcut_conflict(
+    keys: &str,
+    os: OperatingSystem,
+    cx: &App,
+) -> Option<String> {
+    if let Some(owner) = owned_shortcut(keys, os) {
+        return Some(owner.to_string());
+    }
+    let candidate = Keystroke::parse_with_os(keys, os).ok()?;
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    keymap.bindings().find_map(|binding| {
+        let name = binding.action().name();
+        if name.starts_with("koyo::") {
+            return None;
+        }
+        let short_name = name.rsplit("::").next().unwrap_or(name);
+        if short_name == "Unbind" {
+            return None;
+        }
+        let keystrokes = binding.keystrokes();
+        (keystrokes.len() == 1 && keystrokes[0].inner() == &candidate).then(|| binding_owner(name))
+    })
+}
+
 /// Return the label of the action already using this key combination. The
 /// comparison resolves `secondary-` for the current OS, so ctrl/cmd aliases
 /// cannot slip past the conflict check.
@@ -221,7 +282,13 @@ pub(crate) fn sanitize_shortcuts(
 ) -> BTreeMap<String, String> {
     let mut sanitized = shortcuts.clone();
     sanitized.retain(|id, keys| {
-        SHORTCUTS.iter().any(|spec| spec.id == id) && canonical_keys(keys, os).is_some()
+        let Some(spec) = SHORTCUTS.iter().find(|spec| spec.id == id) else {
+            return false;
+        };
+        let Some(key) = canonical_keys(keys, os) else {
+            return false;
+        };
+        key != canonical_keys(spec.default_keys, os).unwrap_or_default()
     });
     // Defaults are unique. Only a saved custom can introduce a duplicate;
     // remove the custom side of each conflict and repeat until stable.
@@ -298,7 +365,10 @@ fn bindings_for(shortcuts: &BTreeMap<String, String>, cx: &App) -> Vec<KeyBindin
 
 #[cfg(test)]
 mod tests {
-    use super::{SHORTCUTS, action_for, display_keys, sanitize_shortcuts, shortcut_conflict};
+    use super::{
+        SHORTCUTS, action_for, display_keys, keys_equal, owned_shortcut, sanitize_shortcuts,
+        shortcut_conflict,
+    };
     use crate::{RunQuery, ToggleSidebar};
     use gpui_kit::{Action as _, KeyBindingContextPredicate, Keystroke, OperatingSystem};
     use std::collections::BTreeMap;
@@ -322,6 +392,33 @@ mod tests {
     #[test]
     fn display_uses_secondary_label() {
         assert_eq!(display_keys("secondary-enter"), "Ctrl/Cmd + Enter");
+    }
+
+    #[test]
+    fn ctrl_and_secondary_aliases_compare_equal() {
+        assert!(keys_equal(
+            "secondary-enter",
+            "ctrl-enter",
+            OperatingSystem::Linux
+        ));
+        assert!(!keys_equal(
+            "secondary-enter",
+            "ctrl-enter",
+            OperatingSystem::Mac
+        ));
+    }
+
+    #[test]
+    fn reserved_shortcuts_are_rejected() {
+        assert_eq!(
+            owned_shortcut("secondary-q", OperatingSystem::Linux),
+            Some("the application menu")
+        );
+        assert_eq!(
+            owned_shortcut("alt-f4", OperatingSystem::Windows),
+            Some("the window manager")
+        );
+        assert_eq!(owned_shortcut("f5", OperatingSystem::Linux), None);
     }
 
     #[test]
@@ -394,7 +491,14 @@ mod tests {
 
 impl super::KoyoApp {
     pub(crate) fn apply_shortcut_bindings(&mut self, cx: &mut Context<Self>) {
-        self.shortcuts = sanitize_shortcuts(&self.shortcuts, cx.platform_info().os);
+        let os = cx.platform_info().os;
+        let custom = self
+            .shortcuts
+            .iter()
+            .filter(|(_, keys)| external_shortcut_conflict(keys, os, cx).is_none())
+            .map(|(id, keys)| (id.clone(), keys.clone()))
+            .collect::<BTreeMap<_, _>>();
+        self.shortcuts = sanitize_shortcuts(&custom, os);
         let existing = cx
             .key_bindings()
             .borrow()

@@ -311,7 +311,7 @@ fn shortcuts_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) -
     v_flex()
         .gap_2()
         .child(div().text_xs().text_color(palette.muted).child(
-            "Click Change, then press the new keys. Escape cancels. Reset restores the default.",
+            "Click Change, then press the new keys. Escape cancels. Reset restores the default. Koyo, editor, and system shortcuts cannot overlap.",
         ))
         .when(!app.shortcut_error.is_empty(), |this| {
             this.child(

@@ -6,8 +6,8 @@ use super::notifications::ToastCategory;
 use crate::app::{
     KoyoApp, MAX_HISTORY_LIMIT, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MAX_PAGE_LIMIT,
     MAX_QUERY_TIMEOUT_SECS, MIN_HISTORY_LIMIT, MIN_IDLE_POOL_TTL_SECS, MIN_PAGE_LIMIT,
-    MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, display_keys, shortcut_conflict,
-    validate_keys,
+    MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, display_keys, external_shortcut_conflict,
+    keys_equal, keys_for, shortcut_conflict, validate_keys,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,26 +89,38 @@ impl KoyoApp {
         keys: String,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = validate_keys(action, &keys, cx) {
-            self.shortcut_error = error;
-            cx.notify();
-            return;
-        }
-        if let Some(label) =
-            shortcut_conflict(&self.shortcuts, action, &keys, cx.platform_info().os)
-        {
-            self.shortcut_error = format!("{} is already used by {label}.", display_keys(&keys));
-            cx.notify();
-            return;
-        }
         let Some(spec) = SHORTCUTS.iter().find(|spec| spec.id == action) else {
             self.shortcut_error = "Unknown shortcut action.".into();
             cx.notify();
             return;
         };
-        if keys == spec.default_keys {
+        let os = cx.platform_info().os;
+        let current = keys_for(&self.shortcuts, spec);
+        if keys_equal(&keys, current, os) {
+            self.shortcut_capture = None;
+            self.shortcut_error.clear();
+            cx.notify();
+            return;
+        }
+        if let Err(error) = validate_keys(action, &keys, cx) {
+            self.shortcut_error = error;
+            cx.notify();
+            return;
+        }
+        if let Some(label) = shortcut_conflict(&self.shortcuts, action, &keys, os) {
+            self.shortcut_error = format!("{} is already used by {label}.", display_keys(&keys));
+            cx.notify();
+            return;
+        }
+        if keys_equal(&keys, spec.default_keys, os) {
             self.shortcuts.remove(action);
         } else {
+            if let Some(owner) = external_shortcut_conflict(&keys, os, cx) {
+                self.shortcut_error =
+                    format!("{} is already used by {owner}.", display_keys(&keys));
+                cx.notify();
+                return;
+            }
             self.shortcuts.insert(action.to_string(), keys);
         }
         self.shortcut_capture = None;
