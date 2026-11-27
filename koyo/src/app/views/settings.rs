@@ -10,8 +10,8 @@ use gpui_kit::*;
 use super::widgets::{SETTINGS_FOCUS_SCOPE, control_focus, is_activation_key};
 use crate::app::actions::settings::NotificationPreference;
 use crate::app::{
-    KoyoApp, Palette, SettingsSection, ThemeChoice, VERSION, config_path, executable_checksum,
-    log_path,
+    KoyoApp, Palette, SHORTCUTS, SettingsSection, ThemeChoice, VERSION, config_path, display_keys,
+    executable_checksum, keys_for, log_path,
 };
 
 fn preference_row(
@@ -306,6 +306,74 @@ fn data_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) -> Any
         .into_any_element()
 }
 
+fn shortcuts_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) -> AnyElement {
+    let mono = cx.theme().mono_font_family.clone();
+    v_flex()
+        .gap_2()
+        .child(div().text_xs().text_color(palette.muted).child(
+            "Click Change, then press the new keys. Escape cancels. Reset restores the default.",
+        ))
+        .when(!app.shortcut_error.is_empty(), |this| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(palette.danger)
+                    .child(app.shortcut_error.clone()),
+            )
+        })
+        .children(SHORTCUTS.iter().enumerate().map(|(index, spec)| {
+            let keys = keys_for(&app.shortcuts, spec);
+            let capturing = app.shortcut_capture == Some(spec.id);
+            let changed = app.shortcuts.contains_key(spec.id);
+            h_flex()
+                .id(("shortcut-row", index))
+                .items_center()
+                .gap_3()
+                .min_h(px(34.0))
+                .py_1()
+                .border_b_1()
+                .border_color(palette.border)
+                .child(div().flex_1().min_w(px(0.0)).text_sm().child(spec.label))
+                .child(
+                    div()
+                        .min_w(px(150.0))
+                        .text_xs()
+                        .font_family(mono.clone())
+                        .text_color(if capturing {
+                            palette.warning
+                        } else {
+                            palette.muted
+                        })
+                        .child(if capturing {
+                            "Press keys...".to_string()
+                        } else {
+                            display_keys(keys)
+                        }),
+                )
+                .child(
+                    Button::new(("shortcut-change", index))
+                        .secondary()
+                        .compact()
+                        .label(if capturing { "Listening" } else { "Change" })
+                        .disabled(capturing)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.begin_shortcut_capture(spec.id, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(("shortcut-reset", index))
+                        .ghost()
+                        .compact()
+                        .label("Reset")
+                        .disabled(!changed)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.reset_shortcut(spec.id, cx);
+                        })),
+                )
+        }))
+        .into_any_element()
+}
+
 fn notifications_body(app: &KoyoApp, palette: &Palette, cx: &mut Context<KoyoApp>) -> AnyElement {
     let notifications = &app.notifications;
     let categories = notifications.enabled;
@@ -554,6 +622,7 @@ pub(super) fn render_settings(
     let body = match section {
         SettingsSection::Appearance => appearance_body(app, palette, cx),
         SettingsSection::Data => data_body(app, palette, cx),
+        SettingsSection::Shortcuts => shortcuts_body(app, palette, cx),
         SettingsSection::Notifications => notifications_body(app, palette, cx),
         SettingsSection::Connections => connections_body(app, palette, cx),
         SettingsSection::About => about_body(palette, cx),
@@ -667,7 +736,15 @@ pub(super) fn render_settings(
         .items_center()
         .justify_center()
         .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "escape" {
+            if let Some(action) = this.shortcut_capture {
+                if event.keystroke.key == "escape" {
+                    this.cancel_shortcut_capture(cx);
+                } else {
+                    let keys = event.keystroke.unparse(cx.platform_info().os);
+                    this.set_shortcut(action, keys, cx);
+                }
+                cx.stop_propagation();
+            } else if event.keystroke.key == "escape" {
                 this.close_settings(window, cx);
             }
         }))

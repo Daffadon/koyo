@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -21,15 +22,17 @@ pub(crate) enum SettingsSection {
     #[default]
     Appearance,
     Data,
+    Shortcuts,
     Notifications,
     Connections,
     About,
 }
 
 impl SettingsSection {
-    pub(crate) const ALL: [Self; 5] = [
+    pub(crate) const ALL: [Self; 6] = [
         Self::Appearance,
         Self::Data,
+        Self::Shortcuts,
         Self::Notifications,
         Self::Connections,
         Self::About,
@@ -39,6 +42,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "Appearance",
             Self::Data => "Data & SQL",
+            Self::Shortcuts => "Keyboard",
             Self::Notifications => "Notifications",
             Self::Connections => "Connections",
             Self::About => "About",
@@ -49,6 +53,7 @@ impl SettingsSection {
         match self {
             Self::Appearance => "Pick the palette for the workspace, tables, and chrome.",
             Self::Data => "Set table page size, query timeout, and history depth.",
+            Self::Shortcuts => "Bind every Koyo action to your own keys.",
             Self::Notifications => "Choose which events show a toast.",
             Self::Connections => "Set how long clean sessions wait for reuse.",
             Self::About => "Version, executable checksum, and local log location.",
@@ -94,6 +99,8 @@ pub(crate) struct PersistedState {
     pub(crate) query_timeout_secs: u64,
     #[serde(default = "default_history_limit")]
     pub(crate) history_limit: usize,
+    #[serde(default)]
+    pub(crate) shortcuts: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -142,6 +149,7 @@ impl Default for PersistedState {
             page_limit: default_page_limit(),
             query_timeout_secs: default_query_timeout_secs(),
             history_limit: default_history_limit(),
+            shortcuts: BTreeMap::new(),
         }
     }
 }
@@ -423,6 +431,7 @@ mod tests {
         SettingsSection, SettingsStore, StateSaveQueue, TabSnapshot, WorkspaceSnapshot,
         spawn_state_save_worker,
     };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     #[test]
@@ -465,6 +474,7 @@ mod tests {
             page_limit: 50,
             query_timeout_secs: 60,
             history_limit: 250,
+            shortcuts: BTreeMap::from([("run_query".into(), "ctrl-alt-r".into())]),
             workspace: WorkspaceSnapshot {
                 split: Some("horizontal".into()),
                 primary: vec![TabSnapshot::Query {
@@ -512,6 +522,7 @@ mod tests {
         assert_eq!(decoded.page_limit, 50);
         assert_eq!(decoded.query_timeout_secs, 60);
         assert_eq!(decoded.history_limit, 250);
+        assert_eq!(decoded.shortcuts["run_query"], "ctrl-alt-r");
         assert_eq!(decoded.workspace.secondary.len(), 1);
         assert!(decoded.workspace.focus_secondary);
     }
@@ -547,6 +558,7 @@ mod tests {
             crate::app::DEFAULT_QUERY_TIMEOUT_SECS
         );
         assert_eq!(state.history_limit, crate::app::DEFAULT_HISTORY_LIMIT);
+        assert!(state.shortcuts.is_empty());
     }
 
     #[test]
@@ -687,6 +699,7 @@ mod tests {
             [
                 SettingsSection::Appearance,
                 SettingsSection::Data,
+                SettingsSection::Shortcuts,
                 SettingsSection::Notifications,
                 SettingsSection::Connections,
                 SettingsSection::About

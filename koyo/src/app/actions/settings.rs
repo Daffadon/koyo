@@ -6,7 +6,7 @@ use super::notifications::ToastCategory;
 use crate::app::{
     KoyoApp, MAX_HISTORY_LIMIT, MAX_IDLE_POOL_SIZE, MAX_IDLE_POOL_TTL_SECS, MAX_PAGE_LIMIT,
     MAX_QUERY_TIMEOUT_SECS, MIN_HISTORY_LIMIT, MIN_IDLE_POOL_TTL_SECS, MIN_PAGE_LIMIT,
-    MIN_QUERY_TIMEOUT_SECS, SettingsSection,
+    MIN_QUERY_TIMEOUT_SECS, SHORTCUTS, SettingsSection, validate_keys,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +35,11 @@ impl KoyoApp {
     pub(crate) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_open {
             self.settings_open = false;
+            let was_capturing = self.shortcut_capture.take().is_some();
+            self.shortcut_error.clear();
+            if was_capturing {
+                self.apply_shortcut_bindings(cx);
+            }
             self.root_focus.focus(window, cx);
             cx.notify();
         }
@@ -47,8 +52,72 @@ impl KoyoApp {
     ) {
         if self.settings_section != section {
             self.settings_section = section;
+            let was_capturing = self.shortcut_capture.take().is_some();
+            if was_capturing {
+                self.apply_shortcut_bindings(cx);
+            }
+            self.shortcut_error.clear();
             cx.notify();
         }
+    }
+
+    pub(crate) fn begin_shortcut_capture(
+        &mut self,
+        action: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.shortcut_capture = Some(action);
+        self.shortcut_error.clear();
+        self.settings_focus.focus(window, cx);
+        self.apply_shortcut_bindings(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn cancel_shortcut_capture(&mut self, cx: &mut Context<Self>) {
+        if self.shortcut_capture.take().is_some() {
+            self.apply_shortcut_bindings(cx);
+        }
+        self.shortcut_error.clear();
+        cx.notify();
+    }
+
+    pub(crate) fn set_shortcut(
+        &mut self,
+        action: &'static str,
+        keys: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = validate_keys(action, &keys, cx) {
+            self.shortcut_error = error;
+            cx.notify();
+            return;
+        }
+        let Some(spec) = SHORTCUTS.iter().find(|spec| spec.id == action) else {
+            self.shortcut_error = "Unknown shortcut action.".into();
+            cx.notify();
+            return;
+        };
+        if keys == spec.default_keys {
+            self.shortcuts.remove(action);
+        } else {
+            self.shortcuts.insert(action.to_string(), keys);
+        }
+        self.shortcut_capture = None;
+        self.shortcut_error.clear();
+        self.apply_shortcut_bindings(cx);
+        self.persist_state(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn reset_shortcut(&mut self, action: &'static str, cx: &mut Context<Self>) {
+        self.shortcut_capture = None;
+        if self.shortcuts.remove(action).is_some() {
+            self.persist_state(cx);
+        }
+        self.apply_shortcut_bindings(cx);
+        self.shortcut_error.clear();
+        cx.notify();
     }
 
     pub(crate) fn set_notification_preference(

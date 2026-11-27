@@ -153,6 +153,9 @@ impl KoyoApp {
             settings_focus: cx.focus_handle(),
             theme_choice,
             settings_section: SettingsSection::default(),
+            shortcuts: saved.shortcuts.clone(),
+            shortcut_capture: None,
+            shortcut_error: String::new(),
             notifications: saved.notifications.clone(),
             idle_pool_size: saved.idle_pool_size.min(MAX_IDLE_POOL_SIZE),
             idle_pool_ttl_secs: saved
@@ -189,6 +192,7 @@ impl KoyoApp {
             next_tab_id: 1,
         };
         app.history.truncate(app.history_limit);
+        app.apply_shortcut_bindings(cx);
         cx.spawn(async move |this, cx| {
             while let Some(error) = save_error_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {

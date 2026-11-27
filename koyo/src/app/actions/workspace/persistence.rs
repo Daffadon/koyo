@@ -140,6 +140,7 @@ impl KoyoApp {
             page_limit: self.page_limit,
             query_timeout_secs: self.query_timeout_secs,
             history_limit: self.history_limit,
+            shortcuts: self.shortcuts.clone(),
         }
     }
 
