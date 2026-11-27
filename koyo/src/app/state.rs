@@ -290,6 +290,7 @@ pub(crate) struct KoyoApp {
     pub(crate) catalog_generations: HashMap<Uuid, u64>,
     pub(crate) session_transactions: HashMap<Uuid, bool>,
     pub(crate) allow_close: bool,
+    pub(crate) editor_persist_task: Option<Task<()>>,
     pub(crate) inactive_since: Option<std::time::Instant>,
     pub(crate) persistence_disabled: bool,
     pub(crate) manager: Arc<SessionManager>,

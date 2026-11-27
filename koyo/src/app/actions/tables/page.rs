@@ -40,29 +40,30 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                match tokio::time::timeout(
+                let cancel_manager = manager.clone();
+                super::super::connections::run_with_cancel(
                     TABLE_IO_TIMEOUT,
-                    database::load_table_page(
-                        &manager,
-                        session_id,
-                        operation_id,
-                        schema,
-                        name,
-                        offset,
-                        PAGE_LIMIT,
-                        filters_for_task,
-                        sort_for_task,
-                        count_total,
-                    ),
+                    "Table load timed out. Cancel was requested.",
+                    &cancel_manager,
+                    session_id,
+                    operation_id,
+                    async move {
+                        database::load_table_page(
+                            &manager,
+                            session_id,
+                            operation_id,
+                            schema,
+                            name,
+                            offset,
+                            PAGE_LIMIT,
+                            filters_for_task,
+                            sort_for_task,
+                            count_total,
+                        )
+                        .await
+                    },
                 )
                 .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
-                        Err("Table load timed out. Cancel was requested.".into())
-                    }
-                }
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
@@ -91,7 +92,7 @@ impl KoyoApp {
                 };
                 if let Some(error) = error {
                     log::error!("table page load failed on session {session_id}: {error}");
-                    if database::is_connection_lost(&error) || error.contains("timed out") {
+                    if database::is_connection_lost(&error) {
                         this.mark_connection_lost(
                             session_id,
                             "Connection lost while loading rows. Reconnect to continue.",

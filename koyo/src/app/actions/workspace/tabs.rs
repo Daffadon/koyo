@@ -1,6 +1,22 @@
+use gpui_kit::component::input::InputEvent;
+
 use super::*;
 
 impl KoyoApp {
+    fn schedule_editor_persist(&mut self, cx: &mut Context<Self>) {
+        // Dropping the previous debounce task cancels it.
+        self.editor_persist_task.take();
+        self.editor_persist_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.persist_state(cx);
+                cx.notify();
+            });
+        }));
+    }
+
     pub(crate) fn tab_index(&self, tab_id: u64) -> Option<usize> {
         self.tabs.iter().position(|tab| tab.id == tab_id)
     }
@@ -303,6 +319,12 @@ impl KoyoApp {
             editor.set_highlighter("sql", cx);
             editor
         });
+        cx.subscribe(&editor, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.schedule_editor_persist(cx);
+            }
+        })
+        .detach();
         let provider: Rc<dyn gpui_kit::base::input::CompletionProvider> =
             Rc::new(SqlCompletionProvider::new(completion.clone()));
         editor.update(cx, |editor, _| {

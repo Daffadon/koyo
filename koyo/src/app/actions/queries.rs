@@ -242,18 +242,20 @@ impl KoyoApp {
         self.spawn_task(
             cx,
             tab_id,
-            async move {
-                match tokio::time::timeout(
-                    QUERY_TIMEOUT,
-                    database::run_sql(&manager, session_id, operation_id, sql),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
-                        Err("Query timed out after 10 minutes. Cancel was requested.".into())
-                    }
+            {
+                let cancel_manager = manager.clone();
+                async move {
+                    super::connections::run_with_cancel(
+                        QUERY_TIMEOUT,
+                        "Query timed out after 10 minutes. Cancel was requested.",
+                        &cancel_manager,
+                        session_id,
+                        operation_id,
+                        async move {
+                            database::run_sql(&manager, session_id, operation_id, sql).await
+                        },
+                    )
+                    .await
                 }
             },
             move |this, cx, result| {

@@ -240,7 +240,7 @@ impl KoyoApp {
                     }
                     Err(error) => {
                         log::error!("table CSV export failed on session {session_id}: {error}");
-                        if database::is_connection_lost(&error) || error.contains("timed out") {
+                        if database::is_connection_lost(&error) {
                             this.mark_connection_lost(
                                 session_id,
                                 "Connection lost while downloading CSV. Reconnect to continue.",

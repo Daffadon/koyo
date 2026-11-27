@@ -151,6 +151,13 @@ impl EncryptedStateStore {
             self.create_or_load_state_key()?
         };
         let encrypted = encrypt_state(&key, plaintext)?;
+        // Keep one previous ciphertext as a recovery point. A failed save must
+        // not destroy the last good state.
+        if self.path.exists()
+            && let Ok(previous) = fs::read(&self.path)
+        {
+            let _ = write_private_file(&self.path.with_extension("enc.bak"), &previous);
+        }
         write_private_file(&self.path, &encrypted)
             .map_err(|error| format!("Could not save encrypted application state: {error}"))
     }

@@ -116,6 +116,7 @@ impl KoyoApp {
             history_collapsed: saved.history_collapsed,
             history_scroll: ScrollHandle::new(),
             allow_close: false,
+            editor_persist_task: None,
             inactive_since: None,
             catalog_generations: HashMap::new(),
             session_transactions: HashMap::new(),

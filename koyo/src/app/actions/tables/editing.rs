@@ -94,25 +94,28 @@ impl KoyoApp {
         self.spawn_task(
             cx,
             tab_id,
-            async move {
-                match tokio::time::timeout(
-                    APPLY_TIMEOUT,
-                    database::apply_grid_changes(
-                        &manager,
+            {
+                let cancel_manager = manager.clone();
+                async move {
+                    super::super::connections::run_with_cancel(
+                        APPLY_TIMEOUT,
+                        "COMMIT_OUTCOME_UNKNOWN: applying staged changes timed out.",
+                        &cancel_manager,
                         session_id,
                         operation_id,
-                        schema,
-                        name,
-                        changes,
-                    ),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
-                        Err("COMMIT_OUTCOME_UNKNOWN: applying staged changes timed out.".into())
-                    }
+                        async move {
+                            database::apply_grid_changes(
+                                &manager,
+                                session_id,
+                                operation_id,
+                                schema,
+                                name,
+                                changes,
+                            )
+                            .await
+                        },
+                    )
+                    .await
                 }
             },
             move |this, cx, result| {

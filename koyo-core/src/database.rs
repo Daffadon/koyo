@@ -938,7 +938,10 @@ pub async fn load_table_page(
     count_total: bool,
 ) -> Result<TablePage, String> {
     let entry = get_session(manager, session_id).await?;
-    let mut session_guard = entry.session.lock().await;
+    let mut session_guard = entry.session.try_lock().map_err(|_| {
+        "The session is busy with another statement. Wait for it to finish or cancel it."
+            .to_string()
+    })?;
     if operation_cancelled_before_start(&entry, operation_id) {
         return Err("Operation was cancelled before it started.".into());
     }

@@ -114,29 +114,34 @@ async fn export_table_csv(
                 .checked_mul(PAGE_LIMIT)
                 .ok_or_else(|| "Page range is too large.".to_string())?;
             let operation_id = Uuid::new_v4();
-            let page = match tokio::time::timeout(
+            let page_manager = manager.clone();
+            let page_schema = schema.clone();
+            let page_table = table.clone();
+            let page_filters = filters.clone();
+            let page_sort = sort.clone();
+            let page = super::connections::run_with_cancel(
                 TABLE_IO_TIMEOUT,
-                database::load_table_page(
-                    &manager,
-                    session_id,
-                    operation_id,
-                    schema.clone(),
-                    table.clone(),
-                    offset,
-                    PAGE_LIMIT,
-                    filters.clone(),
-                    sort.clone(),
-                    false,
-                ),
+                "CSV export timed out. Cancel was requested.",
+                &manager,
+                session_id,
+                operation_id,
+                async move {
+                    database::load_table_page(
+                        &page_manager,
+                        session_id,
+                        operation_id,
+                        page_schema,
+                        page_table,
+                        offset,
+                        PAGE_LIMIT,
+                        page_filters,
+                        page_sort,
+                        false,
+                    )
+                    .await
+                },
             )
-            .await
-            {
-                Ok(result) => result?,
-                Err(_) => {
-                    let _ = database::cancel_query(&manager, session_id, operation_id).await;
-                    return Err("CSV export timed out. Cancel was requested.".into());
-                }
-            };
+            .await?;
             let chunk = table_page_as_csv(&page, first_chunk);
             if !chunk.is_empty() {
                 file.write_all(chunk.as_bytes())

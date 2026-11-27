@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::time::Duration;
 
 use gpui_kit::component::input::InputState;
@@ -31,6 +32,32 @@ pub(crate) async fn connect_with_timeout(
     {
         Ok(result) => result,
         Err(_) => Err("Connection timed out after 30 seconds.".into()),
+    }
+}
+
+/// Run a database operation in a task so the timeout can cancel it while it is
+/// still active. Dropping a `timeout` future first makes cancellation a no-op.
+pub(crate) async fn run_with_cancel<T>(
+    timeout: Duration,
+    timeout_message: &'static str,
+    manager: &koyo_core::SessionManager,
+    session_id: Uuid,
+    operation_id: Uuid,
+    future: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    let mut task = tokio::spawn(future);
+    match tokio::time::timeout(timeout, &mut task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("Database task failed unexpectedly: {error}")),
+        Err(_) => {
+            let _ = database::cancel_query(manager, session_id, operation_id).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), &mut task).await;
+            task.abort();
+            Err(timeout_message.into())
+        }
     }
 }
 
@@ -390,6 +417,12 @@ impl KoyoApp {
                 };
                 match result {
                     Ok(info) => {
+                        log::info!(
+                            "connected {} ({:?}) with session {}",
+                            info.profile.name,
+                            info.profile.engine,
+                            info.session_id
+                        );
                         if !this.tabs[index].connecting {
                             this.disconnect_session(info.session_id);
                             return;
