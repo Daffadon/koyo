@@ -24,6 +24,9 @@ thread_local! {
     /// handle above; the table view uses one scroller for both axes.
     static RESULT_GRID_SCROLL_HANDLES: RefCell<HashMap<(u64, usize), ScrollHandle>> =
         RefCell::new(HashMap::new());
+    static RESULT_JSON_SCROLL_HANDLES: RefCell<
+        HashMap<(u64, usize), UniformListScrollHandle>,
+    > = RefCell::new(HashMap::new());
 }
 
 pub(super) fn result_grid_scroll_handle(tab_id: u64, result_index: usize) -> ScrollHandle {
@@ -36,9 +39,38 @@ pub(super) fn result_grid_scroll_handle(tab_id: u64, result_index: usize) -> Scr
     })
 }
 
+pub(super) fn result_json_scroll_handle(
+    tab_id: u64,
+    result_index: usize,
+) -> UniformListScrollHandle {
+    RESULT_JSON_SCROLL_HANDLES.with(|handles| {
+        handles
+            .borrow_mut()
+            .entry((tab_id, result_index))
+            .or_insert_with(UniformListScrollHandle::new)
+            .clone()
+    })
+}
+
 /// Drop handles for closed tabs and for result sets the query no longer has.
 pub(super) fn prune_scroll_handles(app: &KoyoApp) {
     RESULT_GRID_SCROLL_HANDLES.with(|handles| {
+        let mut handles = handles.borrow_mut();
+        handles.retain(|(tab_id, result_index), _| {
+            app.tabs
+                .iter()
+                .find(|tab| tab.id == *tab_id)
+                .and_then(|tab| match &tab.body {
+                    TabBody::Query(query) => query.output.as_ref(),
+                    TabBody::Table(_) => None,
+                })
+                .is_some_and(|output| *result_index < output.result_sets.len())
+        });
+        if handles.capacity() > handles.len().saturating_mul(4).max(16) {
+            handles.shrink_to_fit();
+        }
+    });
+    RESULT_JSON_SCROLL_HANDLES.with(|handles| {
         let mut handles = handles.borrow_mut();
         handles.retain(|(tab_id, result_index), _| {
             app.tabs

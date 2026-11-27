@@ -1,5 +1,5 @@
 use std::ops::Range;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::component::notification::Notification;
@@ -11,6 +11,8 @@ use uuid::Uuid;
 
 use super::notifications::ToastCategory;
 use crate::app::*;
+
+const QUERY_TIMEOUT: Duration = Duration::from_secs(600);
 
 fn definition_from_output(
     engine: Engine,
@@ -240,7 +242,20 @@ impl KoyoApp {
         self.spawn_task(
             cx,
             tab_id,
-            async move { database::run_sql(&manager, session_id, operation_id, sql).await },
+            async move {
+                match tokio::time::timeout(
+                    QUERY_TIMEOUT,
+                    database::run_sql(&manager, session_id, operation_id, sql),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
+                        Err("Query timed out after 10 minutes. Cancel was requested.".into())
+                    }
+                }
+            },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {
                     return;
@@ -513,11 +528,11 @@ impl KoyoApp {
                         .active_result
                         .min(output.result_sets.len().saturating_sub(1)),
                 )?;
-                Some((results_as_csv(result), output.truncated))
+                Some((result.clone(), output.truncated))
             }),
             TabBody::Table(_) => None,
         };
-        let Some((csv, truncated)) = exported else {
+        let Some((result, truncated)) = exported else {
             return;
         };
         let Some(path) = rfd::FileDialog::new()
@@ -532,41 +547,56 @@ impl KoyoApp {
         } else {
             path
         };
-        let suffix = if truncated {
-            " The result was truncated; the file contains the rows Koyo returned."
-        } else {
-            ""
-        };
-        match write_private_export(&path, csv.as_bytes()) {
-            Ok(()) => {
-                let message = format!("Downloaded active result to {}.{suffix}", path.display());
-                self.tabs[index].notice = message;
-                let file_name = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("CSV");
-                self.push_toast(
-                    ToastCategory::Exports,
-                    tab_id.to_string(),
-                    Notification::success(format!("Saved {file_name}.")).title("CSV ready"),
-                    cx,
-                );
-            }
-            Err(error) => {
-                log::error!("CSV download failed: {error}");
-                let message = format!("CSV download failed: {error}");
-                self.tabs[index].notice = message.clone();
-                self.push_toast(
-                    ToastCategory::Exports,
-                    tab_id.to_string(),
-                    Notification::error("Export failed. See the tab for details.")
-                        .title("CSV failed")
-                        .autohide(false),
-                    cx,
-                );
-            }
-        }
-        cx.notify();
+        let path_for_task = path.clone();
+        self.spawn_task(
+            cx,
+            tab_id,
+            async move {
+                let csv = results_as_csv(&result);
+                write_private_export(&path_for_task, csv.as_bytes())
+            },
+            move |this, cx, result| {
+                let Some(index) = this.tab_index(tab_id) else {
+                    return;
+                };
+                let suffix = if truncated {
+                    " The result was truncated; the file contains the rows Koyo returned."
+                } else {
+                    ""
+                };
+                match result {
+                    Ok(()) => {
+                        let message =
+                            format!("Downloaded active result to {}.{suffix}", path.display());
+                        this.tabs[index].notice = message;
+                        let file_name = path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("CSV");
+                        this.push_toast(
+                            ToastCategory::Exports,
+                            tab_id.to_string(),
+                            Notification::success(format!("Saved {file_name}.")).title("CSV ready"),
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        log::error!("CSV download failed: {error}");
+                        let message = format!("CSV download failed: {error}");
+                        this.tabs[index].notice = message.clone();
+                        this.push_toast(
+                            ToastCategory::Exports,
+                            tab_id.to_string(),
+                            Notification::error("Export failed. See the tab for details.")
+                                .title("CSV failed")
+                                .autohide(false),
+                            cx,
+                        );
+                    }
+                }
+                cx.notify();
+            },
+        );
     }
 
     pub(crate) fn copy_active_result_json(&mut self, tab_id: u64, cx: &mut Context<Self>) {

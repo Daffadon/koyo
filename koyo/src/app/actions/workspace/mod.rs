@@ -190,6 +190,16 @@ impl KoyoApp {
         })
         .detach();
         apply_theme(theme_choice, cx);
+        if let Some(error) = persistence_error {
+            app.push_toast(
+                ToastCategory::Connections,
+                "persistence-disabled",
+                Notification::warning(error)
+                    .title("Settings will not be saved")
+                    .autohide(false),
+                cx,
+            );
+        }
         app.restore_workspace(&saved.workspace, window, cx);
         app.ensure_workspace_tab(window, cx);
         app.focus_active_query_editor(window, cx);

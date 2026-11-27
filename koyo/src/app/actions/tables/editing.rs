@@ -1,5 +1,7 @@
 use super::*;
 
+const APPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl KoyoApp {
     pub(crate) fn apply_changes(
         &mut self,
@@ -93,15 +95,25 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                database::apply_grid_changes(
-                    &manager,
-                    session_id,
-                    operation_id,
-                    schema,
-                    name,
-                    changes,
+                match tokio::time::timeout(
+                    APPLY_TIMEOUT,
+                    database::apply_grid_changes(
+                        &manager,
+                        session_id,
+                        operation_id,
+                        schema,
+                        name,
+                        changes,
+                    ),
                 )
                 .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
+                        Err("COMMIT_OUTCOME_UNKNOWN: applying staged changes timed out.".into())
+                    }
+                }
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {

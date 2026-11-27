@@ -2,6 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -11,6 +12,7 @@ const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 struct FileLogger {
     path: PathBuf,
     file: Mutex<File>,
+    bytes: AtomicU64,
 }
 
 impl Log for FileLogger {
@@ -27,26 +29,26 @@ impl Log for FileLogger {
         }
         let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         if let Ok(mut file) = self.file.lock() {
-            let too_large = file
-                .metadata()
-                .map(|metadata| metadata.len() > MAX_LOG_BYTES)
-                .unwrap_or(false);
+            let too_large = self.bytes.load(Ordering::Relaxed) > MAX_LOG_BYTES;
             if too_large {
                 drop(file);
                 rotate_log(&self.path);
                 match open_log(&self.path) {
                     Ok(mut reopened) => {
-                        write_log_line(&mut reopened, &timestamp, record);
+                        let written = write_log_line(&mut reopened, &timestamp, record);
+                        self.bytes.store(written as u64, Ordering::Relaxed);
                         if let Ok(mut slot) = self.file.lock() {
                             *slot = reopened;
                         }
                     }
                     Err(error) => {
+                        self.bytes.store(0, Ordering::Relaxed);
                         eprintln!("Could not reopen Koyo log after rotation: {error}");
                     }
                 }
             } else {
-                write_log_line(&mut file, &timestamp, record);
+                let written = write_log_line(&mut file, &timestamp, record);
+                self.bytes.fetch_add(written as u64, Ordering::Relaxed);
             }
         }
     }
@@ -75,9 +77,11 @@ pub(crate) fn init_logging() -> Result<(), String> {
         .map_err(|error| format!("Could not create the Koyo log directory: {error}"))?;
     rotate_log(&path);
     let file = open_log(&path)?;
+    let bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     log::set_boxed_logger(Box::new(FileLogger {
         path: path.clone(),
         file: Mutex::new(file),
+        bytes: AtomicU64::new(bytes),
     }))
     .map_err(|error| format!("Could not install the Koyo logger: {error}"))?;
     log::set_max_level(LevelFilter::Info);
@@ -88,15 +92,16 @@ fn write_log_line(
     file: &mut File,
     timestamp: &chrono::format::DelayedFormat<chrono::format::StrftimeItems<'_>>,
     record: &Record,
-) {
-    let _ = writeln!(
-        file,
-        "{timestamp} {:<5} {}: {}",
+) -> usize {
+    let line = format!(
+        "{timestamp} {:<5} {}: {}\n",
         record.level(),
         record.target(),
         record.args()
     );
+    let _ = file.write_all(line.as_bytes());
     let _ = file.flush();
+    line.len()
 }
 
 fn open_log(path: &Path) -> Result<File, String> {

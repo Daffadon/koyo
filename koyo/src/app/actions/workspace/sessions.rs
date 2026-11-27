@@ -65,7 +65,9 @@ impl KoyoApp {
         self.session_transactions.remove(&session_id);
         let manager = self.manager.clone();
         self.runtime.spawn(async move {
-            let _ = database::disconnect(&manager, session_id).await;
+            if let Err(error) = database::disconnect(&manager, session_id).await {
+                log::warn!("session {session_id} did not close cleanly: {error}");
+            }
         });
     }
 

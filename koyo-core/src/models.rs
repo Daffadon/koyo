@@ -220,7 +220,7 @@ pub struct ColumnCatalogEntry {
     pub column: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryResultSet {
     pub columns: Vec<String>,

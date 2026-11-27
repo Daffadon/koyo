@@ -40,7 +40,7 @@ impl KoyoApp {
             cx,
             tab_id,
             async move {
-                tokio::time::timeout(
+                match tokio::time::timeout(
                     TABLE_IO_TIMEOUT,
                     database::load_table_page(
                         &manager,
@@ -56,9 +56,13 @@ impl KoyoApp {
                     ),
                 )
                 .await
-                .unwrap_or_else(|_| {
-                    Err("Table load timed out. The database connection may have closed.".into())
-                })
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let _ = database::cancel_query(&manager, session_id, operation_id).await;
+                        Err("Table load timed out. Cancel was requested.".into())
+                    }
+                }
             },
             move |this, cx, result| {
                 let Some(index) = this.tab_index(tab_id) else {

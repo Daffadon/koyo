@@ -1,11 +1,9 @@
-use gpui_kit::component::v_flex;
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use gpui_kit::{InteractiveElement, StatefulInteractiveElement};
 use koyo_core::models::QueryResultSet;
 use std::rc::Rc;
 
-use super::result_grid_scroll_handle;
+use super::result_json_scroll_handle;
 use crate::app::*;
 
 const JSON_LINE_HEIGHT: f32 = 22.0;
@@ -19,7 +17,7 @@ pub(super) fn result_json(
     _cx: &mut Context<KoyoApp>,
 ) -> AnyElement {
     let lines = Rc::new(json_result_lines(result));
-    let scroll_handle = result_grid_scroll_handle(tab_id, result_index);
+    let scroll_handle = result_json_scroll_handle(tab_id, result_index);
     let palette = *palette;
     let widest = lines
         .iter()
@@ -28,26 +26,34 @@ pub(super) fn result_json(
         .unwrap_or(2);
     // monospace 14px text is roughly 8px/character; keep a comfortable gutter.
     let width = ((widest as f32) * 8.0 + 48.0).max(420.0);
-    let rows = v_flex()
-        .w(px(width))
-        .min_w(px(width))
-        .children(lines.iter().enumerate().map(|(line_index, line)| {
-            div()
-                .id(SharedString::from(format!(
-                    "result-json-line-{tab_id}-{result_index}-{line_index}"
-                )))
-                .flex_shrink_0()
-                .h(px(JSON_LINE_HEIGHT))
-                .px_4()
-                .flex()
-                .items_center()
-                .whitespace_nowrap()
-                .text_sm()
-                .text_color(palette.foreground)
-                .child(line.clone())
-                .into_any_element()
-        }))
-        .into_any_element();
+    let lines_for_render = Rc::clone(&lines);
+    let list = uniform_list(
+        SharedString::from(format!("result-json-lines-{tab_id}-{result_index}")),
+        lines.len(),
+        move |range, _, _| {
+            range
+                .map(|line_index| {
+                    div()
+                        .id(SharedString::from(format!(
+                            "result-json-line-{tab_id}-{result_index}-{line_index}"
+                        )))
+                        .flex_shrink_0()
+                        .h(px(JSON_LINE_HEIGHT))
+                        .px_4()
+                        .flex()
+                        .items_center()
+                        .whitespace_nowrap()
+                        .text_sm()
+                        .text_color(palette.foreground)
+                        .child(lines_for_render[line_index].clone())
+                })
+                .collect::<Vec<_>>()
+        },
+    )
+    .track_scroll(&scroll_handle)
+    .w(px(width))
+    .min_w(px(width))
+    .with_horizontal_sizing_behavior(gpui_kit::ListHorizontalSizingBehavior::Unconstrained);
 
     div()
         .id(SharedString::from(format!(
@@ -57,11 +63,9 @@ pub(super) fn result_json(
         .flex_col()
         .flex_1()
         .min_h(px(0.0))
-        .overflow_scroll()
-        .restrict_scroll_to_axis()
-        .track_scroll(&scroll_handle)
+        .overflow_hidden()
         .bg(palette.background)
-        .child(rows)
+        .child(list)
         .font_family(mono.clone())
         .into_any_element()
 }

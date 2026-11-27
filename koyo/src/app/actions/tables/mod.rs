@@ -113,12 +113,13 @@ async fn export_table_csv(
                 .saturating_sub(1)
                 .checked_mul(PAGE_LIMIT)
                 .ok_or_else(|| "Page range is too large.".to_string())?;
-            let page = tokio::time::timeout(
+            let operation_id = Uuid::new_v4();
+            let page = match tokio::time::timeout(
                 TABLE_IO_TIMEOUT,
                 database::load_table_page(
                     &manager,
                     session_id,
-                    Uuid::new_v4(),
+                    operation_id,
                     schema.clone(),
                     table.clone(),
                     offset,
@@ -129,9 +130,13 @@ async fn export_table_csv(
                 ),
             )
             .await
-            .unwrap_or_else(|_| {
-                Err("CSV export timed out. The database connection may have closed.".into())
-            })?;
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    let _ = database::cancel_query(&manager, session_id, operation_id).await;
+                    return Err("CSV export timed out. Cancel was requested.".into());
+                }
+            };
             let chunk = table_page_as_csv(&page, first_chunk);
             if !chunk.is_empty() {
                 file.write_all(chunk.as_bytes())
